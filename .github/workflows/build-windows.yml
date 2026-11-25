@@ -33,16 +33,31 @@ jobs:
   build:
     name: Build and verify Windows candidate
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: AI/GameEditor/Neuro/Loom
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          path: AI/GameEditor/Neuro/Loom
+          persist-credentials: false
+
+      - name: Checkout Neuro UI source
+        uses: actions/checkout@v5
+        with:
+          repository: aiaimimi0920/NeuroDesign
+          ref: 02420e8d129cf952c6bee3cda96ab7ebc95c2d67
+          path: NeuroDesign
           persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: "22.22.2"
+
+      - name: Setup npm
+        run: npm install --global npm@11.21.1 --no-audit --no-fund
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
@@ -51,8 +66,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
-            . -> target
-            apps/desktop/src-tauri -> target
+            AI/GameEditor/Neuro/Loom -> target
+            AI/GameEditor/Neuro/Loom/apps/desktop/src-tauri -> target
 
       - name: Resolve CI version
         shell: powershell
@@ -68,6 +83,14 @@ jobs:
       - name: Test framework process cleanup
         shell: powershell
         run: .\scripts\tests\Test-FrameworkSmokeCleanup.ps1
+
+      - name: Install Neuro UI dependencies
+        working-directory: NeuroDesign
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Neuro UI library
+        working-directory: NeuroDesign
+        run: node scripts/build.mjs --library --theme neuro
 
       - name: Build standalone Loom release
         shell: powershell
@@ -103,8 +126,8 @@ jobs:
         with:
           name: loom-windows-smoke-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/runtime-smoke/latest/mcp-smoke-diagnostic.json
-            target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json
+            AI/GameEditor/Neuro/Loom/target/runtime-smoke/latest/mcp-smoke-diagnostic.json
+            AI/GameEditor/Neuro/Loom/target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -112,5 +135,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: loom-windows-x64-${{ github.sha }}
-          path: release/Loom/${{ env.LOOM_VERSION }}
+          path: AI/GameEditor/Neuro/Loom/release/Loom/${{ env.LOOM_VERSION }}
           if-no-files-found: error

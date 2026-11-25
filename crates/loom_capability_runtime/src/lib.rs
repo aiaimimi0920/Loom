@@ -3,6 +3,8 @@
 mod error;
 mod frame;
 mod host;
+mod invocation_control;
+pub use invocation_control::{InvocationControl, InvocationProgress};
 mod model_broker;
 mod model_gateway;
 mod model_provider;
@@ -17,8 +19,8 @@ pub use error::CapabilityHostError;
 pub use frame::{read_runtime_frame, write_runtime_frame};
 pub use host::{
     CapabilityInvocation, CapabilityInvocationOutput, CapabilityRuntimeHealth,
-    CapabilityRuntimeHost, CapabilityRuntimePackage, CapabilityStagedResource, RuntimeHostLimits,
-    UserGestureTarget,
+    CapabilityRuntimeHost, CapabilityRuntimePackage, CapabilityStagedResource, CommandScope,
+    RuntimeHostLimits, UserGestureTarget,
 };
 
 #[cfg(test)]

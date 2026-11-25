@@ -504,6 +504,7 @@ fn seed_phase_four_device_sessions(runtime: &DaemonRuntime) {
             sha256_bytes(token.as_bytes()),
             ActiveDeviceSession {
                 device_id: device_id.to_owned(),
+                last_activity_at_ms: now,
                 expires_at_ms: now.saturating_add(300_000),
                 session_epoch: 1,
                 used_nonces: BTreeSet::new(),

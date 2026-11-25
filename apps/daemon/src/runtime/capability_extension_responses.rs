@@ -12,9 +12,16 @@ fn extension_runtime_status_failure(
     let code = if output.status == CapabilityRuntimeStatus::Cancelled {
         CapabilityErrorCode::Cancelled
     } else {
-        output.error.as_ref().map_or(CapabilityErrorCode::RuntimeFault, |error| error.code)
+        output
+            .error
+            .as_ref()
+            .map_or(CapabilityErrorCode::RuntimeFault, |error| error.code)
     };
-    Some(extension_result_failure(request_id, code, "capability runtime command did not succeed"))
+    Some(extension_result_failure(
+        request_id,
+        code,
+        "capability runtime command did not succeed",
+    ))
 }
 
 fn extension_upload_failure(
@@ -109,6 +116,7 @@ fn extension_runtime_failure(
         Error::NotFound(_) => ("extension_command_not_found", false),
         Error::InvalidPackage(_) | Error::Protocol(_) => ("extension_request_rejected", false),
         Error::Busy | Error::Timeout => ("extension_runtime_busy", true),
+        Error::Cancelled => ("extension_cancelled", false),
         Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
             ("extension_runtime_unavailable", true)
         }

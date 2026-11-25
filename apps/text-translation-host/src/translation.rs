@@ -133,7 +133,7 @@ fn translate_entry(
     let response = complete(
         system,
         &serde_json::to_string(&request)?,
-        &response_schema(),
+        &response_schema(id),
         provider_mode,
     )?;
     if response.len() > 128 * 1024 {
@@ -161,13 +161,15 @@ fn translate_entry(
     Ok(text)
 }
 
-fn response_schema() -> Value {
+fn response_schema(id: usize) -> Value {
     json!({
         "type": "object", "additionalProperties": false, "required": ["translations"],
         "properties": { "translations": {
             "type": "array", "minItems": 1, "maxItems": 1,
             "prefixItems": [{ "type": "array", "minItems": 2, "maxItems": 2,
-                "prefixItems": [{ "type": "integer" }, { "type": "string", "minLength": 1 }] }]
+                // There is exactly one paragraph per request. Its ID is a source-block
+                // index, not the paragraph ordinal, so it may skip indices after wrapping.
+                "prefixItems": [{ "const": id }, { "type": "string", "minLength": 1 }] }]
         } }
     })
 }

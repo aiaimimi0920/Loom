@@ -99,6 +99,8 @@ use uuid::Uuid;
 
 mod account_login;
 mod asset_library;
+mod connected_users;
+mod local_art;
 /// 仅在整个 daemon 进程正常退出时关闭进程级原生下载引擎。
 pub fn shutdown_download_engine() {
     asset_library::shutdown_download_engine();
@@ -109,6 +111,7 @@ mod http_body_admission;
 mod http_request;
 mod naccount;
 mod otter_canvas;
+mod otter_locale;
 mod periodic_maintenance;
 mod projection_settings;
 mod request_executor;
@@ -158,11 +161,15 @@ include!("runtime/mcp_persistence_models.rs");
 include!("runtime/settings_ocr_runtime.rs");
 include!("runtime/otter_bridge_connections.rs");
 include!("runtime/otter_bridge_liveness.rs");
+include!("runtime/otter_bridge_extension_command.rs");
 include!("runtime/otter_bridge_state.rs");
 include!("runtime/device_registry_store.rs");
 mod connection_discovery;
 mod connection_policy;
 mod lan_http;
+mod lan_http_live;
+mod lan_http_surface;
+mod lan_http_wall;
 mod lan_listener;
 include!("runtime/otter_connection_requests.rs");
 include!("runtime/otter_connection_routes.rs");
@@ -192,15 +199,22 @@ include!("runtime/live_media_diagnostics.rs");
 include!("runtime/live_media_representation.rs");
 include!("runtime/live_video_negotiation.rs");
 include!("runtime/live_session_control.rs");
+include!("runtime/live_session_local_control.rs");
 include!("runtime/live_session_input.rs");
 include!("runtime/live_session_observation.rs");
 include!("runtime/live_session_triggers.rs");
+include!("runtime/live_session_trigger_evaluation.rs");
+include!("runtime/live_session_local_trigger.rs");
+include!("runtime/live_session_local_trigger_operations.rs");
 include!("runtime/live_session_trigger_dispatch.rs");
 include!("runtime/live_session_routes.rs");
+include!("runtime/live_session_create.rs");
+include!("runtime/live_session_direct_viewer.rs");
 
 include!("runtime/live_source_binding.rs");
 include!("runtime/live_session_route_support.rs");
 include!("runtime/live_media_device_grant.rs");
+include!("runtime/live_media_transport.rs");
 include!("runtime/live_media_websocket.rs");
 include!("runtime/wall_media_encoding.rs");
 include!("runtime/wall_png_cache.rs");
@@ -263,6 +277,7 @@ include!("runtime/run_http_responses.rs");
 
 #[cfg(test)]
 mod tests {
+    include!("tests/local_art_http.rs");
     include!("tests/local_bridge_security.rs");
     include!("tests/otter_bridge_liveness.rs");
     include!("tests/projection_http.rs");
@@ -314,6 +329,7 @@ mod tests {
     include!("tests/cloud_art_execution.rs");
     include!("tests/suite/part_38.rs");
     include!("tests/live_media_diagnostics.rs");
+    include!("tests/live_media_connection_cleanup.rs");
     include!("tests/live_video_negotiation.rs");
     include!("tests/live_video_socket.rs");
     include!("tests/live_media_device_auth.rs");

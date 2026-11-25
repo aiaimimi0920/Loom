@@ -1,29 +1,12 @@
-// Contains Art store cards, framework filters, and the publish dialog.
-import {
-  filterArtStoreEntries,
-  frameworkFilterLabel,
-  frameworkIdentity,
-  isLocallyAuthoredTool,
-  officialFrameworkDisplayName,
-} from "../../services/artHubUi";
-import {
-  type LoomFramework,
-  LoomToolDefinition,
-  publishArt,
-} from "../../services/loomApi";
+// Owns catalog paging, trust confirmation and installation of published Art packages.
+import { Badge, Button, EmptyState, Notice, Panel } from "@neuro/ui";
+import { filterArtStoreEntries, officialFrameworkDisplayName } from "../../services/artHubUi";
+import type { LoomFramework } from "../../services/loomApi";
 import { fetchCloudArtCatalog, type CloudArtEntry } from "../../services/cloudCatalog";
 import { canInstallCloudPackage, installCloudPackage } from "../../services/cloudPackageInstall";
-import { artFrameworkIconKind, ArtIcon, StudioMessage } from "../app/appShell";
+import { artFrameworkIconKind, ArtIcon } from "../app/appShell";
 import { requestAppConfirmation } from "../feedback/AppFeedback";
-import {
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function ArtStoreCard({
   baseUrl,
@@ -50,31 +33,31 @@ export function ArtStoreCard({
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const catalogLoadVersion = useRef(0);
-  const visibleCatalog = useMemo(() => filterArtStoreEntries(
-    catalog,
-    frameworks,
-    selectedFrameworkIds,
-    searchText,
-    officialOnly,
-  ), [catalog, frameworks, officialOnly, searchText, selectedFrameworkIds]);
+  const visibleCatalog = useMemo(
+    () => filterArtStoreEntries(catalog, frameworks, selectedFrameworkIds, searchText, officialOnly),
+    [catalog, frameworks, officialOnly, searchText, selectedFrameworkIds],
+  );
 
-  const loadCatalog = useCallback(async (after = "") => {
-    const version = ++catalogLoadVersion.current;
-    setCatalogLoading(true);
-    setMessage(null);
-    try {
-      const { arts, nextAfter } = await fetchCloudArtCatalog(baseUrl, after);
-      if (version !== catalogLoadVersion.current) return;
-      setCatalog(arts);
-      setNextAfter(nextAfter);
-    } catch (err) {
-      if (version === catalogLoadVersion.current) {
-        setMessage({ ok: false, text: err instanceof Error ? err.message : "无法访问商店。" });
+  const loadCatalog = useCallback(
+    async (after = "") => {
+      const version = ++catalogLoadVersion.current;
+      setCatalogLoading(true);
+      setMessage(null);
+      try {
+        const { arts, nextAfter } = await fetchCloudArtCatalog(baseUrl, after);
+        if (version !== catalogLoadVersion.current) return;
+        setCatalog(arts);
+        setNextAfter(nextAfter);
+      } catch (err) {
+        if (version === catalogLoadVersion.current) {
+          setMessage({ ok: false, text: err instanceof Error ? err.message : "无法访问商店。" });
+        }
+      } finally {
+        if (version === catalogLoadVersion.current) setCatalogLoading(false);
       }
-    } finally {
-      if (version === catalogLoadVersion.current) setCatalogLoading(false);
-    }
-  }, [baseUrl]);
+    },
+    [baseUrl],
+  );
 
   useEffect(() => {
     if (!active) return;
@@ -85,12 +68,16 @@ export function ArtStoreCard({
   }, [active, loadCatalog, refreshToken]);
 
   const install = async (art: CloudArtEntry) => {
-    if (art.official !== true && !await requestAppConfirmation({
-      title: "安装未认证 Art",
-      message: `“${art.name ?? art.id}”未经官方认证，可能包含恶意代码。仅在信任发布者和包来源时继续。`,
-      confirmLabel: "继续安装",
-      tone: "warning",
-    })) return;
+    if (
+      art.official !== true &&
+      !(await requestAppConfirmation({
+        title: "安装未认证 Art",
+        message: `“${art.name ?? art.id}”未经官方认证，可能包含恶意代码。仅在信任发布者和包来源时继续。`,
+        confirmLabel: "继续安装",
+        tone: "warning",
+      }))
+    )
+      return;
     setInstallingId(art.id);
     setMessage(null);
     try {
@@ -107,36 +94,37 @@ export function ArtStoreCard({
   return (
     <section className="content-grid art-store">
       {message ? (
-        <div className={message.ok ? "art-store__message success-text" : "art-store__message error-text"}>
+        <Notice
+          className="art-store__message"
+          tone={message.ok ? "success" : "danger"}
+          role={message.ok ? "status" : "alert"}
+        >
           <span>{message.text}</span>
           {!message.ok ? (
-            <button className="ghost-button" type="button" onClick={() => void loadCatalog()} disabled={catalogLoading}>
+            <Button onClick={() => void loadCatalog()} disabled={catalogLoading} loading={catalogLoading}>
               重试
-            </button>
+            </Button>
           ) : null}
-        </div>
+        </Notice>
       ) : null}
-      {catalogLoading && catalog.length === 0 ? <p className="muted-line">加载中…</p> : null}
-      {!catalogLoading && !message && visibleCatalog.length === 0 ? <p className="muted-line">没有匹配的 Art</p> : null}
+      {catalogLoading && catalog.length === 0 ? <Notice role="status">加载中</Notice> : null}
+      {!catalogLoading && !message && visibleCatalog.length === 0 ? <EmptyState title="没有匹配的 Art" /> : null}
       <div className="card-grid art-store-grid">
         {visibleCatalog.map((entry) => {
           const art = catalog.find((item) => item.id === entry.id)!;
           const frameworkReference = art.framework?.startsWith("neuro.official/")
             ? art.framework.slice("neuro.official/".length)
-            : art.framework ?? null;
+            : (art.framework ?? null);
           const frameworkLabel = officialFrameworkDisplayName(art.framework) ?? art.framework ?? "Art";
           const installing = installingId === art.id;
           return (
-            <article
-              className={`glass-card art-store-card ${art.official === true ? "art-store-card--official" : "art-store-card--unverified"}`}
-              key={art.qualifiedId || art.id}
-            >
+            <Panel className="art-market-entry" key={art.qualifiedId || art.id}>
               <div className="art-store-card__head">
                 <h3 title={art.name ?? art.id}>{art.name ?? art.id}</h3>
                 <div className="art-store-card__badges">
-                  <span className={art.official === true ? "art-store-card__trust art-store-card__trust--official" : "art-store-card__trust art-store-card__trust--unverified"}>
+                  <Badge tone={art.official === true ? "success" : "warning"}>
                     {art.official === true ? "官方" : "未认证"}
-                  </span>
+                  </Badge>
                   <span
                     className="art-registry-card__framework-icon"
                     role="img"
@@ -149,7 +137,9 @@ export function ArtStoreCard({
               </div>
               <div className="art-store-card__body">
                 {art.description ? (
-                  <p className="art-store-card__description" title={art.description}>{art.description}</p>
+                  <p className="art-store-card__description" title={art.description}>
+                    {art.description}
+                  </p>
                 ) : null}
                 <p className="art-store-card__identity mono-line" title={art.globalId || art.qualifiedId || art.id}>
                   {art.globalId || art.qualifiedId || art.id}
@@ -157,190 +147,29 @@ export function ArtStoreCard({
                 </p>
               </div>
               <div className="art-store-card__actions">
-                <button
-                  className="signal-button"
-                  type="button"
+                <Button
+                  variant="primary"
+                  loading={installing}
                   onClick={() => void install(art)}
                   disabled={installingId !== null || !canInstallCloudPackage(art.publication)}
                 >
-                  {installing ? "安装中" : canInstallCloudPackage(art.publication) ? "安装" : "非原生 Art 包"}
-                </button>
+                  {canInstallCloudPackage(art.publication) ? "安装" : "非原生 Art 包"}
+                </Button>
               </div>
-            </article>
+            </Panel>
           );
         })}
       </div>
-      {nextAfter && <button className="ghost-button" disabled={catalogLoading || installingId !== null}
-        onClick={() => void loadCatalog(nextAfter)}>下一页</button>}
+      {nextAfter && (
+        <Button
+          className="art-store__next"
+          loading={catalogLoading}
+          disabled={catalogLoading || installingId !== null}
+          onClick={() => void loadCatalog(nextAfter)}
+        >
+          下一页
+        </Button>
+      )}
     </section>
-  );
-}
-
-export function FrameworkFilter({
-  frameworks,
-  selectedFrameworkIds,
-  onToggle,
-  actions,
-}: {
-  frameworks: LoomFramework[];
-  selectedFrameworkIds: ReadonlySet<string> | null;
-  onToggle: (frameworkId: string) => void;
-  actions: ReactNode;
-}) {
-  return (
-    <div className="framework-filter" role="group" aria-label="按框架筛选 Art">
-      <div className="framework-filter__options">
-        {frameworks.map((framework) => {
-          const identity = frameworkIdentity(framework);
-          const checked = selectedFrameworkIds === null || selectedFrameworkIds.has(identity);
-          return (
-            <label
-              className={checked ? "framework-filter__option framework-filter__option--checked" : "framework-filter__option"}
-              key={identity}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => onToggle(identity)}
-              />
-              <span>{frameworkFilterLabel(framework)}</span>
-            </label>
-          );
-        })}
-        {frameworks.length === 0 ? <span className="muted-line">暂无框架</span> : null}
-      </div>
-      <div className="framework-filter__actions">
-        {actions}
-      </div>
-    </div>
-  );
-}
-
-export function authoredArtVersion(tool: LoomToolDefinition): string {
-  const metadata = typeof tool.metadata === "object" && tool.metadata !== null && !Array.isArray(tool.metadata)
-    ? tool.metadata as Record<string, unknown>
-    : null;
-  const packageSecurity = typeof metadata?.packageSecurity === "object"
-    && metadata.packageSecurity !== null
-    && !Array.isArray(metadata.packageSecurity)
-    ? metadata.packageSecurity as Record<string, unknown>
-    : null;
-  return typeof packageSecurity?.version === "string" && packageSecurity.version.trim()
-    ? packageSecurity.version.trim()
-    : "0.1.0";
-}
-
-export function ArtPublishDialog({
-  open,
-  tools,
-  baseUrl,
-  onClose,
-  onPublished,
-}: {
-  open: boolean;
-  tools: LoomToolDefinition[];
-  baseUrl: string;
-  onClose: () => void;
-  onPublished: () => Promise<void>;
-}) {
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [busyArtId, setBusyArtId] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const authoredTools = useMemo(() => tools.filter(isLocallyAuthoredTool), [tools]);
-
-  useEffect(() => {
-    if (!open) {
-      setMessage(null);
-      return;
-    }
-    closeButtonRef.current?.focus();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!busyArtId) onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )];
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [busyArtId, onClose, open]);
-
-  if (!open) return null;
-
-  const publish = async (tool: LoomToolDefinition) => {
-    setBusyArtId(tool.id);
-    setMessage(null);
-    try {
-      const result = await publishArt(baseUrl, tool.id);
-      await onPublished();
-      setMessage({ ok: true, text: `已发布 ${tool.name || tool.id} · ${result.globalId}` });
-    } catch (error) {
-      setMessage({ ok: false, text: error instanceof Error ? error.message : "发布失败。" });
-    } finally {
-      setBusyArtId(null);
-    }
-  };
-
-  return (
-    <div
-      className="framework-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (!busyArtId && event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="framework-dialog art-publish-dialog"
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="art-publish-dialog-title"
-      >
-        <header className="framework-dialog__header">
-          <h2 id="art-publish-dialog-title">发布 Art</h2>
-          <button className="ghost-button" type="button" ref={closeButtonRef} onClick={onClose} disabled={busyArtId !== null}>
-            关闭
-          </button>
-        </header>
-        {message ? <p className={message.ok ? "success-text" : "error-text"}>{message.text}</p> : null}
-        <div className="art-publish-dialog__list">
-          {authoredTools.map((tool) => {
-            const busy = busyArtId === tool.id;
-            return (
-              <article className="art-publish-dialog__row" key={tool.id}>
-                <div className="art-publish-dialog__identity">
-                  <h3 title={tool.name || tool.id}>{tool.name || tool.id}</h3>
-                  <p className="mono-line" title={tool.id}>{tool.id}</p>
-                </div>
-                <span className="art-publish-dialog__version">{authoredArtVersion(tool)}</span>
-                <button className="signal-button" type="button" onClick={() => void publish(tool)} disabled={busyArtId !== null}>
-                  {busy ? "发布中" : "发布"}
-                </button>
-              </article>
-            );
-          })}
-          {authoredTools.length === 0 ? <p className="muted-line">暂无本地创建的 Art</p> : null}
-        </div>
-      </div>
-    </div>
   );
 }

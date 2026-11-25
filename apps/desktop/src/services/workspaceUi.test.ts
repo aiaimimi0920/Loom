@@ -33,21 +33,20 @@ test("keeps save workflow beside the live canvas zoom controls", () => {
 });
 
 test("keeps Otter zoom controls readable while preserving the fixed dark canvas", () => {
-  assert.match(otterCanvasSource, /className="otter-canvas-zoom__label">缩放<\/span>/);
+  assert.match(otterCanvasSource, /<Field label="缩放">/);
   assert.match(
     otterCanvasSource,
-    /className="otter-canvas-zoom__slider"[\s\S]*?type="range"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label="画布缩放"/,
+    /<Range[\s\S]*?className="otter-canvas-zoom__slider"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label="画布缩放"/,
   );
-  assert.match(
-    otterCanvasSource,
-    /className="otter-canvas-zoom__value">\{Math\.round\(scale \* 100\)\}%/,
-  );
+  assert.match(otterCanvasSource, /className="otter-canvas-zoom__value">\{Math\.round\(scale \* 100\)\}%/);
   assert.match(otterCanvasSource, /aria-pressed=\{showMinimap\}/);
-  assert.match(styleSource, /\.otter-canvas-zoom \{[\s\S]*?color: var\(--loom-theme-muted\);/);
-  assert.match(styleSource, /\.otter-canvas-zoom__label \{[\s\S]*?color: var\(--loom-theme-muted\);/);
-  assert.match(styleSource, /\.otter-canvas-zoom__value \{[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.otter-canvas-zoom__slider \{[\s\S]*?background: color-mix\(in srgb, var\(--loom-theme-text\) 28%, transparent\);[\s\S]*?accent-color: var\(--loom-theme-accent-text\);/);
-  assert.match(styleSource, /\.otter-canvas-surface \{[\s\S]*?linear-gradient\(135deg, #101722, #18252b 58%, #11171d\);/);
+  assert.match(otterCanvasToolbarSource, /from "@neuro\/ui"/);
+  assert.match(styleSource, /\.otter-canvas-zoom__value \{[\s\S]*?font-variant-numeric: tabular-nums;/);
+  assert.doesNotMatch(styleSource, /\.otter-canvas-zoom__slider(?:::|:focus|\s*\{)/);
+  assert.match(
+    styleSource,
+    /\.otter-canvas-surface \{[\s\S]*?linear-gradient\(135deg, #101722, #18252b 58%, #11171d\);/,
+  );
   assert.match(styleSource, /\.otter-canvas-surface \{[\s\S]*?color-scheme: dark;/);
   assert.doesNotMatch(styleSource, /:root\[data-loom-theme="light"\] \.otter-canvas-surface/);
 });

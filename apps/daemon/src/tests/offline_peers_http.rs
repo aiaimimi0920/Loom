@@ -12,11 +12,17 @@ fn peer_view(port: u16) -> Value {
 
 fn trust_peer(port: u16, remote: &Value, remote_port: u16) -> Value {
     let view = peer_view(port);
+    let connection = &remote["localConnection"];
+    let mut peer = json!({
+        "peerId": remote["identity"]["peerId"], "publicKey": remote["identity"]["publicKey"],
+        "name": "Explicit offline peer", "origin": format!("http://127.0.0.1:{remote_port}"), "enabled": true
+    });
+    if !connection.is_null() {
+        peer["origin"] = connection["origin"].clone();
+        peer["certificate"] = connection["certificate"].clone();
+    }
     let reply = peer_admin(port, "PUT", "/v1/projection-peers", json!({
-        "expectedRevision": view["revision"], "peer": {
-            "peerId": remote["identity"]["peerId"], "publicKey": remote["identity"]["publicKey"],
-            "name": "Explicit offline peer", "origin": format!("http://127.0.0.1:{remote_port}"), "enabled": true
-        }
+        "expectedRevision": view["revision"], "peer": peer
     }));
     assert_eq!(reply.0, 200);
     reply.1

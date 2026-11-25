@@ -12,18 +12,31 @@ struct ExtensionMethodProbe<'a> {
     method: std::borrow::Cow<'a, str>,
 }
 
-fn is_extension_bridge_request(text: &str) -> bool {
+fn extension_bridge_method(text: &str) -> Option<std::borrow::Cow<'_, str>> {
     serde_json::from_str::<ExtensionMethodProbe<'_>>(text)
         .ok()
-        .is_some_and(|request| request.method.starts_with("loom.extension."))
+        .map(|request| request.method)
+        .filter(|method| method.starts_with("loom.extension."))
 }
 
+#[cfg(test)]
 fn handle_extension_bridge_text(
     text: &str,
     state: &mut ExtensionConnectionState,
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
+) -> ExtensionBridgeTextResult {
+    dispatch_extension_bridge_text(text, state, runtime, resources, surface_resources, None)
+}
+
+fn dispatch_extension_bridge_text(
+    text: &str,
+    state: &mut ExtensionConnectionState,
+    runtime: &SharedCapabilityRuntime,
+    resources: &SharedCapabilityResourceBroker,
+    surface_resources: &SharedSurfaceResourceStore,
+    control: Option<Arc<loom_capability_runtime::InvocationControl>>,
 ) -> ExtensionBridgeTextResult {
     if text.len() > MAX_EXTENSION_BRIDGE_TEXT_BYTES {
         return extension_bridge_failure(
@@ -73,7 +86,7 @@ fn handle_extension_bridge_text(
             }
         }
         ExtensionBridgeRequest::CommandInvoke(request) => {
-            handle_extension_invocation(request, state, runtime, resources, surface_resources)
+            handle_extension_invocation(request, state, runtime, resources, surface_resources, control)
         }
     }
 }
@@ -136,6 +149,7 @@ fn handle_extension_invocation(
     runtime: &SharedCapabilityRuntime,
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
+    control: Option<Arc<loom_capability_runtime::InvocationControl>>,
 ) -> ExtensionBridgeTextResult {
     let mut invocation = request.invocation;
     let request_id = invocation.request_id.clone();
@@ -276,7 +290,7 @@ fn handle_extension_invocation(
         }
         None => None,
     };
-    let output = runtime.invoke(CapabilityInvocation {
+    let call = CapabilityInvocation {
         request_id: request_id.clone(),
         command_id: invocation.command_id,
         input: invocation.input,
@@ -286,7 +300,11 @@ fn handle_extension_invocation(
         staged_resources,
         user_gesture_token: gesture,
         timeout: None,
-    });
+    };
+    let output = match control {
+        Some(control) => runtime.invoke_controlled(call, control),
+        None => runtime.invoke(call),
+    };
     if !extension_grant_is_current(state, plugin) {
         return extension_result_failure(&request_id, CapabilityErrorCode::PermissionDenied, "extension grant changed during invocation");
     }

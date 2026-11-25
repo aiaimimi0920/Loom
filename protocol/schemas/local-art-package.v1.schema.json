@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.example/schemas/local-art-package.v1.schema.json",
+  "title": "Local Art signed package proof",
+  "type": "object", "additionalProperties": false,
+  "required": ["algorithm", "keyId", "payload", "signature"],
+  "properties": {
+    "algorithm": {"const": "ed25519"},
+    "keyId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "payload": {"type": "string", "contentEncoding": "base64", "maxLength": 21848},
+    "signature": {"type": "string", "contentEncoding": "base64", "minLength": 88, "maxLength": 88}
+  },
+  "$defs": {
+    "resource": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "mimeType", "size", "digest", "dimensions"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9._-]+$"},
+        "mimeType": {"enum": ["text/plain", "application/json", "application/octet-stream", "image/png"]},
+        "size": {"type": "integer", "minimum": 1, "maximum": 4194304},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "dimensions": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}}
+      },
+      "allOf": [{
+        "if": {"properties": {"mimeType": {"const": "image/png"}}},
+        "then": {"properties": {"dimensions": {"items": {"minimum": 1}}}},
+        "else": {"properties": {"size": {"maximum": 262144}, "dimensions": {"const": [0, 0]}}}
+      }]
+    },
+    "package": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "grant", "devicePublicKey", "resources"],
+      "properties": {
+        "protocolVersion": {"const": "loom.art.local.package.v1"},
+        "grant": {"$ref": "local-art-grant.v1.schema.json#/$defs/grant"},
+        "devicePublicKey": {"type": "string", "pattern": "^$|^[A-Za-z0-9+/]{43}=$"},
+        "resources": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/resource"}}
+      }
+    }
+  }
+}

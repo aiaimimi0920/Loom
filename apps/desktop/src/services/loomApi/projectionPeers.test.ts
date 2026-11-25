@@ -4,7 +4,7 @@ import { listProjectionPeers, parseProjectionPeerState, probeProjectionPeer, rem
 import { deleteJson } from "./transport.ts";
 
 const peer = { peerId: "loom-" + "a".repeat(64), publicKey: "a".repeat(43) + "=", name: "PC3", origin: "https://pc3.example.test", enabled: true };
-const state = { revision: 4, identity: { peerId: "loom-" + "b".repeat(64), publicKey: peer.publicKey }, peers: [peer] };
+const state = { revision: 4, identity: { peerId: "loom-" + "b".repeat(64), publicKey: peer.publicKey }, peers: [peer], localConnection: null };
 
 test("peer mutations preserve revision and identity; delete transmits JSON body", async (context) => {
   const requests: { path: string; method: string; body: unknown }[] = [];
@@ -50,4 +50,14 @@ test("revision conflicts propagate without automatic retry", async (context) => 
   });
   await assert.rejects(saveProjectionPeer("http://localhost:8765", 4, peer), /peer_revision_conflict/);
   assert.equal(calls, 1);
+});
+
+test("public TLS export and peer certificate survive roundtrip without unbounded fields", () => {
+  const certificate = "Y2VydA==";
+  const input = { ...state, localConnection: { origin: peer.origin, certificate }, peers: [{ ...peer, certificate }] };
+  assert.deepEqual(parseProjectionPeerState(input), input);
+  for (const bad of [null, "", "x".repeat(8193)]) {
+    assert.throws(() => parseProjectionPeerState({ ...input, peers: [{ ...peer, certificate: bad }] }));
+  }
+  assert.throws(() => parseProjectionPeerState({ ...input, localConnection: {} }));
 });

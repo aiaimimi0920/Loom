@@ -3,6 +3,7 @@
 mod atomic;
 mod digest;
 mod error;
+pub mod local_art_grant;
 mod model;
 mod permissions;
 mod signing;

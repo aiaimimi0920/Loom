@@ -1,4 +1,4 @@
-// Owns settings hydration, autosave, diagnostics, cache, and shortcut state.
+// Owns settings hydration, ordered autosave, runtime application and section state.
 import {
   DEFAULT_LOOM_SETTINGS,
   getLoomAppPaths,
@@ -19,88 +19,60 @@ import {
   setPluginTrustPolicy,
 } from "../../services/loomApi";
 import { applyLoomGeneralSettings } from "../../services/loomGeneralSettings";
-import { pushAppToast, requestAppConfirmation } from "../feedback/AppFeedback";
+import { pushAppToast } from "../feedback/AppFeedback";
 import { useApplicationLinks } from "./useApplicationLinks";
 import {
   ApplicationDiagnosticsInfo,
   FALLBACK_APPLICATION_DIAGNOSTICS,
-  HOOK_SHORTCUT_GROUPS,
-  OtterCacheClearResult,
-  OtterCacheSnapshotInfo,
-  OtterShortcutContext,
-  OtterShortcutDisplayItem,
-  LoomCacheClearResult,
   LoomCacheSnapshotInfo,
-  QuickBindingEditorState,
   SettingsAppId,
   SettingsSectionId,
-  shortcutContextsOverlap,
-  ShortcutEditorState,
-  shortcutFromKeyboardEvent,
-  ShortcutSlot,
-  shortcutSlotCount,
-  ShortcutSlots,
-  splitShortcutAlternatives,
 } from "./settingsModel";
 import {
-  formatCacheBytes,
   GeneralSettingsValue,
   otterCachePreferencesForRuntime,
   otterCacheSettingsForUi,
   loomCachePreferencesForRuntime,
   loomCacheSettingsForUi,
 } from "./SettingsPanels";
+import { useSettingsCacheControls } from "./useSettingsCacheControls";
+import { useSettingsShortcutEditors } from "./useSettingsShortcutEditors";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapshot }) {
   const [draft, setDraft] = useState<LoomSettings>(DEFAULT_LOOM_SETTINGS);
-  const [shortcuts, setShortcuts] = useState<LoomShortcutConfig[]>(
-    Object.values(DEFAULT_LOOM_SETTINGS.shortcuts),
-  );
+  const [shortcuts, setShortcuts] = useState<LoomShortcutConfig[]>(Object.values(DEFAULT_LOOM_SETTINGS.shortcuts));
   const [appPaths, setAppPaths] = useState<LoomAppPaths | null>(null);
   const [appDiagnostics, setAppDiagnostics] = useState<Record<SettingsAppId, ApplicationDiagnosticsInfo>>(
     FALLBACK_APPLICATION_DIAGNOSTICS,
   );
-  const [loomCacheSnapshot, setLoomCacheSnapshot] = useState<LoomCacheSnapshotInfo | null>(null);
-  const [loomCacheLoading, setLoomCacheLoading] = useState(false);
-  const [loomCacheBusyKind, setLoomCacheBusyKind] = useState<string | null>(null);
-  const [otterCacheSnapshot, setOtterCacheSnapshot] = useState<OtterCacheSnapshotInfo | null>(null);
-  const [otterCacheLoading, setOtterCacheLoading] = useState(false);
-  const [otterCacheBusyKind, setOtterCacheBusyKind] = useState<string | null>(null);
+  const settingsMountedRef = useRef(true);
+  const {
+    loomCacheSnapshot,
+    loomCacheLoading,
+    loomCacheBusyKind,
+    otterCacheSnapshot,
+    otterCacheLoading,
+    otterCacheBusyKind,
+    setLoomCacheSnapshot,
+    refreshLoomCache,
+    refreshOtterCache,
+    clearLoomCache,
+    clearOtterCache,
+  } = useSettingsCacheControls(settingsMountedRef);
   const [artStoreTrustPolicy, setArtStoreTrustPolicy] = useState<LoomPluginTrustPolicy>("allow_unsigned");
   const [artStoreTrustPolicyBusy, setArtStoreTrustPolicyBusy] = useState(false);
   const [activeSettingsApp, setActiveSettingsApp] = useState<SettingsAppId>("loom");
   const [openSettingsSection, setOpenSettingsSection] = useState<SettingsSectionId | null>(null);
-  const [openShortcutGroups, setOpenShortcutGroups] = useState<Set<string>>(() => new Set());
-  const [shortcutEditor, setShortcutEditor] = useState<ShortcutEditorState | null>(null);
-  const [quickBindingEditor, setQuickBindingEditor] = useState<QuickBindingEditorState | null>(null);
   const settingsHydratedRef = useRef(false);
   const suppressNextSettingsSaveRef = useRef(false);
   const settingsSaveTimerRef = useRef<number | null>(null);
   const settingsSaveActiveRef = useRef(false);
-  const settingsMountedRef = useRef(true);
   const pendingSettingsRef = useRef<LoomSettings | null>(null);
   const lastSavedSettingsRef = useRef<LoomSettings>(DEFAULT_LOOM_SETTINGS);
   const settingsBaseUrlRef = useRef(snapshot.baseUrl);
   const shortcutsRef = useRef(shortcuts);
-  const availableArtTools = useMemo(
-    () => snapshot.tools
-      .filter((tool) => tool.enabled !== false)
-      .sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id, "zh-CN")),
-    [snapshot.tools],
-  );
-  const availableArtToolById = useMemo(
-    () => new Map(availableArtTools.map((tool) => [tool.id, tool])),
-    [availableArtTools],
-  );
   const { checkApplicationUpdate, openApplicationLog, openRepository } = useApplicationLinks(appDiagnostics);
 
   const flushSettingsQueue = useCallback(async () => {
@@ -111,12 +83,12 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
       const baseUrl = settingsBaseUrlRef.current;
       pendingSettingsRef.current = null;
       try {
-        const loomGeneralChanged = JSON.stringify(nextSettings.general)
-          !== JSON.stringify(lastSavedSettingsRef.current.general);
-        const loomCacheChanged = JSON.stringify(nextSettings.loom_cache)
-          !== JSON.stringify(lastSavedSettingsRef.current.loom_cache);
-        const otterCacheChanged = JSON.stringify(nextSettings.hook_cache)
-          !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
+        const loomGeneralChanged =
+          JSON.stringify(nextSettings.general) !== JSON.stringify(lastSavedSettingsRef.current.general);
+        const loomCacheChanged =
+          JSON.stringify(nextSettings.loom_cache) !== JSON.stringify(lastSavedSettingsRef.current.loom_cache);
+        const otterCacheChanged =
+          JSON.stringify(nextSettings.hook_cache) !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
         const saved = await saveLoomSettings(baseUrl, nextSettings);
         if (settingsBaseUrlRef.current === baseUrl) {
           lastSavedSettingsRef.current = saved;
@@ -135,9 +107,11 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         }
         if (loomCacheChanged) {
           try {
-            setLoomCacheSnapshot(await invoke<LoomCacheSnapshotInfo>("apply_loom_cache_settings", {
-              settings: loomCachePreferencesForRuntime(saved.loom_cache),
-            }));
+            setLoomCacheSnapshot(
+              await invoke<LoomCacheSnapshotInfo>("apply_loom_cache_settings", {
+                settings: loomCachePreferencesForRuntime(saved.loom_cache),
+              }),
+            );
           } catch (error) {
             pushAppToast({
               level: "warning",
@@ -179,36 +153,6 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     settingsSaveActiveRef.current = false;
   }, []);
 
-  const refreshLoomCache = useCallback(async () => {
-    setLoomCacheLoading(true);
-    try {
-      const next = await invoke<LoomCacheSnapshotInfo>("get_loom_cache_snapshot");
-      if (settingsMountedRef.current) setLoomCacheSnapshot(next);
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (settingsMountedRef.current) setLoomCacheLoading(false);
-    }
-  }, []);
-
-  const refreshOtterCache = useCallback(async () => {
-    setOtterCacheLoading(true);
-    try {
-      const next = await invoke<OtterCacheSnapshotInfo>("get_otter_cache_snapshot");
-      if (settingsMountedRef.current) setOtterCacheSnapshot(next);
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (settingsMountedRef.current) setOtterCacheLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     applyLoomGeneralSettings(draft.general);
   }, [draft.general.language, draft.general.minimize_to_tray, draft.general.theme]);
@@ -230,9 +174,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
           getLoomAppPaths(snapshot.baseUrl),
         ]);
         if (cancelled) return;
-        const nextShortcuts = loadedShortcuts.length
-          ? loadedShortcuts
-          : Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
+        const nextShortcuts = loadedShortcuts.length ? loadedShortcuts : Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
         const hydratedSettings = {
           ...loadedSettings,
           general: {
@@ -287,9 +229,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         settingsHydratedRef.current = true;
         pushAppToast({
           level: "error",
-          text: error instanceof Error
-            ? `使用 Loom 默认设置：${error.message}`
-            : "使用 Loom 默认设置。",
+          text: error instanceof Error ? `使用 Loom 默认设置：${error.message}` : "使用 Loom 默认设置。",
         });
       }
     };
@@ -303,10 +243,9 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     let cancelled = false;
     const loadDiagnostics = async () => {
       const results = await Promise.allSettled(
-        (["loom", "hook"] as const).map((app) => invoke<ApplicationDiagnosticsInfo>(
-          "resolve_application_diagnostics",
-          { app },
-        )),
+        (["loom", "hook"] as const).map((app) =>
+          invoke<ApplicationDiagnosticsInfo>("resolve_application_diagnostics", { app }),
+        ),
       );
       if (cancelled) return;
       setAppDiagnostics((current) => {
@@ -394,7 +333,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
       enabled: existing?.enabled ?? true,
     };
     const nextShortcuts = existing
-      ? shortcutsRef.current.map((shortcut) => shortcut.id === id ? updated : shortcut)
+      ? shortcutsRef.current.map((shortcut) => (shortcut.id === id ? updated : shortcut))
       : [...shortcutsRef.current, updated];
     shortcutsRef.current = nextShortcuts;
     setShortcuts(nextShortcuts);
@@ -403,6 +342,25 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
       shortcuts: Object.fromEntries(nextShortcuts.map((shortcut) => [shortcut.id, shortcut])),
     }));
   };
+  const {
+    openShortcutGroups,
+    shortcutEditor,
+    setShortcutEditor,
+    quickBindingEditor,
+    setQuickBindingEditor,
+    availableArtTools,
+    availableArtToolById,
+    resolveShortcutKeys,
+    toggleShortcutGroup,
+    openShortcutEditor,
+    handleShortcutCapture,
+    shortcutEditorConflict,
+    applyShortcutEditor,
+    openQuickBindingEditor,
+    handleQuickBindingCapture,
+    quickBindingConflict,
+    applyQuickBindingEditor,
+  } = useSettingsShortcutEditors({ draft, shortcuts, tools: snapshot.tools, updateShortcutDraft, setDraft });
 
   const updateNetworkDraft = (app: SettingsAppId, patch: Partial<LoomProxySettings>) => {
     setDraft((current) => ({
@@ -419,7 +377,6 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
       ...current,
       hook_general: {
         ...current.hook_general,
-        ...(patch.language === undefined ? {} : { language: patch.language }),
         ...(patch.theme === undefined ? {} : { theme: patch.theme }),
         ...(patch.closeToTray === undefined ? {} : { close_to_tray: patch.closeToTray }),
       },
@@ -473,81 +430,12 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     }));
   };
 
-  const clearLoomCache = async (kind: "artRuntime" | "frameworkTemporary") => {
-    const label = kind === "artRuntime" ? "Art 运行缓存" : "框架临时文件";
-    const accepted = await requestAppConfirmation({
-      title: `清空${label}`,
-      message: kind === "artRuntime"
-        ? "将删除 Art 生成的可重建运行缓存，不会卸载 Art 或删除工作流。"
-        : "将删除框架执行产生的临时文件。请先等待正在运行的 Art 完成。",
-      confirmLabel: "清空",
-      tone: "warning",
-    });
-    if (!accepted) return;
-    setLoomCacheBusyKind(kind);
-    try {
-      const result = await invoke<LoomCacheClearResult>("clear_loom_cache", { kind });
-      setLoomCacheSnapshot(result.snapshot);
-      pushAppToast({
-        level: "info",
-        text: `已清空${label}，释放 ${formatCacheBytes(result.freedBytes)}`,
-      });
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setLoomCacheBusyKind(null);
-    }
-  };
-
-  const clearOtterCache = async (kind: "recycleBin" | "temporary" | "referenceLibrary") => {
-    const labels = {
-      recycleBin: "回收站",
-      temporary: "临时缓存",
-      referenceLibrary: "参考图",
-    } as const;
-    const accepted = await requestAppConfirmation({
-      title: `清空${labels[kind]}`,
-      message: kind === "referenceLibrary"
-        ? "将移除 Otter 参考列表中的全部记录，桌面贴图不会被删除。"
-        : kind === "recycleBin"
-          ? "回收站中的贴图记录将被永久移除。"
-          : "将移除 Otter 的临时中转文件，后续需要时会自动重新生成。",
-      confirmLabel: "清空",
-      tone: kind === "recycleBin" ? "danger" : "warning",
-    });
-    if (!accepted) return;
-    setOtterCacheBusyKind(kind);
-    try {
-      const result = await invoke<OtterCacheClearResult>("clear_otter_cache", { kind });
-      setOtterCacheSnapshot(result.snapshot);
-      pushAppToast({
-        level: "info",
-        text: kind === "temporary"
-          ? `已清空临时缓存，释放 ${formatCacheBytes(result.freedBytes)}`
-          : `已清空${labels[kind]}`,
-      });
-      if (kind !== "temporary") {
-        window.setTimeout(() => void refreshOtterCache(), 500);
-      }
-    } catch (error) {
-      pushAppToast({
-        level: "error",
-        text: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setOtterCacheBusyKind(null);
-    }
-  };
-
   const toggleMinimizeToTray = (enabled = !draft.general.minimize_to_tray) => {
     setDraft((current) => ({ ...current, general: { ...current.general, minimize_to_tray: enabled } }));
   };
 
   const toggleSettingsSection = (section: SettingsSectionId) => {
-    setOpenSettingsSection((current) => current === section ? null : section);
+    setOpenSettingsSection((current) => (current === section ? null : section));
   };
 
   const selectSettingsApp = (app: SettingsAppId) => {
@@ -555,159 +443,53 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     setOpenSettingsSection(null);
   };
 
-  const resolveShortcutKeys = (item: OtterShortcutDisplayItem) => {
-    if (!item.sourceId) return item.keys;
-    const configured = shortcuts.find((shortcut) => shortcut.id === item.sourceId)?.keys.trim();
-    const normalizedConfigured = configured?.replace(/\s+/g, "").toLocaleLowerCase();
-    const contextualDefaultOverride = (
-      (item.sourceId === "cancel" && normalizedConfigured === "escape")
-      || (item.sourceId === "delete_unit" && normalizedConfigured === "delete/backspace")
-    );
-    if (contextualDefaultOverride) return item.keys;
-    return configured ? splitShortcutAlternatives(configured) : item.keys;
+  return {
+    activeSettingsApp,
+    appDiagnostics,
+    appPaths,
+    applyQuickBindingEditor,
+    applyShortcutEditor,
+    artStoreTrustPolicy,
+    artStoreTrustPolicyBusy,
+    availableArtToolById,
+    availableArtTools,
+    checkApplicationUpdate,
+    clearOtterCache,
+    clearLoomCache,
+    draft,
+    handleQuickBindingCapture,
+    handleShortcutCapture,
+    otterCacheBusyKind,
+    otterCacheLoading,
+    otterCacheSnapshot,
+    loomCacheBusyKind,
+    loomCacheLoading,
+    loomCacheSnapshot,
+    openApplicationLog,
+    openQuickBindingEditor,
+    openRepository,
+    openSettingsSection,
+    openShortcutEditor,
+    openShortcutGroups,
+    quickBindingConflict,
+    quickBindingEditor,
+    resolveShortcutKeys,
+    selectSettingsApp,
+    setDraft,
+    setQuickBindingEditor,
+    setShortcutEditor,
+    shortcutEditor,
+    shortcutEditorConflict,
+    shortcuts,
+    toggleMinimizeToTray,
+    toggleSettingsSection,
+    toggleShortcutGroup,
+    updateArtStoreDraft,
+    updateArtStoreTrustPolicy,
+    updateOtterCacheDraft,
+    updateOtterGeneralDraft,
+    updateLoomCacheDraft,
+    updateMcpDraft,
+    updateNetworkDraft,
   };
-
-  const toggleShortcutGroup = (groupId: string) => {
-    setOpenShortcutGroups((current) => {
-      const next = new Set(current);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
-  };
-
-  const openShortcutEditor = (item: OtterShortcutDisplayItem) => {
-    if (!item.sourceId) return;
-    const keys = resolveShortcutKeys(item);
-    setShortcutEditor({
-      item,
-      keys: [keys[0] || "", keys[1] || "", keys[2] || ""],
-      activeSlot: 0,
-      slotCount: shortcutSlotCount(keys),
-    });
-  };
-
-  const handleShortcutCapture = (event: KeyboardEvent<HTMLButtonElement>, slot: ShortcutSlot) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
-      setShortcutEditor(null);
-      return;
-    }
-    const keys = shortcutFromKeyboardEvent(event.nativeEvent);
-    if (!keys) return;
-    setShortcutEditor((current) => current ? {
-      ...current,
-      activeSlot: slot,
-      keys: current.keys.map((value, index) => index === slot ? keys : value) as ShortcutSlots,
-    } : current);
-  };
-
-  const shortcutConflictMessage = (
-    candidateKeys: ShortcutSlots,
-    candidateContexts: readonly OtterShortcutContext[],
-    excludeSourceId?: string,
-    excludeQuickBindingId?: string,
-    candidateConflictFamily?: string,
-  ) => {
-    const normalized = candidateKeys.map((keys) => keys.trim().toLocaleLowerCase()).filter(Boolean);
-    if (new Set(normalized).size !== normalized.length) return "同一事件的快捷键不能重复";
-    const shortcutConflict = HOOK_SHORTCUT_GROUPS
-      .flatMap((group) => group.items)
-      .find((item) => (
-        item.sourceId
-        && item.sourceId !== excludeSourceId
-        && (!candidateConflictFamily || item.conflictFamily !== candidateConflictFamily)
-        && shortcutContextsOverlap(candidateContexts, item.contexts)
-        && resolveShortcutKeys(item).some((keys) => normalized.includes(keys.toLocaleLowerCase()))
-      ));
-    if (shortcutConflict) return `与“${shortcutConflict.label}”冲突`;
-    const quickBindingConflict = draft.quick_bindings.find((binding) => (
-      binding.id !== excludeQuickBindingId
-      && availableArtToolById.has(binding.art)
-      && candidateContexts.includes("unit-selected")
-      && splitShortcutAlternatives(binding.key).some((keys) => normalized.includes(keys.toLocaleLowerCase()))
-    ));
-    if (quickBindingConflict) {
-      const art = availableArtToolById.get(quickBindingConflict.art);
-      return `与“${art?.name || quickBindingConflict.art}”冲突`;
-    }
-    return null;
-  };
-
-  const shortcutEditorConflict = shortcutEditor
-    ? shortcutConflictMessage(
-      shortcutEditor.keys,
-      HOOK_SHORTCUT_GROUPS
-        .flatMap((group) => group.items)
-        .filter((item) => item.sourceId === shortcutEditor.item.sourceId)
-        .flatMap((item) => item.contexts)
-        .filter((context, index, contexts) => contexts.indexOf(context) === index),
-      shortcutEditor.item.sourceId,
-      undefined,
-      shortcutEditor.item.conflictFamily,
-    )
-    : null;
-
-  const applyShortcutEditor = () => {
-    if (!shortcutEditor?.item.sourceId || !shortcutEditor.keys.some((keys) => keys.trim()) || shortcutEditorConflict) return;
-    const keys = shortcutEditor.keys.map((value) => value.trim()).filter(Boolean).join(" / ");
-    updateShortcutDraft(
-      shortcutEditor.item.sourceId,
-      shortcutEditor.item.label,
-      keys,
-    );
-    setShortcutEditor(null);
-    pushAppToast({ level: "info", text: `${shortcutEditor.item.label}快捷键已更新` });
-  };
-
-  const openQuickBindingEditor = (binding?: LoomSettings["quick_bindings"][number]) => {
-    const keys = binding ? splitShortcutAlternatives(binding.key) : [];
-    setQuickBindingEditor({
-      id: binding?.id || `${Date.now()}`,
-      art: binding?.art || availableArtTools[0]?.id || "",
-      keys: [keys[0] || "", keys[1] || "", keys[2] || ""],
-      activeSlot: 0,
-      slotCount: shortcutSlotCount(keys),
-    });
-  };
-
-  const handleQuickBindingCapture = (event: KeyboardEvent<HTMLButtonElement>, slot: ShortcutSlot) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
-      setQuickBindingEditor(null);
-      return;
-    }
-    const keys = shortcutFromKeyboardEvent(event.nativeEvent);
-    if (!keys) return;
-    setQuickBindingEditor((current) => current ? {
-      ...current,
-      activeSlot: slot,
-      keys: current.keys.map((value, index) => index === slot ? keys : value) as ShortcutSlots,
-    } : current);
-  };
-
-  const quickBindingConflict = quickBindingEditor
-    ? shortcutConflictMessage(quickBindingEditor.keys, ["unit-selected"], undefined, quickBindingEditor.id)
-    : null;
-
-  const applyQuickBindingEditor = () => {
-    if (!quickBindingEditor?.art || !quickBindingEditor.keys.some((keys) => keys.trim()) || quickBindingConflict) return;
-    const nextBinding = {
-      id: quickBindingEditor.id,
-      art: quickBindingEditor.art,
-      key: quickBindingEditor.keys.map((value) => value.trim()).filter(Boolean).join(" / "),
-    };
-    setDraft((current) => ({
-      ...current,
-      quick_bindings: current.quick_bindings.some((binding) => binding.id === nextBinding.id)
-        ? current.quick_bindings.map((binding) => binding.id === nextBinding.id ? nextBinding : binding)
-        : [...current.quick_bindings, nextBinding],
-    }));
-    setQuickBindingEditor(null);
-    pushAppToast({ level: "info", text: "Art 快捷键已更新" });
-  };
-
-  return { activeSettingsApp, appDiagnostics, appPaths, applyQuickBindingEditor, applyShortcutEditor, artStoreTrustPolicy, artStoreTrustPolicyBusy, availableArtToolById, availableArtTools, checkApplicationUpdate, clearOtterCache, clearLoomCache, draft, handleQuickBindingCapture, handleShortcutCapture, otterCacheBusyKind, otterCacheLoading, otterCacheSnapshot, loomCacheBusyKind, loomCacheLoading, loomCacheSnapshot, openApplicationLog, openQuickBindingEditor, openRepository, openSettingsSection, openShortcutEditor, openShortcutGroups, quickBindingConflict, quickBindingEditor, resolveShortcutKeys, selectSettingsApp, setDraft, setQuickBindingEditor, setShortcutEditor, shortcutEditor, shortcutEditorConflict, shortcuts, toggleMinimizeToTray, toggleSettingsSection, toggleShortcutGroup, updateArtStoreDraft, updateArtStoreTrustPolicy, updateOtterCacheDraft, updateOtterGeneralDraft, updateLoomCacheDraft, updateMcpDraft, updateNetworkDraft };
 }

@@ -9,16 +9,35 @@ impl CapabilityRuntimeHost {
         &self,
         invocation: CapabilityInvocation,
     ) -> HostResult<CapabilityInvocationOutput> {
-        let plugin_id = lock(&self.commands)?
-            .get(&invocation.command_id)
-            .cloned()
-            .ok_or_else(|| CapabilityHostError::NotFound(invocation.command_id.clone()))?;
+        self.invoke_inner(invocation, None, None)
+    }
+    /// 控制器仅能使用一次；取消可早于 inflight 登记，进度由原读取线程写入有界最新槽。
+    pub fn invoke_controlled(
+        &self,
+        invocation: CapabilityInvocation,
+        control: Arc<crate::InvocationControl>,
+    ) -> HostResult<CapabilityInvocationOutput> {
+        let _guard = control.begin()?;
+        let result = self.invoke_inner(invocation, Some(&control), None);
+        control.complete()?;
+        result
+    }
+    pub(super) fn invoke_inner(
+        &self,
+        mut invocation: CapabilityInvocation,
+        control: Option<&Arc<crate::InvocationControl>>,
+        confirmed: Option<&CommandScope>,
+    ) -> HostResult<CapabilityInvocationOutput> {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        let (plugin_id, active_handle) =
+            self.invocation_package(&invocation.command_id, confirmed)?;
         let _permit = InvocationAdmission::acquire(&self.admission, &self.limits, &plugin_id)?;
-        let active_handle = lock(&self.packages)?
-            .get(&plugin_id)
-            .cloned()
-            .ok_or_else(|| CapabilityHostError::Unavailable(plugin_id.clone()))?;
         let mut active = lock(&active_handle)?;
+        if let Some(control) = control {
+            control.check()?;
+        }
         let command = active
             .effective_contributions
             .commands
@@ -40,14 +59,34 @@ impl CapabilityRuntimeHost {
         )?;
         validate_staged_resources(&invocation)?;
         if requires_user_gesture {
-            self.consume_user_gesture(&plugin_id, &invocation)?;
+            if let Some(scope) = confirmed {
+                invocation.user_gesture_token = Some(self.issue_scoped_gesture(
+                    scope,
+                    invocation.target.as_ref().map(|target| UserGestureTarget {
+                        unit_id: target.unit_id.clone(),
+                        revision: target.revision,
+                    }),
+                )?);
+            }
+            self.consume_user_gesture(&plugin_id, &active.scope_id, &invocation)?;
         }
         if active.package.manifest.entrypoints.service.is_none() {
             return Err(CapabilityHostError::Unavailable(
                 "plugin has no service runtime".to_owned(),
             ));
         }
+        let started_process = active.process.is_none();
         ensure_process(&mut active, &self.limits)?;
+        if let Some(control) = control {
+            if let Err(error) = control.check() {
+                // Initialization can outlive cancellation. Retire only the child this
+                // invocation started, not a prewarmed shared process it never used.
+                if started_process {
+                    active.process.take();
+                }
+                return Err(error);
+            }
+        }
         let request_id = next_request_id();
         let invocation_resource_refs = invocation.resource_refs.clone();
         let message = runtime_request(
@@ -111,7 +150,7 @@ impl CapabilityRuntimeHost {
         // runtime reaped out from under a request that had only just started.
         active.last_used = Instant::now();
         drop(active);
-        let response = process.call(message, timeout);
+        let response = process.call_controlled(message, timeout, control.cloned());
         lock(&self.inflight)?.remove(&invocation.request_id);
         // Drop the last request sender before failed runtime teardown joins its writer thread.
         drop(process);
@@ -124,7 +163,9 @@ impl CapabilityRuntimeHost {
             }
             Err(error) => {
                 active.process.take();
-                record_failure(&mut active);
+                if !matches!(error, CapabilityHostError::Cancelled) {
+                    record_failure(&mut active);
+                }
                 return Err(error);
             }
         };
@@ -186,9 +227,10 @@ impl CapabilityRuntimeHost {
         }
     }
 
-    fn consume_user_gesture(
+    pub(super) fn consume_user_gesture(
         &self,
         plugin_id: &str,
+        scope_id: &str,
         invocation: &CapabilityInvocation,
     ) -> HostResult<()> {
         let token = invocation.user_gesture_token.as_deref().ok_or_else(|| {
@@ -206,6 +248,7 @@ impl CapabilityRuntimeHost {
         // between issuing and consuming.
         if grant.expires_at <= Instant::now()
             || grant.plugin_id != plugin_id
+            || grant.scope_id != scope_id
             || grant.command_id != invocation.command_id
             || grant.target != target
         {

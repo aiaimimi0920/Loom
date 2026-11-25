@@ -10,6 +10,10 @@ pub const FRAMEWORK_AUTHORING_V1: &str =
     include_str!("../../../protocol/schemas/framework-authoring.v1.schema.json");
 pub const ART_RUNTIME_V1: &str =
     include_str!("../../../protocol/schemas/art-runtime.v1.schema.json");
+pub const LOCAL_ART_GRANT_V1: &str =
+    include_str!("../../../protocol/schemas/local-art-grant.v1.schema.json");
+pub const LOCAL_ART_PACKAGE_V1: &str =
+    include_str!("../../../protocol/schemas/local-art-package.v1.schema.json");
 pub const SURFACE_MANIFEST_V1: &str =
     include_str!("../../../protocol/schemas/surface-manifest.v1.schema.json");
 pub const SURFACE_MESSAGE_V1: &str =

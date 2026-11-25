@@ -24,6 +24,8 @@ use crate::session::{
 use crate::snapshot::{build_contribution_snapshot, SnapshotRegistration};
 
 mod admission;
+mod confirmation;
+pub use confirmation::CommandScope;
 mod invocation;
 mod resources;
 
@@ -125,6 +127,7 @@ pub(super) struct ActivePackage {
 struct UserGestureGrant {
     plugin_id: String,
     command_id: String,
+    scope_id: String,
     target: Option<UserGestureTarget>,
     expires_at: Instant,
 }
@@ -236,18 +239,24 @@ impl CapabilityRuntimeHost {
         command_id: &str,
         target: Option<UserGestureTarget>,
     ) -> HostResult<String> {
-        let plugin_id = lock(&self.commands)?
-            .get(command_id)
-            .cloned()
-            .ok_or_else(|| CapabilityHostError::NotFound(command_id.to_owned()))?;
+        let scope = self.command_scope(command_id)?;
+        self.issue_scoped_gesture(&scope, target)
+    }
+
+    fn issue_scoped_gesture(
+        &self,
+        scope: &CommandScope,
+        target: Option<UserGestureTarget>,
+    ) -> HostResult<String> {
         let token = Uuid::new_v4().simple().to_string();
         let mut gestures = lock(&self.gestures)?;
         gestures.retain(|_, grant| grant.expires_at > Instant::now());
         gestures.insert(
             token.clone(),
             UserGestureGrant {
-                plugin_id,
-                command_id: command_id.to_owned(),
+                plugin_id: scope.plugin_id.clone(),
+                command_id: scope.command_id.clone(),
+                scope_id: scope.scope_id.clone(),
                 target,
                 expires_at: Instant::now() + USER_GESTURE_TTL,
             },

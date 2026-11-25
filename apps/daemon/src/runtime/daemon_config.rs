@@ -357,6 +357,7 @@ pub fn default_run_store_path() -> PathBuf {
 }
 
 struct DaemonRuntime {
+    local_art_tasks: local_art::Tasks,
     offline_peers: offline_peers::OfflinePeers,
     projection_owner: ProjectionOwner,
     hook_settings: HookSettings,

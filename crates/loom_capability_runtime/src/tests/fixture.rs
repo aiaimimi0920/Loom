@@ -79,12 +79,16 @@ fn main() {
         let request = String::from_utf8(bytes).unwrap();
         let id = field(&request, "requestId");
         let method = field(&request, "method");
-        if mode == "slow-init" && method == "initialize" {
+        if (mode == "slow-init" || mode == "cancel-init") && method == "initialize" {
             let trigger = std::path::PathBuf::from(std::env::args().nth(2).unwrap());
             if trigger.exists() {
                 std::fs::write(trigger.with_extension("started"), b"ready").unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(1500));
             }
+        }
+        if mode == "cancel-init" && method == "command" {
+            let trigger = std::path::PathBuf::from(std::env::args().nth(2).unwrap());
+            std::fs::write(trigger.with_extension("command"), b"dispatched").unwrap();
         }
         if (mode == "tree" || mode == "crash-tree") && method == "command" {
             let pid_file = std::env::args().nth(2).unwrap();
@@ -103,7 +107,20 @@ fn main() {
             if mode == "crash-tree" { std::process::exit(19); }
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
-        if mode == "hang" && method == "command" {
+        if mode.starts_with("progress") && method == "command" {
+            let count = if mode == "progress-flood" { 1025 } else { 2 };
+            for index in 0..count {
+                let status = if index == 0 { "accepted" } else { "progress" };
+                let payload = if mode == "progress-large" { format!("\"{}\"", "x".repeat(4097)) } else { format!("{{\"step\":{}}}", index) };
+                let response = format!(
+                    "{{\"type\":\"response\",\"protocol\":\"loom.capability.runtime.v1\",\"apiVersion\":\"1.0\",\"requestId\":\"{}\",\"status\":\"{}\",\"payload\":{}}}", id, status, payload
+                );
+                if output.write_all(&(response.len() as u32).to_be_bytes()).is_err() { return; }
+                if output.write_all(response.as_bytes()).is_err() { return; }
+                if output.flush().is_err() { return; }
+            }
+        }
+        if (mode == "hang" || mode == "progress-hang") && method == "command" {
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
         let (status, payload, error) = if mode == "fail-secret" && method == "command" {

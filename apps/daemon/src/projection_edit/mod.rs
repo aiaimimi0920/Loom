@@ -27,7 +27,8 @@ fn authorized<'a>(
     let record = registry.projections.get(id)?;
     crate::projection_source_authorized(registry, record)?;
     if device.id != record.envelope.source.device_id
-        && (record.receiver.as_deref() != Some(&device.id)
+        && (record.remote_receiver.is_some()
+            || record.receiver.as_deref() != Some(&device.id)
             || record.receiver_epoch != Some(device.session_epoch))
     {
         return Err(error(403, "projection_access_denied"));

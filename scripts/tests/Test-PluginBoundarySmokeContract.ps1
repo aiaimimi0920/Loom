@@ -26,7 +26,7 @@ $upload = [regex]::Match($workflow, '(?ms)^      - name: Upload bounded smoke ph
 Assert-Contract ($upload.Contains('if: failure()')) "Diagnostic artifacts should upload only on failure."
 $paths = [regex]::Match($upload, '(?m)^          path: \|\r?\n(?<paths>(?:            [^\r\n]+\r?\n)+)').Groups['paths'].Value
 $actual = @($paths -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-$expected = @('target/runtime-smoke/latest/mcp-smoke-diagnostic.json', 'target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json')
+$expected = @('AI/GameEditor/Neuro/Loom/target/runtime-smoke/latest/mcp-smoke-diagnostic.json', 'AI/GameEditor/Neuro/Loom/target/runtime-smoke/plugin-boundary/plugin-boundary-diagnostic.json')
 Assert-Contract (($actual -join ',') -eq ($expected -join ',')) "Upload must contain exactly the two bounded JSON files, never raw logs or directories."
 Assert-Contract ($upload.Contains('retention-days: 14')) "Diagnostic retention changed."
 $testWorkflow = [IO.File]::ReadAllText((Join-Path $repoRoot ".github\workflows\plugin-boundary-diagnostics.yml"))

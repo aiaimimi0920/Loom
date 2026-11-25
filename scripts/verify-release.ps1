@@ -55,6 +55,10 @@ Assert-Equal -Expected "." -Actual (@($manifest.sourcePaths) -join ",") -Message
 Assert-True -Condition (-not ([string]$manifest.repoRoot).Contains("Neuro")) -Message "Manifest must not contain parent repository paths."
 Assert-True -Condition (-not ([string]$manifest.destination).Contains(":")) -Message "Manifest destination must not contain an absolute local path."
 if ($RequireCleanSource) {
+    Assert-True -Condition ([string]$manifest.versionId -notmatch '^internal-') -Message 'Internal candidates cannot pass formal release verification.'
+    if ($manifest.PSObject.Properties.Name -contains 'formalReleaseApproved') {
+        Assert-Equal -Expected $true -Actual ([bool]$manifest.formalReleaseApproved) -Message 'Formal release approval is required.'
+    }
     Assert-Equal -Expected $false -Actual ([bool]$manifest.gitDirty) -Message "Formal release manifest must record gitDirty=false."
     Assert-Equal -Expected $false -Actual ([bool]$manifest.sourceGitDirty) -Message "Formal release source must record sourceGitDirty=false."
 }

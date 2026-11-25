@@ -168,6 +168,23 @@ pub(crate) fn projection_identity(root: &Path) -> Result<loom_projection::Identi
     .map_err(|identity_error| error(identity_error.status, identity_error.code))?;
     Ok(identity)
 }
+pub(crate) fn user_summary(root: &Path) -> Result<Option<crate::connected_users::User>> {
+    let Some(account) = Store::new(root).read()? else {
+        return Ok(None);
+    };
+    Ok(account
+        .session
+        .filter(|session| session.expires_at_ms > now())
+        .map(|session| crate::connected_users::User {
+            issuer: account.origin,
+            name: if session.username.is_empty() {
+                session.account_id.clone()
+            } else {
+                session.username
+            },
+            account_id: session.account_id,
+        }))
+}
 
 #[cfg(test)]
 mod tests;

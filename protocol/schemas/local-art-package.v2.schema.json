@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.example/schemas/local-art-package.v2.schema.json",
+  "title": "Local Art signed port package proof",
+  "$ref": "local-art-package.v1.schema.json",
+  "$defs": {
+    "port": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "type": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "ports": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputs", "outputs"],
+      "properties": {
+        "inputs": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/port"}},
+        "outputs": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/port"}}
+      }
+    },
+    "package": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "package", "ports"],
+      "properties": {
+        "protocolVersion": {"const": "loom.art.local.package.v2"},
+        "package": {"$ref": "local-art-package.v1.schema.json#/$defs/package"},
+        "ports": {"$ref": "#/$defs/ports"}
+      }
+    }
+  }
+}

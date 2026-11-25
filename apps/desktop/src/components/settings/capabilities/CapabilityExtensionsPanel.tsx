@@ -1,5 +1,6 @@
 // Renders the independent Capability Plugin catalog and lifecycle surface.
 import { useMemo, useRef, useState } from "react";
+import { Badge, Button, EmptyState, Notice, Panel, Tab, TabList, TabPanel, TabsRoot } from "@neuro/ui";
 import type { CapabilityCatalogItem, CapabilityPluginRecord } from "../../../services/loomApi";
 import { CapabilityPermissionDialog } from "./CapabilityPermissionDialog";
 import { CapabilitySettingsEditor } from "./CapabilitySettingsEditor";
@@ -44,16 +45,16 @@ function InstalledCapabilityCard({
   const shownVersion = activeVersion ?? plugin.versions[plugin.versions.length - 1];
   const tone = capabilityStatusTone(plugin.status);
   return (
-    <article className="capability-card">
+    <Panel className="capability-card" aria-label={plugin.name}>
       <header className="capability-card__header">
         <div>
-          <span className="capability-eyebrow">{plugin.publisherId}</span>
+          <span className="capability-publisher">{plugin.publisherId}</span>
           <h3>{plugin.name}</h3>
           <p>{plugin.description || plugin.qualifiedId}</p>
         </div>
-        <span className={`capability-status capability-status--${tone}`} role="status" aria-live="polite">
+        <Badge tone={tone} role="status" aria-live="polite">
           {capabilityStatusLabel[plugin.status]}
-        </span>
+        </Badge>
       </header>
       <dl className="capability-evidence-grid">
         <div><dt>版本</dt><dd>{shownVersion?.version ?? "未知"}</dd></div>
@@ -65,28 +66,30 @@ function InstalledCapabilityCard({
         <strong>权限</strong>
         {plugin.requestedPermissions.length ? (
           <ul>{plugin.requestedPermissions.map((permission) => (
-            <li key={permission} className={granted.includes(permission) ? "is-granted" : "is-pending"}>
-              {permissionLabel(permission)}
+            <li key={permission}>
+              <Badge tone={granted.includes(permission) ? "success" : "warning"}>
+                {granted.includes(permission) ? "已授权" : "待授权"} · {permissionLabel(permission)}
+              </Badge>
             </li>
           ))}</ul>
         ) : <span>无额外权限</span>}
       </div>
       {plugin.runtimeFailures.count > 0 ? (
-        <p className="capability-diagnostic" role="status">
+        <Notice tone="warning">
           诊断：当前故障窗口记录 {plugin.runtimeFailures.count} 次失败
-        </p>
+        </Notice>
       ) : null}
       <CapabilitySettingsEditor baseUrl={baseUrl} qualifiedId={plugin.qualifiedId} disabled={busy} />
       <footer className="capability-card__actions">
         {plugin.status === "active" ? (
-          <button className="ghost-button" type="button" disabled={busy} onClick={onDisable}>停用</button>
+          <Button compact disabled={busy} onClick={onDisable}>停用</Button>
         ) : (
-          <button className="signal-button" type="button" disabled={busy || !shownVersion} onClick={onEnable}>权限审查并启用</button>
+          <Button compact variant="primary" disabled={busy || !shownVersion} onClick={onEnable}>权限审查并启用</Button>
         )}
-        <button className="ghost-button" type="button" disabled={busy || !plugin.previousDigest} onClick={onRollback}>回滚</button>
-        <button className="danger-button" type="button" disabled={busy} onClick={onUninstall}>卸载</button>
+        <Button compact disabled={busy || !plugin.previousDigest} onClick={onRollback}>回滚</Button>
+        <Button compact variant="danger" disabled={busy} onClick={onUninstall}>卸载</Button>
       </footer>
-    </article>
+    </Panel>
   );
 }
 
@@ -103,16 +106,16 @@ function CatalogCapabilityCard({
 }) {
   const installedSameVersion = installed?.versions.some((version) => version.version === item.entry.version);
   return (
-    <article className="capability-card capability-card--catalog">
+    <Panel className="capability-card capability-card--catalog" aria-label={item.entry.name}>
       <header className="capability-card__header">
         <div>
-          <span className="capability-eyebrow">官方目录 · {item.entry.publisher.id}</span>
+          <span className="capability-publisher">官方目录 · {item.entry.publisher.id}</span>
           <h3>{item.entry.name}</h3>
           <p>{item.entry.description}</p>
         </div>
-        <span className={`capability-status capability-status--${item.compatible ? "success" : "warning"}`} role="status">
+        <Badge tone={item.compatible ? "success" : "warning"} role="status">
           {item.compatible ? "兼容" : "不兼容"}
-        </span>
+        </Badge>
       </header>
       <dl className="capability-evidence-grid">
         <div><dt>版本</dt><dd>{item.entry.version}</dd></div>
@@ -133,27 +136,25 @@ function CatalogCapabilityCard({
         </div>
       </dl>
       <div className="capability-supply-chain" aria-label="供应链证据">
-        <span>Ed25519 签名</span><span>SBOM {formatCapabilityBytes(item.entry.sbom.bytes)}</span>
-        <span>Provenance {formatCapabilityBytes(item.entry.provenance.bytes)}</span>
+        <Badge>Ed25519 签名</Badge><Badge>SBOM {formatCapabilityBytes(item.entry.sbom.bytes)}</Badge>
+        <Badge>Provenance {formatCapabilityBytes(item.entry.provenance.bytes)}</Badge>
       </div>
       <div className="capability-permission-summary">
         <strong>权限</strong>
         {item.entry.permissions.length
-          ? <ul>{item.entry.permissions.map((permission) => <li key={permission}>{permissionLabel(permission)}</li>)}</ul>
+          ? <ul>{item.entry.permissions.map((permission) => <li key={permission}><Badge>{permissionLabel(permission)}</Badge></li>)}</ul>
           : <span>无额外权限</span>}
       </div>
-      {!item.compatible ? <p className="capability-diagnostic">{item.compatibilityDetail}</p> : null}
+      {!item.compatible ? <Notice tone="warning">{item.compatibilityDetail}</Notice> : null}
       <footer className="capability-card__actions">
-        <button
-          className="signal-button"
-          type="button"
+        <Button compact variant="primary"
           disabled={busy || !item.compatible || installedSameVersion}
           onClick={onInstall}
         >
           {installedSameVersion ? "该版本已安装" : installed ? "验证并安装更新" : "验证并安装"}
-        </button>
+        </Button>
       </footer>
-    </article>
+    </Panel>
   );
 }
 
@@ -174,12 +175,11 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
   );
 
   return (
+    <TabsRoot asChild value={tab} onValueChange={value => setTab(value as CapabilityTab)}>
     <div className="capability-settings">
       <header className="capability-settings__header">
         <div>
-          <span className="capability-eyebrow">Capability Plugins</span>
           <h2>能力扩展</h2>
-          <p>按需安装 OCR 等大体积能力。能力扩展独立于 Art 模块，并通过最小权限接入 Otter。</p>
         </div>
         <div className="capability-settings__header-actions">
           <input
@@ -193,12 +193,10 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
               if (file) void controller.installFromFile(file);
             }}
           />
-          <button className="ghost-button" type="button" disabled={Boolean(controller.busyPluginId)} onClick={() => fileInputRef.current?.click()}>
+          <Button compact disabled={Boolean(controller.busyPluginId)} onClick={() => fileInputRef.current?.click()}>
             安装本地 ZIP
-          </button>
-          <button className="ghost-button" type="button" disabled={controller.loading} onClick={() => void controller.refresh()}>
-            {controller.loading ? "刷新中…" : "刷新"}
-          </button>
+          </Button>
+          <Button compact loading={controller.loading} onClick={() => void controller.refresh()}>刷新</Button>
         </div>
       </header>
 
@@ -213,24 +211,23 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
         onManage={() => setTab("installed")}
       />
 
-      <nav className="capability-tabs" role="tablist" aria-label="能力扩展来源">
-        <button id="capability-tab-installed" type="button" role="tab" aria-controls="capability-panel-installed" aria-selected={tab === "installed"} className={tab === "installed" ? "is-active" : ""} onClick={() => setTab("installed")}>
+      <TabList label="能力扩展来源">
+        <Tab value="installed">
           已安装 <span>{controller.snapshot.plugins.length}</span>
-        </button>
-        <button id="capability-tab-catalog" type="button" role="tab" aria-controls="capability-panel-catalog" aria-selected={tab === "catalog"} className={tab === "catalog" ? "is-active" : ""} onClick={() => setTab("catalog")}>
+        </Tab>
+        <Tab value="catalog">
           官方目录 <span>{controller.catalog.packages.length}</span>
-        </button>
-      </nav>
+        </Tab>
+      </TabList>
 
       {controller.loadError ? (
-        <div className="capability-load-error" role="alert">
+        <Notice tone="danger">
           <span>{controller.loadError}</span>
-          <button className="ghost-button" type="button" onClick={() => void controller.refresh()}>重试</button>
-        </div>
+          <Button compact onClick={() => void controller.refresh()}>重试</Button>
+        </Notice>
       ) : null}
 
-      {tab === "installed" ? (
-        <section id="capability-panel-installed" role="tabpanel" aria-labelledby="capability-tab-installed">
+        <TabPanel value="installed">
         {controller.snapshot.plugins.length ? <div className="capability-card-grid">
           {controller.snapshot.plugins.map((plugin) => {
             const activeDigest = plugin.activeDigest ?? plugin.versions[plugin.versions.length - 1]?.digest ?? "";
@@ -247,14 +244,11 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
               baseUrl={baseUrl}
             />;
           })}
-        </div> : <div className="capability-empty-state">
-          <strong>尚未安装能力扩展</strong>
-          <p>从官方目录选择经过签名验证的能力，或安装本地开发 ZIP。</p>
-          <button className="signal-button" type="button" onClick={() => setTab("catalog")}>打开官方目录</button>
-        </div>}
-        </section>
-      ) : (
-        <section id="capability-panel-catalog" role="tabpanel" aria-labelledby="capability-tab-catalog">
+        </div> : <EmptyState title="尚未安装能力扩展">
+          <Button compact variant="primary" onClick={() => setTab("catalog")}>打开官方目录</Button>
+        </EmptyState>}
+        </TabPanel>
+        <TabPanel value="catalog">
         {controller.catalog.configured && controller.catalog.packages.length ? <div className="capability-card-grid">
           {controller.catalog.packages.map((item) => <CatalogCapabilityCard
             key={`${item.entry.qualifiedId}:${item.entry.version}`}
@@ -263,14 +257,10 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
             busy={controller.busyPluginId === item.entry.qualifiedId}
             onInstall={() => void controller.installFromCatalog(item)}
           />)}
-        </div> : <div className="capability-empty-state">
-          <strong>{controller.catalog.configured ? "官方目录暂无可安装能力" : "官方目录尚未配置"}</strong>
-          <p>{controller.catalog.diagnostic || (controller.catalog.configured
-            ? "目录已通过验证，但当前没有与本机兼容的能力包。"
-            : "设置目录地址和官方签名信任后即可浏览。")}</p>
-        </div>}
-        </section>
-      )}
+        </div> : <EmptyState title={controller.catalog.configured ? "官方目录暂无可安装能力" : "官方目录尚未配置"}>
+          {controller.catalog.diagnostic ? <Notice tone="warning">{controller.catalog.diagnostic}</Notice> : null}
+        </EmptyState>}
+        </TabPanel>
 
       <CapabilityPermissionDialog
         review={controller.permissionReview}
@@ -279,5 +269,6 @@ export function CapabilityExtensionsPanel({ baseUrl }: { baseUrl: string }) {
         onConfirm={() => void controller.confirmPermissionReview()}
       />
     </div>
+    </TabsRoot>
   );
 }

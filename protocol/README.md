@@ -1,5 +1,19 @@
 # Loom plugin protocol
 
+## 当前架构范围（2026-11-04）
+
+相关软件同步更新；不维护旧协议/模式/程序兼容或新旧版本协商/降级/互通验收。冲突的历史兼容承诺以下述当前合同为准。Local Art当前唯一准备入口及签名端口显隐见[当前本地执行合同](LOCAL_ART_EXECUTION.md#当前唯一准备合同v5382026-11-04)。基础合同仍按其实际职责使用，不按v1字样机械删除。
+
+## Local Art port package v2
+
+新增精确 Device POST `/v2/art/local/prepare-package`、请求 `loom.art.local.prepare-package.v2`，签名 payload 为独立 `loom.art.local.package.v2` 域，严格包含 protocolVersion、原 package 和 ports；旧 package.v1 与原权限/设备/审批/包/资源/期限保持，不在同协议偷换语义。ports.inputs/outputs 每侧至多32项，名字UTF-8至多128字节、类型64字节，不接受空白/控制字符/同侧重名；端口JSON至多8KiB，并与资源共享原签名payload预算。
+
+执行前沿原Lease/Control读取 `/v1/art/local/issuer`，新增可选 `supportedPrepareProtocols`；响应至多4096字节，必须与独立可信Pin的algorithm/keyId/公钥一致，不从网络自动授信或新建Lease。旧响应缺能力直接走v1，不能先探测未知v2路由；advertised v2 后任何拒绝（包括404）都失败关闭，不降级重放。原v1 package到resume的精确404回退仍保留。
+
+本批最终选定 **83项Rust passed**，其中17项新回归；当前选定终态failed=0，不是整库。签名域/篡改/预算、旧能力协商、拒绝不重放、图拓扑、中文自定义输入、真实2×2红像素、Live配置换代拒迟到、零输入不交付像素、自定义rendered输出继续建子Art及Save/窗口重建/有限离线均已验。真实Loom LAN HTTPS跨进程联合在线和停服后离线独立核signedPorts、完整资源、正式像素和正式结果；不完整缓存拒绝，父子不混加。Otter strict all-targets Clippy、两仓fmt、官方版本/strict行数、Otter lib/普通Release/工作区与Tile驱动构建通过；Loom签名安全/daemon测试库通过。66项源码delta均UTF-8无BOM，Rust最大500有效行，无新增行数例外。两个原跨仓grant门及两个SDK示例默认ignored未运行；Loom整仓strict Clippy旧债未重跑，不称两仓全绿。
+
+详见[本地执行许可合同](LOCAL_ART_EXECUTION.md)。
+
 This directory is the public, source-independent contract for framework and
 Art package authors. Rust types live in `crates/loom_protocol`; the JSON Schema
 files in `protocol/schemas` are the language-neutral source of truth. Plugin
@@ -39,6 +53,12 @@ authors must not depend on private Loom or Otter source code.
   explicit negotiation; they cannot silently change v1 framing.
 
 ### Loom<->Otter Art contract and legacy retirement
+
+2026-10-28 目标调整：Art JS 将迁移为 Otter 单侧执行，Loom 保留包/授权/服务。
+以下仍是当前 v1 生产合同，不因目标调整无声变义；迁移顺序、版本边界和待定 owner 见
+[Art 本地执行迁移计划](OTTER_LOCAL_ART_MIGRATION.md)。新协议和产品接线尚未完成。
+新增 [本地执行许可合同](LOCAL_ART_EXECUTION.md) 定义独立签名、精确绑定和期限；已有协议库/签发器实现，
+但生产路由与 Otter 挂载尚未启用，不能把该合同存在当作新架构已经运行。
 
 The local Otter bridge uses native-only TLS 1.3 with a pinned per-start certificate,
 private discovery and a connection-bound exporter proof. See

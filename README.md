@@ -111,14 +111,28 @@ The desktop shell restores the independent Loom window. It is implemented
 separately from the Rust workspace so normal daemon/CLI checks do not pull in
 Tauri dependencies.
 
-Under **设备管理 → 发送图片**, choose an online, approved Otter terminal output
-and a local raster image. Loom uploads the image, creates a dedicated single-output
-layout, and waits for the terminal to acknowledge its exact revision. Later sends
-replace that output's previous image without overwriting ordinary composed walls.
-Remove the dedicated layout in **屏幕墙** to stop displaying it. This self-hosted
-path uses paired-device authority, without Platform login; it does not grant
-cross-account access. Remote terminals still require a trusted HTTPS connection
-configuration and explicit pairing. See [the wall API](protocol/WALL_CONTROL_API.md).
+### Otter display language
+
+Open **Settings → Otter → General → Otter display language** (currently labeled
+**设置 → Otter → 常规 → Otter 显示语言** in Loom), choose an approved target
+device, then choose one of the languages reported by that Otter. English and
+Simplified Chinese are bundled with Otter; no capability package download is
+required. This setting changes only the selected Otter, not Loom or other devices.
+
+The selector shows Otter's reported language, not an optimistic draft. A request
+is complete only after that receiver confirms saving and applying it. Otter's
+tray language menu uses the same persisted setting. Offline or unapproved
+devices, older clients without language reports, and devices already handling a
+request cannot receive a new change; requests are not queued for later delivery.
+If the result is unknown, refresh and check Otter's current language rather than
+assuming success. A revision conflict requires a fresh choice and never silently
+overwrites a newer tray change.
+
+Device management handles connection approval and paired devices; it no longer
+offers a separate image-sending operation. Start image projection from a pinned
+image in Otter. See [Otter connections](docs/OTTER_CONNECTIONS.md) for authorization
+and target-directory boundaries, and [the wall API](protocol/WALL_CONTROL_API.md)
+for composed wall layouts.
 
 Install and verify the desktop frontend:
 

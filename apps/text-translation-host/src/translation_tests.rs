@@ -70,7 +70,7 @@ fn model_translation_keeps_source_geometry_and_escapes_text_in_the_scene() {
         assert_eq!(schema["properties"]["translations"]["maxItems"], 1);
         assert_eq!(
             schema["properties"]["translations"]["prefixItems"][0]["prefixItems"][0],
-            json!({ "type": "integer" })
+            json!({ "const": id })
         );
         let translated = match id {
             0 => "安全设置 <script>",
@@ -121,6 +121,39 @@ fn model_translation_keeps_source_geometry_and_escapes_text_in_the_scene() {
         result.surface_scene["children"][1]["layout"]["top"],
         "40.00000%"
     );
+}
+
+#[test]
+fn wrapped_paragraph_constrains_the_next_id_without_renumbering_source_blocks() {
+    let mut value = input();
+    value["sourceWidth"] = json!(900);
+    value["sourceHeight"] = json!(290);
+    value["textBlocks"][0]["text"] = json!("Do not open the valve");
+    value["textBlocks"][0]["width"] = json!(380);
+    value["textBlocks"][1]["text"] = json!("unless the pressure is below 30 kPa.");
+    value["textBlocks"][1]["width"] = json!(620);
+    value["textBlocks"][1]["top"] = json!(34);
+    value["textBlocks"][1]["height"] = json!(24);
+    let mut separate = value["textBlocks"][0].clone();
+    separate["top"] = json!(210);
+    separate["text"] = json!("Call Lin after 09:30.");
+    value["textBlocks"].as_array_mut().unwrap().push(separate);
+    let source: TranslationInput = serde_json::from_value(value).unwrap();
+    let mut ids = Vec::new();
+    let output = translate_with(source, |_, request, schema, _| {
+        let request: Value = serde_json::from_str(request)?;
+        let id = request["texts"][0][0].as_u64().unwrap();
+        assert_eq!(
+            schema["properties"]["translations"]["prefixItems"][0]["prefixItems"][0],
+            json!({ "const": id })
+        );
+        ids.push(id);
+        Ok(json!({ "translations": [[id, "译文"]] }).to_string())
+    })
+    .unwrap();
+    assert_eq!(ids, [0, 2]);
+    assert_eq!(output.text_blocks[0].source_block_indices, [0, 1]);
+    assert_eq!(output.text_blocks[1].source_block_indices, [2]);
 }
 
 #[test]

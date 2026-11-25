@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   artDisplayIdentity,
   artDisplayLocale,
@@ -16,17 +17,23 @@ import {
 } from "./artHubUi.ts";
 import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
 import { appSource, styleSource } from "./artHubUiContractSource.ts";
+const uiStyles = readFileSync(new URL(import.meta.resolve("@neuro/ui/styles.css")), "utf8");
 
 test("renders Loom and Otter as attached application settings tabs", () => {
   assert.match(appSource, /type SettingsAppId = "loom" \| "hook"/);
-  assert.match(appSource, /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "capabilities" \| "network" \| "cache" \| "about"/);
+  assert.match(
+    appSource,
+    /type SettingsSectionId = "general" \| "shortcuts" \| "mcp" \| "art-store" \| "capabilities" \| "network" \| "cache" \| "about"/,
+  );
   assert.match(appSource, /function SettingsAccordionSection\(/);
-  assert.match(appSource, /aria-expanded=\{open\}/);
-  assert.match(appSource, /aria-controls=\{contentId\}/);
-  assert.match(appSource, /className="settings-app-tabs" aria-label="应用设置" role="tablist"/);
-  assert.match(appSource, /aria-selected=\{activeSettingsApp === "loom"\}/);
-  assert.match(appSource, /aria-selected=\{activeSettingsApp === "hook"\}/);
-  assert.match(appSource, /activeSettingsApp === "loom" \? \(/);
+  assert.match(appSource, /<Disclosure className="settings-section" open=\{open\} onOpenChange=\{onToggle\}/);
+  assert.match(appSource, /open \? <div className="settings-section__body" id=\{contentId\}/);
+  assert.match(appSource, /<TabsRoot asChild value=\{activeSettingsApp\}/);
+  assert.match(appSource, /<TabList className="settings-app-tabs" label="应用设置"/);
+  assert.match(appSource, /<Tab value="loom" onClick=\{\(\) => selectSettingsApp\("loom"\)\}/);
+  assert.match(appSource, /<Tab value="hook" onClick=\{\(\) => selectSettingsApp\("hook"\)\}/);
+  assert.match(appSource, /<TabPanel className="settings-app-panel" value="loom"/);
+  assert.match(appSource, /<TabPanel className="settings-app-panel" value="hook"/);
   assert.match(appSource, /<SettingsAccordionSection id="general" label="常规"/);
   assert.equal((appSource.match(/<SettingsAccordionSection id="about" label="关于"/g) || []).length, 2);
   assert.match(appSource, /<AboutPanel[\s\S]*?app="loom"/);
@@ -35,19 +42,24 @@ test("renders Loom and Otter as attached application settings tabs", () => {
   assert.doesNotMatch(appSource, /<SettingsAccordionSection id="bindings" label="快速绑定"/);
   assert.match(appSource, /activeSection === "settings"[\s\S]*?app-titlebar__back/);
   assert.doesNotMatch(appSource, /settings-subnav|legacy-settings-grid|settings-card--wide|settings-page__save/);
-  assert.match(styleSource, /\.workspace-panel--settings,[\s\S]*?var\(--loom-theme-surface\);/);
-  assert.match(styleSource, /\.settings-app-panel \{[\s\S]*?border-top:/);
-  assert.match(styleSource, /\.settings-app-tab--active::after \{[\s\S]*?background: var\(--loom-theme-surface\);/);
-  assert.match(styleSource, /\.settings-section__trigger \{[\s\S]*?min-height: 66px;/);
-  assert.match(styleSource, /\.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
-  assert.match(styleSource, /\.settings-section--open \.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
+  assert.match(
+    styleSource,
+    /\.workspace-panel,\s*\.workspace-scroll\s*\{[^}]*background: var\(--loom-theme-surface\);/,
+  );
+  assert.match(styleSource, /\.settings-app-panel \{[\s\S]*?min-width: 0;/);
+  assert.doesNotMatch(
+    styleSource,
+    /\.settings-app-tab--active|\.settings-section__trigger|\.otter-shortcut-group__trigger/,
+  );
+  assert.match(styleSource, /\.settings-section__heading,[\s\S]*?display: flex;/);
+  assert.match(styleSource, /\.settings-section__icon,[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
 });
 
 test("shows compact About and diagnostic log content for Loom and Otter", () => {
   assert.match(appSource, /<dt>应用名称<\/dt>/);
   assert.match(appSource, /<dt>版本号<\/dt>/);
   assert.match(appSource, /<dt>检查更新<\/dt>/);
-  assert.match(appSource, />立即检查<\/button>/);
+  assert.match(appSource, />立即检查<\/Button>/);
   assert.match(appSource, /\$\{repositoryUrl\}\/releases\/latest/);
   assert.match(appSource, /<dt>仓库<\/dt>/);
   assert.match(appSource, /diagnostics\.commitShort\?\.slice\(0, 6\)/);
@@ -67,24 +79,63 @@ test("shows compact About and diagnostic log content for Loom and Otter", () => 
   assert.match(styleSource, /\.about-panel__group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
   assert.match(styleSource, /\.about-panel__rows > div \{[\s\S]*?grid-template-columns:/);
   assert.match(styleSource, /\.about-panel__commit \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
-  assert.match(styleSource, /\.about-panel__repository-link \{[\s\S]*?color: var\(--loom-theme-secondary-text\);/);
-  assert.match(styleSource, /\.settings-page \.studio-input option \{[\s\S]*?background: var\(--loom-theme-control\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.about-panel__log-level \{[\s\S]*?background: var\(--loom-theme-control\);[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-text\);/);
+  assert.match(appSource, /<Button compact variant="quiet"[\s\S]*?className="about-panel__repository-link"/);
+  assert.match(uiStyles, /\.n-input\s*\{[^}]*background: var\(--n-control\);[^}]*color: var\(--n-text\);/);
+  assert.match(appSource, /<Select[\s\S]*?className="about-panel__log-level"/);
   assert.match(styleSource, /\.workspace-scroll--settings \{[\s\S]*?scrollbar-gutter: stable;/);
+});
+
+test("shared settings use standard controls without inheriting legacy skins", () => {
+  const source = (name: string) => readFileSync(new URL(`../components/settings/${name}.tsx`, import.meta.url), "utf8");
+  const panels = source("SettingsPanels"),
+    about = source("AboutPanel");
+  assert.doesNotMatch(panels + about, /<(?:button|input|select)\b|studio-input|ghost-button/);
+  assert.equal((panels.match(/<Switch\b/g) || []).length, 3);
+  assert.equal((panels.match(/<Select\b/g) || []).length, 14);
+  assert.equal((panels.match(/<Button compact loading=\{busyKind ===/g) || []).length, 5);
+  assert.equal((panels.match(/disabled=\{Boolean\(busyKind\)\}/g) || []).length, 5);
+  assert.equal((panels.match(/: Number\(event\.target\.value\)/g) || []).length, 9);
+  assert.match(panels, /<Switch[^>]*aria-label="Art 默认只显示官方"[\s\S]*?checked=\{value\.official_only\}/);
+  assert.match(panels, /disabled=\{trustPolicyBusy\}/);
+  assert.match(about, /disabled=\{!diagnostics\.logFileExists\}/);
+  const foundation = readFileSync(new URL("../styles/foundation.css", import.meta.url), "utf8");
+  assert.doesNotMatch(foundation, /studio-input|:is\([^)]*\binput\b|:not\([^)]*\.n-input/);
+  assert.match(foundation, /\.neuro-root\s*\{[^}]*--loom-theme-control: var\(--n-control\);/);
+});
+
+test("settings navigation and shortcut dialogs use the standard runtime without replacing key capture", () => {
+  const source = (name: string) => readFileSync(new URL(`../components/settings/${name}.tsx`, import.meta.url), "utf8");
+  const panel = source("SettingsPanel"),
+    dialogs = source("SettingsShortcutDialogs"),
+    groups = source("OtterShortcutSettings"),
+    slots = source("ShortcutSlotsEditor");
+  assert.doesNotMatch(panel + dialogs + groups, /<(?:button|input|select)\b|createPortal|framework-dialog|autoFocus/);
+  assert.equal((dialogs.match(/<Dialog\b/g) || []).length, 2);
+  assert.equal((slots.match(/<button\b/g) || []).length, 1);
+  assert.match(slots, /onKeyDown=\{event => onCapture\(event, slot\)\}/);
+  assert.match(slots, /<Checkbox key=\{modifier\}/);
+  assert.match(dialogs, /event\.target\.closest\("\.shortcut-capture-field"\)/);
+  assert.match(dialogs, /onEscapeKeyDown=\{captureEscape\}/);
+  assert.doesNotMatch(slots, /autoFocus|addEventListener/);
 });
 
 test("uses the dark Settings visual baseline for Art and Otter Sync without changing their content", () => {
   assert.match(appSource, /workspace-panel workspace-panel--tooling/);
   assert.match(appSource, /workspace-header workspace-header--tooling/);
   assert.match(appSource, /workspace-scroll workspace-scroll--tooling/);
-  assert.match(styleSource, /:root \{[\s\S]*?--neuro-panel: #0e1218;/);
-  assert.match(styleSource, /:root \{[\s\S]*?--loom-theme-panel: var\(--neuro-panel\);/);
+  assert.match(uiStyles, /\.neuro-root\s*\{[^}]*--n-panel: #0e1218;/);
+  assert.match(styleSource, /\.neuro-root\s*\{[^}]*--loom-theme-panel: var\(--n-panel\);/);
   assert.match(styleSource, /\.workspace-panel--tooling,[\s\S]*?var\(--loom-theme-surface\)/);
   assert.match(styleSource, /\.art-hub__surface \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
-  assert.match(styleSource, /\.art-registry-card--enabled \{[\s\S]*?color-mix\(in srgb, var\(--loom-theme-success\) 10%, var\(--loom-theme-panel\)\)/);
-  assert.match(styleSource, /\.framework-dialog \{[\s\S]*?background: var\(--loom-theme-panel\)/);
-  assert.match(styleSource, /\.otter-canvas-rename-dialog,[\s\S]*?background: var\(--loom-theme-panel\)/);
-  assert.match(styleSource, /\.otter-canvas-workspace \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.doesNotMatch(styleSource, /\.art-(?:registry|store)-card(?:--(?:enabled|disabled))?\s*\{/);
+  assert.match(uiStyles, /\.n-dialog\s*\{[^}]*background: var\(--n-panel\)/);
+  const renameSource = readFileSync(
+    new URL("../components/otter/OtterCanvasRenameDialog.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(renameSource, /<Dialog\s+title="重命名工作流"/);
+  assert.doesNotMatch(styleSource, /\.otter-canvas-rename-(?:dialog|backdrop)/);
+  assert.match(styleSource, /\.otter-canvas-thumbnail \{[^}]*display: grid;[^}]*min-width: 0;/);
   assert.match(styleSource, /\.otter-canvas-surface \{[\s\S]*?overflow: hidden;/);
 });
 
@@ -102,19 +153,34 @@ test("provides independent proxy settings for Loom and Otter", () => {
   assert.match(appSource, /<option value="socks5">socks5:\/\/<\/option>/);
   assert.match(appSource, /placeholder="127\.0\.0\.1:7890"/);
   assert.match(appSource, /const updateNetworkDraft[\s\S]*?\[app\]: \{ \.\.\.current\.network\[app\], \.\.\.patch \}/);
-  assert.match(styleSource, /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(
+    styleSource,
+    /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/,
+  );
   assert.match(styleSource, /\.settings-network-row \{[\s\S]*?grid-template-columns:/);
 });
 
 test("provides independent compact general settings for Loom and Otter", () => {
   assert.equal((appSource.match(/<SettingsAccordionSection id="general" label="常规"/g) || []).length, 2);
   assert.match(appSource, /function GeneralSettingsPanel\(/);
-  assert.match(appSource, /appName="loom"[\s\S]*?language: draft\.general\.language[\s\S]*?theme: draft\.general\.theme[\s\S]*?closeToTray: draft\.general\.minimize_to_tray/);
-  assert.match(appSource, /appName="hook"[\s\S]*?language: draft\.hook_general\.language[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/);
-  assert.match(appSource, /<strong>语言<\/strong>[\s\S]*?<strong>主题<\/strong>[\s\S]*?<strong>关闭到系统托盘<\/strong>/);
+  assert.match(
+    appSource,
+    /appName="loom"[\s\S]*?language: draft\.general\.language[\s\S]*?theme: draft\.general\.theme[\s\S]*?closeToTray: draft\.general\.minimize_to_tray/,
+  );
+  assert.match(
+    appSource,
+    /appName="hook"[\s\S]*?language: draft\.hook_general\.language[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/,
+  );
+  assert.match(
+    appSource,
+    /<strong>语言<\/strong>[\s\S]*?<strong>主题<\/strong>[\s\S]*?<strong>关闭到系统托盘<\/strong>/,
+  );
   assert.match(appSource, /const updateOtterGeneralDraft[\s\S]*?hook_general:/);
   assert.doesNotMatch(appSource, /SettingsAccordionSection id="window"/);
-  assert.match(styleSource, /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
+  assert.match(
+    styleSource,
+    /\.settings-network-panel,[\s\S]*?\.settings-general-panel,[\s\S]*?\.settings-mcp-panel,[\s\S]*?\.settings-art-store-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/,
+  );
   assert.match(styleSource, /\.settings-general-toggle \{[\s\S]*?justify-self: end;/);
   assert.match(appSource, /applyLoomGeneralSettings\(draft\.general\)/);
   assert.match(appSource, /invoke\("apply_loom_general_settings"/);
@@ -182,7 +248,7 @@ test("manages Otter recycle bin, temporary cache, and reference images from the 
   assert.match(appSource, /requestAppConfirmation\(\{[\s\S]*?title: `清空\$\{labels\[kind\]\}`/);
   assert.match(styleSource, /\.otter-cache-settings \{[\s\S]*?gap: 12px;/);
   assert.match(styleSource, /\.otter-cache-group \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/);
-  assert.match(styleSource, /\.otter-cache-row--total b \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
+  assert.match(styleSource, /\.otter-cache-row b \{[^}]*color: var\(--loom-theme-text\);/);
 });
 
 test("auto-saves Loom fields and Otter shortcuts without a manual save action", () => {
@@ -204,15 +270,16 @@ test("groups, collapses, and edits Otter shortcuts without nested scrolling", ()
   assert.match(appSource, /label: "移动模式"/);
   assert.match(appSource, /label: "旋转模式"/);
   assert.match(appSource, /label: "缩放模式"/);
-  assert.match(appSource, /className="otter-shortcut-group__trigger"[\s\S]*?aria-expanded=\{groupOpen\}/);
+  assert.match(appSource, /<Disclosure key=\{group\.id\} className="otter-shortcut-group" open=\{open\}/);
   assert.match(appSource, /function ShortcutKeySequence\(/);
-  assert.match(appSource, /role="dialog"[\s\S]*?aria-labelledby="shortcut-edit-dialog-title"/);
+  assert.match(appSource, /<Dialog\s+title="修改快捷键"/);
   assert.match(appSource, /type ShortcutSlot = 0 \| 1 \| 2/);
   assert.match(appSource, /keys: \[keys\[0\] \|\| "", keys\[1\] \|\| "", keys\[2\] \|\| ""\]/);
-  assert.match(appSource, /shortcutEditor\.slotCount < 3[\s\S]*?添加额外快捷键/);
-  assert.match(appSource, /slotCount: \(current\.slotCount \+ 1\) as 2 \| 3/);
-  assert.match(appSource, /removeShortcutSlot\(current\.keys, slot\)/);
-  assert.match(appSource, /handleShortcutCapture\(event, slot\)/);
+  assert.match(appSource, /value\.slotCount < 3[\s\S]*?添加额外快捷键/);
+  assert.match(appSource, /slotCount: \(value\.slotCount \+ 1\) as 2 \| 3/);
+  assert.match(appSource, /removeShortcutSlot\(value\.keys, slot\)/);
+  assert.match(appSource, /onCapture=\{handleShortcutCapture\}/);
+  assert.match(appSource, /onKeyDown=\{event => onCapture\(event, slot\)\}/);
   assert.match(appSource, /updateShortcutDraft\([\s\S]*?shortcutEditor\.item\.label,[\s\S]*?keys,/);
   assert.match(appSource, /同一事件的快捷键不能重复/);
   assert.match(appSource, /shortcutContextsOverlap\(candidateContexts, item\.contexts\)/);
@@ -225,8 +292,8 @@ test("groups, collapses, and edits Otter shortcuts without nested scrolling", ()
   assert.match(appSource, /shortcut-gesture-picker/);
   assert.match(appSource, /toggleGestureShortcutModifier/);
   assert.match(appSource, /添加 Art 快捷键/);
-  assert.match(appSource, /aria-labelledby="quick-binding-dialog-title"/);
-  assert.match(appSource, /quickBindingEditor\.slotCount < 3[\s\S]*?添加额外快捷键/);
+  assert.match(appSource, /<Dialog\s+title="Art 快捷键"/);
+  assert.match(appSource, /<ShortcutSlotsEditor\s+value=\{quickBindingEditor\}/);
   assert.match(appSource, /availableArtTools\.map/);
   assert.match(appSource, /quick_bindings: current\.quick_bindings\.some/);
   assert.doesNotMatch(styleSource, /\.otter-shortcut-list \{[^}]*overflow-y:/);

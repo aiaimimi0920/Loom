@@ -1,4 +1,5 @@
 // Renders product identity and application diagnostics.
+import { Button, Select } from "@neuro/ui";
 import { LoomMark } from "../app/appShell";
 import { ApplicationDiagnosticsInfo, SettingsAppId, SettingsSectionIcon } from "./settingsModel";
 
@@ -68,15 +69,14 @@ export function AboutPanel({
           </div>
           <div>
             <dt>检查更新</dt>
-            <dd><button className="ghost-button" type="button" onClick={onCheckUpdate}>立即检查</button></dd>
+            <dd><Button compact onClick={onCheckUpdate}>立即检查</Button></dd>
           </div>
           {diagnostics.repositoryUrl ? (
             <div className="about-panel__repository-row">
               <dt>仓库</dt>
               <dd>
-                <button
+                <Button compact variant="quiet"
                   className="about-panel__repository-link"
-                  type="button"
                   title={`打开 ${diagnostics.repositoryUrl}`}
                   onClick={() => onOpenRepository(diagnostics.repositoryUrl!)}
                 >
@@ -84,7 +84,7 @@ export function AboutPanel({
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M14 5h5v5M12 12l7-7M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
                   </svg>
-                </button>
+                </Button>
                 <span className="about-panel__commit" title="构建对应的 Git 提交">
                   {diagnostics.commitShort?.slice(0, 6) || "------"}
                 </span>
@@ -103,8 +103,8 @@ export function AboutPanel({
           <div>
             <dt>日志级别</dt>
             <dd>
-              <select
-                className="studio-input about-panel__log-level"
+              <Select
+                className="about-panel__log-level"
                 aria-label={`${diagnostics.appName} 日志级别`}
                 value={logLevel}
                 onChange={(event) => onLogLevelChange(event.target.value)}
@@ -113,14 +113,14 @@ export function AboutPanel({
                 <option value="warn">Warn</option>
                 <option value="info">Info（默认）</option>
                 <option value="debug">Debug</option>
-              </select>
+              </Select>
             </dd>
           </div>
           <div className="about-panel__path-row">
             <dt>日志位置</dt>
             <dd>
               <code title={diagnostics.logDir || undefined}>{diagnostics.logDir || "未加载"}</code>
-              <button className="ghost-button" type="button" onClick={() => onOpenLog("directory")}>打开文件夹</button>
+              <Button compact onClick={() => onOpenLog("directory")}>打开文件夹</Button>
             </dd>
           </div>
           <div>
@@ -129,14 +129,12 @@ export function AboutPanel({
               <span className="about-panel__log-file">
                 {diagnostics.logFile ? diagnostics.logFile.split(/[\\/]/).pop() : "暂无日志"}
               </span>
-              <button
-                className="ghost-button"
-                type="button"
+              <Button compact
                 disabled={!diagnostics.logFileExists}
                 onClick={() => onOpenLog("file")}
               >
                 查看
-              </button>
+              </Button>
             </dd>
           </div>
         </dl>

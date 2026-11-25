@@ -1,24 +1,76 @@
-import { projectionDeviceKey, type ProjectionDeviceChoice, type ProjectionDeviceRef } from "../../services/loomApi/projectionSettings.ts";
+import {
+  projectionDeviceKey,
+  type ProjectionDeviceChoice,
+  type ProjectionDeviceRef,
+} from "../../services/loomApi/projectionSettings.ts";
+import { CheckboxGroup, EmptyState, MultiSelect } from "@neuro/ui";
+import { useEffect, useState } from "react";
 
 export function ProjectionDeviceChecklist(props: {
-  label: string; devices: ProjectionDeviceChoice[]; value: ProjectionDeviceRef[];
-  onChange: (value: ProjectionDeviceRef[]) => void; disabled: boolean;
+  label: string;
+  devices: ProjectionDeviceChoice[];
+  value: ProjectionDeviceRef[];
+  onChange: (value: ProjectionDeviceRef[]) => void;
+  disabled: boolean;
 }) {
+  const [dismissed, setDismissed] = useState<ProjectionDeviceRef[]>([]);
+  // Explicit catalog reloads may replace candidates; a local uncheck must not remove its own DOM.
+  useEffect(() => setDismissed((current) => (current.length ? [] : current)), [props.devices]);
   const options = new Map(props.devices.map((device) => [projectionDeviceKey(device), device]));
-  for (const device of props.value) {
+  const available = new Set(options.keys());
+  for (const device of [...props.value, ...dismissed]) {
     const key = projectionDeviceKey(device);
-    if (!options.has(key)) options.set(key, { ...device, name: device.deviceId + "（目录暂不可用，保留配置）" });
+    if (!options.has(key)) options.set(key, { ...device, name: device.deviceId + "（不可用）" });
   }
   const checked = new Set(props.value.map(projectionDeviceKey));
-  return <fieldset disabled={props.disabled} className="projection-device-checklist">
-    <legend>{props.label} · {checked.size}</legend>
-    {!options.size && <p className="wall-muted">暂无可选设备</p>}
-    <div>{[...options].map(([key, device]) => <label key={key} title={device.peerId ? device.peerId + " / " + device.deviceId : device.deviceId}>
-      <input type="checkbox" checked={checked.has(key)} disabled={!checked.has(key) && checked.size >= 64}
-        onChange={(event) => props.onChange(event.target.checked
-          ? [...props.value, { deviceId: device.deviceId, ...(device.peerId ? { peerId: device.peerId } : {}) }]
-          : props.value.filter((entry) => projectionDeviceKey(entry) !== key))} />
-      <span>{device.name}</span>
-    </label>)}</div>
-  </fieldset>;
+  const change = (values: string[]) => {
+    const selected = new Set(values);
+    const removed = props.value.filter(
+      (device) => !selected.has(projectionDeviceKey(device)) && !available.has(projectionDeviceKey(device)),
+    );
+    if (removed.length)
+      setDismissed((old) => [
+        ...new Map([...old, ...removed].map((device) => [projectionDeviceKey(device), device])).values(),
+      ]);
+    const retained = props.value.filter((device) => selected.has(projectionDeviceKey(device)));
+    const added = values
+      .filter((key) => !checked.has(key))
+      .map((key) => {
+        const device = options.get(key)!;
+        return { deviceId: device.deviceId, ...(device.peerId ? { peerId: device.peerId } : {}) };
+      });
+    props.onChange([...retained, ...added]);
+  };
+  // The protocol caps serialized entries, including retained duplicates, rather than distinct identities.
+  const choices = [...options].map(([key, device]) => ({
+    value: key,
+    label: <span title={device.peerId ? `${device.peerId} / ${device.deviceId}` : device.deviceId}>{device.name}</span>,
+    searchText: `${device.name} ${device.peerId ?? ""} ${device.deviceId}`,
+    disabled: !checked.has(key) && (!available.has(key) || props.value.length >= 64),
+  }));
+  return (
+    <div className="projection-device-checklist">
+      {!choices.length ? (
+        <EmptyState title="暂无可选设备" />
+      ) : choices.length > 6 ? (
+        <MultiSelect
+          label={props.label}
+          disabled={props.disabled}
+          values={[...checked]}
+          options={choices}
+          onValuesChange={change}
+          search={{ label: `搜索${props.label}`, emptyMessage: "没有匹配设备" }}
+        />
+      ) : (
+        <CheckboxGroup
+          label={props.label}
+          disabled={props.disabled}
+          values={[...checked]}
+          options={choices}
+          onValuesChange={change}
+          orientation="vertical"
+        />
+      )}
+    </div>
+  );
 }

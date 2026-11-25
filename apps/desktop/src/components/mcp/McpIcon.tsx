@@ -4,6 +4,7 @@ export type McpIconKind = "plug" | "edit" | "power" | "trash" | "test" | "close"
 
 export function McpIcon({ kind }: { kind: McpIconKind }) {
   const props = {
+    className: "mcp-icon",
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",

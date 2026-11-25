@@ -9,10 +9,13 @@ mod projection_http {
     include!("projection_edit_http.rs");
     include!("projection_edit_peer_http.rs");
     include!("projection_delivery_state_tests.rs");
+    include!("projection_native_joint.rs");
+    include!("projection_offline_native_joint.rs");
     include!("offline_peers_http.rs");
     include!("offline_catalog_http.rs");
     include!("offline_raster_http.rs");
     include!("offline_transfer_http.rs");
+    include!("shared_projection_peer_http.rs");
     include!("account_login_scope.rs");
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 

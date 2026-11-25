@@ -1,4 +1,5 @@
 // Reusable framework and port editors for Art authoring.
+import { Button, Checkbox, Field, Input, Panel, Select, Textarea } from "@neuro/ui";
 import { type LoomFrameworkAuthoringField } from "../../services/loomApi";
 import { type WorkflowParamBindingCandidate } from "../../services/workflowStudio";
 import {
@@ -24,54 +25,62 @@ export function FrameworkAuthoringFieldInput({
 }) {
   if (field.secret || field.type === "secret") {
     return (
-      <label className="field-label">
-        {field.label}{field.required ? " *" : ""}
-        <select className="studio-input" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} required={field.required}>
+      <Field label={`${field.label}${field.required ? " *" : ""}`}>
+        <Select
+          compact
+          value={String(value ?? "")}
+          onChange={(event) => onChange(event.target.value)}
+          required={field.required}
+        >
           <option value="">选择全局机密</option>
-          {credentialNames.map((credential) => <option key={credential} value={credential}>{credential}</option>)}
-        </select>
-      </label>
+          {credentialNames.map((credential) => (
+            <option key={credential} value={credential}>
+              {credential}
+            </option>
+          ))}
+        </Select>
+      </Field>
     );
   }
   if (field.type === "boolean") {
     return (
-      <label className="checkbox-line">
-        <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
-        <span>{field.label}{field.required ? " *" : ""}</span>
-      </label>
+      <Checkbox
+        checked={Boolean(value)}
+        onChange={(event) => onChange(event.target.checked)}
+        label={`${field.label}${field.required ? " *" : ""}`}
+      />
     );
   }
   if (field.type === "enum") {
     return (
-      <label className="field-label">
-        {field.label}{field.required ? " *" : ""}
-        <select className="studio-input" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+      <Field label={`${field.label}${field.required ? " *" : ""}`}>
+        <Select compact value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
           <option value="">请选择</option>
           {(field.options ?? []).map((option) => (
-            <option key={`${field.id}-${String(option.value)}`} value={String(option.value)}>{option.label}</option>
+            <option key={`${field.id}-${String(option.value)}`} value={String(option.value)}>
+              {option.label}
+            </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Field>
     );
   }
   if (field.type === "json") {
     return (
-      <label className="field-label">
-        {field.label}{field.required ? " *" : ""}
-        <textarea
-          className="studio-textarea studio-textarea--compact"
+      <Field label={`${field.label}${field.required ? " *" : ""}`}>
+        <Textarea
+          compact
           value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2)}
           placeholder={field.placeholder || "{}"}
           onChange={(event) => onChange(event.target.value)}
         />
-      </label>
+      </Field>
     );
   }
   return (
-    <label className="field-label">
-      {field.label}{field.required ? " *" : ""}
-      <input
-        className="studio-input"
+    <Field label={`${field.label}${field.required ? " *" : ""}`}>
+      <Input
+        compact
         type={field.type === "number" ? "number" : "text"}
         value={typeof value === "number" || typeof value === "string" ? value : ""}
         min={field.minimum ?? undefined}
@@ -80,7 +89,7 @@ export function FrameworkAuthoringFieldInput({
         placeholder={field.placeholder ?? undefined}
         onChange={(event) => onChange(field.type === "number" ? Number(event.target.value) : event.target.value)}
       />
-    </label>
+    </Field>
   );
 }
 
@@ -106,13 +115,13 @@ export function ArtPortEditor({
   setOutputPorts: Dispatch<SetStateAction<ArtWizardPortDraft[]>>;
 }) {
   const updateInputPort = (index: number, patch: Partial<ArtWizardPortDraft>) => {
-    setInputPorts((ports) => ports.map((port, portIndex) => portIndex === index ? { ...port, ...patch } : port));
+    setInputPorts((ports) => ports.map((port, portIndex) => (portIndex === index ? { ...port, ...patch } : port)));
   };
   const updateOutputPort = (index: number, patch: Partial<ArtWizardPortDraft>) => {
-    setOutputPorts((ports) => ports.map((port, portIndex) => portIndex === index ? { ...port, ...patch } : port));
+    setOutputPorts((ports) => ports.map((port, portIndex) => (portIndex === index ? { ...port, ...patch } : port)));
   };
   const updateParamPort = (index: number, patch: Partial<ArtWizardPortDraft>) => {
-    setParamPorts((ports) => ports.map((port, portIndex) => portIndex === index ? { ...port, ...patch } : port));
+    setParamPorts((ports) => ports.map((port, portIndex) => (portIndex === index ? { ...port, ...patch } : port)));
   };
   const bindingCandidatesByNode = useMemo(() => {
     const groups = new Map<string, { label: string; candidates: WorkflowParamBindingCandidate[] }>();
@@ -126,11 +135,10 @@ export function ArtPortEditor({
     }
     return [...groups.entries()];
   }, [paramBindingCandidates]);
-  const selectedBindingKey = (port: ArtWizardPortDraft) => (
-    paramBindingCandidates.find((candidate) => (
-      candidate.nodeId === port.bindingNodeId && candidate.target === port.bindingTarget
-    ))?.key ?? ""
-  );
+  const selectedBindingKey = (port: ArtWizardPortDraft) =>
+    paramBindingCandidates.find(
+      (candidate) => candidate.nodeId === port.bindingNodeId && candidate.target === port.bindingTarget,
+    )?.key ?? "";
   const updateParamBinding = (index: number, key: string) => {
     const port = paramPorts[index];
     if (!port) return;
@@ -178,49 +186,113 @@ export function ArtPortEditor({
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
           <h4>输入</h4>
-          <button className="ghost-button" type="button" onClick={() => setInputPorts((ports) => [...ports, createPortDraft("input")])}>
+          <Button
+            variant="quiet"
+            compact
+            type="button"
+            onClick={() => setInputPorts((ports) => [...ports, createPortDraft("input")])}
+          >
             添加
-          </button>
+          </Button>
         </div>
         {inputPorts.map((port, index) => (
-          <div className="port-editor-row" key={`input-${index}`}>
-            <input className="studio-input" value={port.name} onChange={(event) => updateInputPort(index, { name: event.target.value })} placeholder="name" />
-            <input className="studio-input" value={port.label} onChange={(event) => updateInputPort(index, { label: event.target.value })} placeholder="label" />
-            <select
-              className="studio-input"
+          <Panel className="port-editor-row" key={`input-${index}`} aria-label={`输入端口 ${index + 1}`}>
+            <Input
+              aria-label={`输入端口 ${index + 1} 名称`}
+              compact
+              value={port.name}
+              onChange={(event) => updateInputPort(index, { name: event.target.value })}
+              placeholder="name"
+            />
+            <Input
+              aria-label={`输入端口 ${index + 1} 标签`}
+              compact
+              value={port.label}
+              onChange={(event) => updateInputPort(index, { label: event.target.value })}
+              placeholder="label"
+            />
+            <Select
+              aria-label={`输入端口 ${index + 1} 类型`}
+              compact
               value={port.type}
               onChange={(event) => {
                 const nextType = event.target.value;
-                updateInputPort(index, { type: nextType, executionType: defaultExecutionTypeForPort(nextType, "input") });
+                updateInputPort(index, {
+                  type: nextType,
+                  executionType: defaultExecutionTypeForPort(nextType, "input"),
+                });
               }}
             >
               {portTypeOptions}
-            </select>
-            <input className="studio-input" value={port.executionType} onChange={(event) => updateInputPort(index, { executionType: event.target.value })} placeholder="execution type" />
-            <input className="studio-input" value={port.defaultValue} onChange={(event) => updateInputPort(index, { defaultValue: event.target.value })} placeholder="default" />
-            <label className="checkbox-line checkbox-line--compact">
-              <input type="checkbox" checked={port.disabled} onChange={(event) => updateInputPort(index, { disabled: event.target.checked })} />
-              <span>禁用</span>
-            </label>
-            <button className="ghost-button" type="button" onClick={() => setInputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}>
+            </Select>
+            <Input
+              aria-label={`输入端口 ${index + 1} 执行类型`}
+              compact
+              value={port.executionType}
+              onChange={(event) => updateInputPort(index, { executionType: event.target.value })}
+              placeholder="execution type"
+            />
+            <Input
+              aria-label={`输入端口 ${index + 1} 默认值`}
+              compact
+              value={port.defaultValue}
+              onChange={(event) => updateInputPort(index, { defaultValue: event.target.value })}
+              placeholder="default"
+            />
+            <Checkbox
+              aria-label={`禁用输入端口 ${index + 1}`}
+              checked={port.disabled}
+              onChange={(event) => updateInputPort(index, { disabled: event.target.checked })}
+              label="禁用"
+            />
+            <Button
+              aria-label={`删除输入端口 ${index + 1}`}
+              variant="quiet"
+              compact
+              type="button"
+              onClick={() => setInputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
+            >
               删除
-            </button>
-          </div>
+            </Button>
+          </Panel>
         ))}
       </div>
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
           <h4>参数</h4>
-          <button className="ghost-button" type="button" onClick={() => setParamPorts((ports) => [...ports, createPortDraft("input", { name: "param", label: "参数", type: "string" })])}>
+          <Button
+            variant="quiet"
+            compact
+            type="button"
+            onClick={() =>
+              setParamPorts((ports) => [
+                ...ports,
+                createPortDraft("input", { name: "param", label: "参数", type: "string" }),
+              ])
+            }
+          >
             添加
-          </button>
+          </Button>
         </div>
         {paramPorts.map((port, index) => (
-          <div className={workflowMode ? "port-editor-row port-editor-row--param-workflow" : "port-editor-row"} key={`param-${index}`}>
-            <input className="studio-input" value={port.name} onChange={(event) => updateParamPort(index, { name: event.target.value })} placeholder="参数 ID" />
-            <input className="studio-input" value={port.label} onChange={(event) => updateParamPort(index, { label: event.target.value })} placeholder="显示名称" />
-            <select
-              className="studio-input"
+          <Panel className="port-editor-row" key={`param-${index}`} aria-label={`参数端口 ${index + 1}`}>
+            <Input
+              aria-label={`参数端口 ${index + 1} ID`}
+              compact
+              value={port.name}
+              onChange={(event) => updateParamPort(index, { name: event.target.value })}
+              placeholder="参数 ID"
+            />
+            <Input
+              aria-label={`参数端口 ${index + 1} 标签`}
+              compact
+              value={port.label}
+              onChange={(event) => updateParamPort(index, { label: event.target.value })}
+              placeholder="显示名称"
+            />
+            <Select
+              aria-label={`参数端口 ${index + 1} 类型`}
+              compact
               value={port.type}
               onChange={(event) => {
                 const nextType = event.target.value;
@@ -232,14 +304,27 @@ export function ArtPortEditor({
               }}
             >
               {portTypeOptions}
-            </select>
+            </Select>
             {!workflowMode ? (
-              <input className="studio-input" value={port.executionType} onChange={(event) => updateParamPort(index, { executionType: event.target.value })} placeholder="execution type" />
+              <Input
+                aria-label={`参数端口 ${index + 1} 执行类型`}
+                compact
+                value={port.executionType}
+                onChange={(event) => updateParamPort(index, { executionType: event.target.value })}
+                placeholder="execution type"
+              />
             ) : null}
-            <input className="studio-input" value={port.defaultValue} onChange={(event) => updateParamPort(index, { defaultValue: event.target.value })} placeholder="默认值" />
+            <Input
+              aria-label={`参数端口 ${index + 1} 默认值`}
+              compact
+              value={port.defaultValue}
+              onChange={(event) => updateParamPort(index, { defaultValue: event.target.value })}
+              placeholder="默认值"
+            />
             {workflowMode ? (
-              <select
-                className="studio-input port-binding-select"
+              <Select
+                compact
+                className="port-binding-select"
                 value={selectedBindingKey(port)}
                 onChange={(event) => updateParamBinding(index, event.target.value)}
                 disabled={paramBindingsLoading || !paramBindingCandidates.length}
@@ -256,45 +341,105 @@ export function ArtPortEditor({
                     ))}
                   </optgroup>
                 ))}
-              </select>
+              </Select>
             ) : null}
-            <button className="ghost-button" type="button" onClick={() => setParamPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}>
+            <Button
+              aria-label={`删除参数端口 ${index + 1}`}
+              variant="quiet"
+              compact
+              type="button"
+              onClick={() => setParamPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
+            >
               删除
-            </button>
-          </div>
+            </Button>
+          </Panel>
         ))}
       </div>
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
           <h4>输出</h4>
-          <button className="ghost-button" type="button" onClick={() => setOutputPorts((ports) => [...ports, createPortDraft("output")])}>
+          <Button
+            variant="quiet"
+            compact
+            type="button"
+            onClick={() => setOutputPorts((ports) => [...ports, createPortDraft("output")])}
+          >
             添加
-          </button>
+          </Button>
         </div>
         {outputPorts.map((port, index) => (
-          <div className="port-editor-row port-editor-row--output" key={`output-${index}`}>
-            <input className="studio-input" value={port.name} onChange={(event) => updateOutputPort(index, { name: event.target.value })} placeholder="name" />
-            <input className="studio-input" value={port.label} onChange={(event) => updateOutputPort(index, { label: event.target.value })} placeholder="label" />
-            <select
-              className="studio-input"
+          <Panel className="port-editor-row" key={`output-${index}`} aria-label={`输出端口 ${index + 1}`}>
+            <Input
+              aria-label={`输出端口 ${index + 1} 名称`}
+              compact
+              value={port.name}
+              onChange={(event) => updateOutputPort(index, { name: event.target.value })}
+              placeholder="name"
+            />
+            <Input
+              aria-label={`输出端口 ${index + 1} 标签`}
+              compact
+              value={port.label}
+              onChange={(event) => updateOutputPort(index, { label: event.target.value })}
+              placeholder="label"
+            />
+            <Select
+              aria-label={`输出端口 ${index + 1} 类型`}
+              compact
               value={port.type}
               onChange={(event) => {
                 const nextType = event.target.value;
-                updateOutputPort(index, { type: nextType, executionType: defaultExecutionTypeForPort(nextType, "output") });
+                updateOutputPort(index, {
+                  type: nextType,
+                  executionType: defaultExecutionTypeForPort(nextType, "output"),
+                });
               }}
             >
               {portTypeOptions}
-            </select>
-            <input className="studio-input" value={port.executionType} onChange={(event) => updateOutputPort(index, { executionType: event.target.value })} placeholder="execution type" />
-            <select className="studio-input" value={port.captureMode} onChange={(event) => updateOutputPort(index, { captureMode: event.target.value as ArtPortCaptureMode })} aria-label="捕获模式">
-              {outputCaptureModes.map((captureMode) => <option key={captureMode} value={captureMode}>{captureMode}</option>)}
-            </select>
-            <input className="studio-input" value={port.jsonPath} onChange={(event) => updateOutputPort(index, { jsonPath: event.target.value })} placeholder="JSONPath" />
-            <input className="studio-input" value={port.filename} onChange={(event) => updateOutputPort(index, { filename: event.target.value })} placeholder="filename/template" />
-            <button className="ghost-button" type="button" onClick={() => setOutputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}>
+            </Select>
+            <Input
+              aria-label={`输出端口 ${index + 1} 执行类型`}
+              compact
+              value={port.executionType}
+              onChange={(event) => updateOutputPort(index, { executionType: event.target.value })}
+              placeholder="execution type"
+            />
+            <Select
+              compact
+              value={port.captureMode}
+              onChange={(event) => updateOutputPort(index, { captureMode: event.target.value as ArtPortCaptureMode })}
+              aria-label="捕获模式"
+            >
+              {outputCaptureModes.map((captureMode) => (
+                <option key={captureMode} value={captureMode}>
+                  {captureMode}
+                </option>
+              ))}
+            </Select>
+            <Input
+              aria-label={`输出端口 ${index + 1} JSONPath`}
+              compact
+              value={port.jsonPath}
+              onChange={(event) => updateOutputPort(index, { jsonPath: event.target.value })}
+              placeholder="JSONPath"
+            />
+            <Input
+              aria-label={`输出端口 ${index + 1} 文件名`}
+              compact
+              value={port.filename}
+              onChange={(event) => updateOutputPort(index, { filename: event.target.value })}
+              placeholder="filename/template"
+            />
+            <Button
+              aria-label={`删除输出端口 ${index + 1}`}
+              variant="quiet"
+              compact
+              type="button"
+              onClick={() => setOutputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
+            >
               删除
-            </button>
-          </div>
+            </Button>
+          </Panel>
         ))}
       </div>
     </div>

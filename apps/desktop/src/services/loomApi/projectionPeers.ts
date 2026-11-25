@@ -1,8 +1,11 @@
 import { deleteJson, getJson, postJson, putJson } from "./transport.ts";
 
 export interface ProjectionPeerIdentity { peerId: string; publicKey: string }
-export interface ProjectionPeer extends ProjectionPeerIdentity { name: string; origin: string; enabled: boolean }
-export interface ProjectionPeerState { revision: number; identity: ProjectionPeerIdentity; peers: ProjectionPeer[] }
+export interface ProjectionPeer extends ProjectionPeerIdentity { name: string; origin: string; certificate?: string; enabled: boolean }
+export interface ProjectionPeerState {
+  revision: number; identity: ProjectionPeerIdentity; peers: ProjectionPeer[];
+  localConnection: { origin: string; certificate: string } | null;
+}
 const path = "/v1/projection-peers";
 const invalid = () => new Error("Loom 对等连接响应无效，请刷新后重试");
 function record(value: unknown): Record<string, unknown> {
@@ -24,10 +27,13 @@ export function parseProjectionPeerState(value: unknown): ProjectionPeerState {
   const peers = item.peers.map((value): ProjectionPeer => {
     const peer = record(value);
     if (typeof peer.enabled !== "boolean") throw invalid();
-    return { ...identity(peer), name: text(peer.name, 128), origin: text(peer.origin, 256), enabled: peer.enabled };
+    return { ...identity(peer), name: text(peer.name, 128), origin: text(peer.origin, 256), enabled: peer.enabled,
+      ...(peer.certificate === undefined ? {} : { certificate: text(peer.certificate, 8192) }) };
   });
   if (new Set(peers.map((peer) => peer.peerId)).size !== peers.length) throw invalid();
-  return { revision: item.revision as number, identity: identity(item.identity), peers };
+  const connection = item.localConnection === null ? null : record(item.localConnection);
+  return { revision: item.revision as number, identity: identity(item.identity), peers,
+    localConnection: connection && { origin: text(connection.origin, 256), certificate: text(connection.certificate, 8192) } };
 }
 export async function listProjectionPeers(baseUrl: string): Promise<ProjectionPeerState> {
   return parseProjectionPeerState(await getJson<unknown>(baseUrl, path));

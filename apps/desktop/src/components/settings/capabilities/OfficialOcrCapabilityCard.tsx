@@ -1,5 +1,6 @@
 // Presents the official OCR capability without creating a second install path.
 import type { CapabilityCatalogItem, CapabilityPluginRecord } from "../../../services/loomApi";
+import { Badge, Button, Panel } from "@neuro/ui";
 import {
   capabilityStatusLabel,
   capabilityStatusTone,
@@ -47,33 +48,30 @@ export function OfficialOcrCapabilityCard({
     : catalogItem?.compatible ? "success" : "warning";
 
   return (
-    <section className="capability-ocr-quickstart" aria-labelledby="official-ocr-title">
+    <Panel className="capability-ocr-quickstart" aria-labelledby="official-ocr-title">
       <div className="capability-ocr-quickstart__copy">
-        <span className="capability-eyebrow">Official Capability</span>
         <h3 id="official-ocr-title">OCR · 文本与二维码/条码识别</h3>
         <p>{detail}</p>
         <div className="capability-ocr-quickstart__signals" aria-label="OCR 能力特性">
-          <span>本地推理</span><span>按需加载</span><span>签名包</span><span>最小权限</span>
+          <Badge>本地推理</Badge><Badge>按需加载</Badge><Badge>签名包</Badge><Badge>最小权限</Badge>
         </div>
       </div>
       <div className="capability-ocr-quickstart__action">
-        <span className={`capability-status capability-status--${statusTone}`} role="status" aria-live="polite">
+        <Badge tone={statusTone} role="status" aria-live="polite">
           {loading ? "读取状态…" : status}
-        </span>
+        </Badge>
         {installed ? (
-          <button className="ghost-button" type="button" disabled={busy || loading} onClick={onManage}>
+          <Button compact disabled={busy || loading} onClick={onManage}>
             管理 OCR
-          </button>
+          </Button>
         ) : (
-          <button
-            className="signal-button"
-            type="button"
+          <Button compact variant="primary"
             disabled={busy || loading || !canInstall}
             aria-describedby="official-ocr-install-help"
             onClick={() => catalogItem && onInstall(catalogItem)}
           >
             {busy ? "下载验证中…" : canInstall ? "下载并安装 OCR" : "当前无法下载"}
-          </button>
+          </Button>
         )}
         <small id="official-ocr-install-help">
           {catalogItem && !catalogItem.compatible
@@ -81,6 +79,6 @@ export function OfficialOcrCapabilityCard({
             : "大模型包只通过受信任目录下载，不经过本地 ZIP 的小包上传通道。"}
         </small>
       </div>
-    </section>
+    </Panel>
   );
 }

@@ -1,4 +1,4 @@
-// Explicit Otter connection grants are independent of persistent device pairing.
+// Connection requests reuse persistent device pairing; activation still proves the device key.
 // A previously paired key alone never bypasses a manual per-connection decision.
 const OTTER_CONNECTION_TTL_MS: u64 = 5 * 60_000;
 const OTTER_CONNECTION_LIMIT: usize = 64;
@@ -247,7 +247,8 @@ fn finish_otter_connection_request(
     if !device.enabled {
         return connection_error(403, "device_disabled");
     }
-    let automatic = (trusted && device.otter_connected)
+    let automatic = device.approval == "approved"
+        || (trusted && device.otter_connected)
         || (info.approval == connection_policy::Approval::Lan && lan);
     if automatic && device.approval != "approved" {
         let mut approved = device.clone();

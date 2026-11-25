@@ -1,33 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import { desktopStyleSource } from "./desktopStyleSource.ts";
+const uiStyles = readFileSync(new URL(import.meta.resolve("@neuro/ui/styles.css")), "utf8");
 
 test("provides a visible keyboard focus fallback for native interactive controls", () => {
   assert.match(
-    desktopStyleSource,
-    /:where\(button, a\[href\], input, select, textarea, summary, \[role="button"\]\):focus-visible \{[\s\S]*?outline: 2px solid var\(--loom-theme-accent-text\);/,
+    uiStyles,
+    /\.neuro-root :where\(button, a, input, select, textarea, summary, \[tabindex\]\):focus-visible\s*\{[^}]*outline: 2px solid var\(--n-signal\);/,
   );
 });
 
 test("disables cross-feature motion when the operating system requests it", () => {
   assert.match(
-    desktopStyleSource,
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?transition-duration: 0\.01ms !important;[\s\S]*?\.window-control--loading \.shell-icon,[\s\S]*?\.otter-shortcut-list,[\s\S]*?\.mcp-busy-indicator \{[\s\S]*?animation: none !important;/,
+    uiStyles,
+    /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.neuro-root \*[^}]*transition: none !important;/,
+  );
+  assert.match(
+    uiStyles,
+    /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.neuro-root \*[^}]*animation: none !important;/,
   );
 });
 
 test("keeps confirmation dialogs scrollable at high zoom and exposes forced-color focus", () => {
-  assert.match(
-    desktopStyleSource,
-    /\.app-confirm-backdrop \{[\s\S]*?overflow-y: auto;/,
-  );
-  assert.match(
-    desktopStyleSource,
-    /\.app-confirm-dialog \{[\s\S]*?max-height: calc\(100dvh - 32px\);[\s\S]*?overflow-y: auto;/,
-  );
-  assert.match(
-    desktopStyleSource,
-    /@media \(forced-colors: active\) \{[\s\S]*?outline-color: Highlight;/,
-  );
+  assert.match(uiStyles, /\.n-overlay\s*\{[^}]*position: fixed;[^}]*inset: 0;/);
+  assert.match(uiStyles, /\.n-dialog\s*\{[^}]*max-height: calc\(100dvh - 32px\);[^}]*overflow-y: auto;/);
+  assert.match(uiStyles, /@media \(forced-colors: active\)\s*\{[\s\S]*?outline-color: Highlight;/);
+  assert.match(desktopStyleSource, /@media \(forced-colors: active\)\s*\{[^}]*stroke: Highlight;/);
 });

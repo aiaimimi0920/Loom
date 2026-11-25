@@ -144,7 +144,19 @@ impl LiveSessionStore {
         connected: bool,
     ) -> std::result::Result<(), LiveRuntimeError> {
         let mut sessions = self.lock_state()?;
-        let record = active_record_mut(&mut sessions, session_id)?;
+        // Session close may beat the socket guard's Drop. Retirement must still remove
+        // its real connection count; only opening a stream requires an active session.
+        let record = if connected {
+            active_record_mut(&mut sessions, session_id)?
+        } else {
+            let record = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| not_found(session_id))?;
+            if !record.closed {
+                expire_controller(record);
+            }
+            record
+        };
         let mut revoke_reason = None;
         match role {
             LiveDeviceRole::Source => {
@@ -179,6 +191,7 @@ impl LiveSessionStore {
                     *count = count.saturating_sub(1);
                     if *count == 0 {
                         record.viewer_connections.remove(device_id);
+                        record.local_art_triggers.retire_device(device_id);
                         if record.session.controller_device.as_deref() == Some(device_id) {
                             revoke_reason = Some(format!(
                                 "controller_revoked_viewer_disconnected:{device_id}"

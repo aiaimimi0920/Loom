@@ -20,7 +20,7 @@ fn identity(origin: &str) -> Identity {
         AccountSession {
             protocol: "neuro.loom-account.v1".to_owned(),
             device_id: uuid::Uuid::new_v4().to_string(),
-            account_id: "account:test".to_owned(),
+            account_id: format!("account:{}", uuid::Uuid::new_v4()),
             username: "fixture".to_owned(),
             device_name: "QR fixture".to_owned(),
             public_key: STANDARD.encode(key.verifying_key().as_bytes()),

@@ -6,8 +6,29 @@ fn route_otter_connections(
     admin: bool,
     registry: &SharedDeviceRegistryStore,
     bridge: &SharedOtterBridgeRuntime,
+    control_plane_root: &Path,
 ) -> Result<(u16, String)> {
     match (request.method.as_str(), path) {
+        ("GET", "/v1/otter/connection-info") if actor.is_some() => {
+            let (info, locale_request) = {
+                let store = registry
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
+                (
+                    store.connection_info(),
+                    otter_locale::request_for(&store, request, actor.expect("checked actor")),
+                )
+            };
+            let account = connected_users::local(control_plane_root)?
+                .into_iter()
+                .map(|user| user.name)
+                .reduce(|a, b| format!("{a} / {b}"));
+            Ok((
+                200,
+                json!({"loom": info, "account": account, "localeRequest": locale_request})
+                    .to_string(),
+            ))
+        }
         ("GET", "/v1/otter/identity") => {
             let store = registry
                 .lock()
@@ -35,6 +56,9 @@ fn route_otter_connections(
         }
         ("POST", "/v1/otter/connections/activate") => {
             activate_otter_connection(request, actor, registry)
+        }
+        ("POST", "/v1/otter/connections/disconnect") => {
+            disconnect_otter_connection(actor, registry)
         }
         _ if !admin => connection_error(403, "connection_admin_required"),
         ("GET", "/v1/otter/connections/lan") => {

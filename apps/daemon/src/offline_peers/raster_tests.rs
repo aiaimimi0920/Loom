@@ -7,6 +7,7 @@ fn fixture() -> (Peer, SigningKeyDocument, RasterRequest, RasterReceipt) {
         name: "B".into(),
         origin: "https://b.example.test".into(),
         public_key: key.public_key.clone(),
+        certificate: None,
         enabled: true,
     };
     let challenge = Challenge {

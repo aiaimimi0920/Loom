@@ -184,6 +184,7 @@ impl LoomDaemon {
         let offline_peers = offline_peers::OfflinePeers::new(&control_plane_root)?;
         let loom_id = offline_peers.loom_id()?;
         let runtime = DaemonRuntime {
+            local_art_tasks: local_art::Tasks::default(),
             offline_peers,
             projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
             hook_settings: config.hook_settings,
@@ -234,9 +235,16 @@ impl LoomDaemon {
             #[cfg(test)]
             maintenance_observer: None,
         };
+        let runtime = Arc::new(runtime);
+        runtime
+            .device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?
+            .lan
+            .bind_runtime(Arc::downgrade(&runtime))?;
         Ok(Self {
             listener,
-            runtime: Arc::new(runtime),
+            runtime,
             request_executor,
         })
     }
@@ -246,7 +254,8 @@ impl LoomDaemon {
     }
 
     pub fn serve_until(self, shutdown: Receiver<()>) -> Result<()> {
-        let _discovery = connection_discovery::Announcer::start(Arc::clone(&self.runtime.device_registry))?;
+        let _discovery =
+            connection_discovery::Announcer::start(Arc::clone(&self.runtime.device_registry))?;
         let worker_runtime = Arc::clone(&self.runtime);
         let mut executor = match self.request_executor {
             RequestExecutorConfig::Inline => None,
@@ -307,6 +316,7 @@ impl LoomDaemon {
                         "Capability Plugin idle maintenance failed: {error}"
                     ));
                 }
+                maintenance_runtime.local_art_tasks.prune();
             })?;
         let serve_result: Result<()> = 'serve: loop {
             if shutdown.try_recv().is_ok() {
@@ -430,8 +440,14 @@ impl LoomDaemon {
         let surface_stream_shutdown_result = surface_stream_executor.shutdown();
         let read_stage_shutdown_result = read_stage.shutdown();
         let maintenance_result = maintenance.shutdown();
+        self.runtime.local_art_tasks.shutdown();
         // Drained request workers cannot restart the bridge after its final revocation.
-        let retired_lan = self.runtime.device_registry.lock().ok().and_then(|mut store| store.lan.stop());
+        let retired_lan = self
+            .runtime
+            .device_registry
+            .lock()
+            .ok()
+            .and_then(|mut store| store.lan.stop());
         drop(retired_lan);
         let bridge_shutdown_result =
             stop_otter_bridge(&self.runtime.hook_bridge, &self.runtime.shared_images);

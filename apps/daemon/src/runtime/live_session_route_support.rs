@@ -93,14 +93,23 @@ fn invalid_live_protocol(message: impl Into<String>) -> LiveRuntimeError {
     LiveRuntimeError::new(400, "live_protocol_invalid", message)
 }
 
-fn live_session_path_id(path: &str) -> Option<&str> {
+fn live_session_path_id(path: &str) -> Option<String> {
     let id = path.strip_prefix("/v1/live/sessions/")?;
-    (!id.is_empty() && !id.contains('/')).then_some(id)
+    decode_live_session_segment(id)
 }
 
-fn live_session_suffix_id<'a>(path: &'a str, suffix: &str) -> Option<&'a str> {
+fn live_session_suffix_id(path: &str, suffix: &str) -> Option<String> {
     let id = path
         .strip_prefix("/v1/live/sessions/")?
         .strip_suffix(suffix)?;
-    (!id.is_empty() && !id.contains('/')).then_some(id)
+    decode_live_session_segment(id)
+}
+
+fn decode_live_session_segment(id: &str) -> Option<String> {
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    let decoded = percent_decode_component(id)?;
+    loom_protocol::validate_live_identifier(&decoded, "session_id").ok()?;
+    Some(decoded)
 }

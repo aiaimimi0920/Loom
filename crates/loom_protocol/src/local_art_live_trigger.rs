@@ -1,0 +1,161 @@
+//! 原生宿主显式自动回调授权；不扩展 grant.v1 的 Preview/服务/结果权限，也不模拟用户输入。
+use super::live_viewer::{validate_host, Error};
+use super::{Binding, Envelope, Grant, Permission, MAX_ENVELOPE};
+use crate::{LiveControlEnvelope, LiveControlMessage, LiveTriggerCondition};
+use serde::{Deserialize, Serialize};
+pub const PROTOCOL: &str = "loom.art.local.live-trigger.v1";
+pub const MAX_REQUEST: usize = 32 * 1024;
+pub const MAX_DELIVERY: usize = 16 * 1024;
+pub const CALLBACK: &str = "onLiveTrigger";
+#[path = "local_art_live_trigger_reply.rs"]
+mod reply;
+pub use reply::{Delivery, Receipt, Reply, Status, StopReason};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Scope {
+    pub session_id: String,
+    pub epoch: u64,
+    pub binding_id: String,
+    /// 宿主在 POST 之前生成；丢回复时只 Inspect，不重放自动执行授权。
+    pub authorization_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Consent {
+    AutomaticLocalCallback,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Configure {
+    pub scope: Scope,
+    pub consent: Consent,
+    pub condition: LiveTriggerCondition,
+    pub sequence: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Operation {
+    Configure {
+        configuration: Box<Configure>,
+    },
+    Inspect {
+        scope: Scope,
+    },
+    Claim {
+        scope: Scope,
+    },
+    Stop {
+        scope: Scope,
+    },
+    Ack {
+        scope: Scope,
+        delivery_id: String,
+        receipt: Receipt,
+    },
+}
+impl Operation {
+    pub fn scope(&self) -> &Scope {
+        match self {
+            Self::Configure { configuration } => &configuration.scope,
+            Self::Inspect { scope }
+            | Self::Claim { scope }
+            | Self::Stop { scope }
+            | Self::Ack { scope, .. } => scope,
+        }
+    }
+    pub fn requires_execution(&self) -> bool {
+        matches!(
+            self,
+            Self::Configure { .. } | Self::Claim { .. } | Self::Ack { .. }
+        )
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Request {
+    pub protocol_version: String,
+    pub binding: Binding,
+    pub grant: Envelope,
+    pub operation: Operation,
+}
+impl Request {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_REQUEST {
+            return Err(Error::Limit);
+        }
+        let input: Self = serde_json::from_slice(bytes).map_err(|_| Error::Wire)?;
+        if input.protocol_version != PROTOCOL {
+            return Err(Error::Wire);
+        }
+        if serde_json::to_vec(&input.grant)
+            .map_err(|_| Error::Wire)?
+            .len()
+            > MAX_ENVELOPE
+        {
+            return Err(Error::Limit);
+        }
+        Ok(input)
+    }
+    pub fn validate(&self, grant: &Grant, actor: &str, now: u64) -> Result<(), Error> {
+        if self.protocol_version != PROTOCOL {
+            return Err(Error::Wire);
+        }
+        validate_host(
+            &self.binding,
+            grant,
+            actor,
+            self.operation.requires_execution().then_some(now),
+        )?;
+        if !grant.permissions.contains(&Permission::LocalState) {
+            return Err(Error::Permission);
+        }
+        self.operation.scope().validate()?;
+        match &self.operation {
+            Operation::Configure { configuration } => {
+                let envelope = LiveControlEnvelope {
+                    protocol_version: crate::LIVE_PROTOCOL_VERSION.into(),
+                    session_id: configuration.scope.session_id.clone(),
+                    epoch: configuration.scope.epoch,
+                    sequence: configuration.sequence,
+                    message: LiveControlMessage::TriggerCondition(configuration.condition.clone()),
+                };
+                crate::validate_control_envelope(&envelope).map_err(|_| Error::Wire)?;
+            }
+            Operation::Ack {
+                delivery_id,
+                receipt,
+                ..
+            } => {
+                crate::validate_live_identifier(delivery_id, "delivery_id")
+                    .map_err(|_| Error::Wire)?;
+                receipt.validate()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+impl Scope {
+    pub fn validate(&self) -> Result<(), Error> {
+        for value in [&self.session_id, &self.binding_id, &self.authorization_id] {
+            crate::validate_live_identifier(value, "local_trigger_scope")
+                .map_err(|_| Error::Wire)?;
+        }
+        if !self.binding_id.starts_with("local-art:")
+            || self.epoch == 0
+            || self.epoch > 9_007_199_254_740_991
+        {
+            return Err(Error::Wire);
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+#[path = "local_art_live_trigger_tests.rs"]
+mod tests;

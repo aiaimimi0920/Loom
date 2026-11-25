@@ -52,6 +52,9 @@ try {
             if ($IdentityOutputPath) {
                 # Export only the public identity. Never serialize the request headers or private state.
                 $public = @{ peerId = $view.identity.peerId; publicKey = $view.identity.publicKey }
+                if ($view.localConnection) {
+                    $public.connection = @{ origin = $view.localConnection.origin; certificate = $view.localConnection.certificate }
+                }
                 $path = [IO.Path]::GetFullPath($IdentityOutputPath)
                 if (Test-Path -LiteralPath $path) { throw 'Identity output already exists; choose a new file.' }
                 $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
@@ -63,13 +66,20 @@ try {
             $view
         }
         'Trust' {
-            Assert-Origin $PeerOrigin
-            if (-not $IdentityPath -or (Get-Item -LiteralPath $IdentityPath).Length -gt 4096) {
-                throw 'Provide a public identity JSON file no larger than 4096 bytes.'
+            if (-not $IdentityPath -or (Get-Item -LiteralPath $IdentityPath).Length -gt 16384) {
+                throw 'Provide a public identity JSON file no larger than 16384 bytes.'
             }
             $identity = [IO.File]::ReadAllText([IO.Path]::GetFullPath($IdentityPath), $utf8) | ConvertFrom-Json
+            if (-not $PeerOrigin -and $identity.connection) { $PeerOrigin = $identity.connection.origin }
+            Assert-Origin $PeerOrigin
             $peer = @{ peerId = $identity.peerId; publicKey = $identity.publicKey
                 name = $PeerName; origin = $PeerOrigin; enabled = $true }
+            if ($identity.connection) {
+                if ($PeerOrigin -cne $identity.connection.origin) {
+                    throw 'Peer origin must match the explicitly exchanged TLS connection.'
+                }
+                $peer.certificate = $identity.connection.certificate
+            }
             Invoke-PeerRequest 'PUT' '' @{ expectedRevision = $view.revision; peer = $peer }
         }
         'Probe' {

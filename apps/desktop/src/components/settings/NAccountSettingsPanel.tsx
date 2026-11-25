@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button, Notice, Stack } from "@neuro/ui";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { cloudError, naccountRequest, type NAccountView } from "../../services/naccount";
 import { CloudResourcesPanel } from "./CloudResourcesPanel";
@@ -40,29 +41,33 @@ export function NAccountSettingsPanel({ baseUrl }: { baseUrl: string }) {
       else window.open(view.authorizationUrl, "_blank", "noopener,noreferrer");
     } catch { setError("无法打开登录页面，请重试。"); }
   }
-  return <section className="settings-general-panel" aria-label="NAccount">
+  return <section className="settings-general-panel settings-account-panel" aria-label="NAccount">
     <header className="settings-general-panel__header"><strong>NAccount</strong></header>
     {!view && !busy && <p>尚未读取登录状态</p>}
     {view?.status === "signed_out" && <>
       <p>{view.configured ? "未登录" : "客户端尚未配置"}</p>
-      <button className="primary-button" disabled={busy || !view.configured} onClick={() => void action("start")}>登录 NAccount</button>
-      {view.remoteRevoked === false && <p role="status">已退出本机；远端会话撤销未完成。</p>}
+      <Stack horizontal><Button compact variant="primary" disabled={busy || !view.configured} onClick={() => void action("start")}>登录 NAccount</Button></Stack>
+      {view.remoteRevoked === false && <Notice tone="warning">已退出本机；远端会话撤销未完成。</Notice>}
     </>}
     {view?.status === "pending" && <>
-      <button className="primary-button" disabled={busy} onClick={() => void openLogin()}>在浏览器中登录</button>
-      <button className="ghost-button" disabled={busy} onClick={() => void action("logout")}>取消登录</button>
+      <Stack horizontal>
+        <Button compact variant="primary" disabled={busy} onClick={() => void openLogin()}>在浏览器中登录</Button>
+        <Button compact disabled={busy} onClick={() => void action("logout")}>取消登录</Button>
+      </Stack>
     </>}
     {view?.status === "signed_in" && <>
       <p>{view.name || view.principal}</p>
-      <button className="ghost-button" disabled={busy} onClick={() => void action("refresh")}>检查登录状态</button>
-      <button className="ghost-button" disabled={busy} onClick={() => void action("logout")}>退出 NAccount</button>
+      <Stack horizontal>
+        <Button compact disabled={busy} onClick={() => void action("refresh")}>检查登录状态</Button>
+        <Button compact disabled={busy} onClick={() => void action("logout")}>退出 NAccount</Button>
+      </Stack>
       <CloudResourcesPanel key={`${baseUrl}:${view.principal}`} baseUrl={baseUrl} />
       <CloudDownloadsPanel key={`downloads:${baseUrl}:${view.principal}`} baseUrl={baseUrl} />
     </>}
-    {busy && <p role="status">正在连接…</p>}
+    {busy && <Notice>正在连接…</Notice>}
     {error && <>
-      <p role="alert">{error}</p>
-      <button className="ghost-button" disabled={busy} onClick={() => void action("status")}>重试连接</button>
+      <Notice tone="danger">{error}</Notice>
+      <Stack horizontal><Button compact disabled={busy} onClick={() => void action("status")}>重试连接</Button></Stack>
     </>}
   </section>;
 }

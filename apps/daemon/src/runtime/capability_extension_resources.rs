@@ -59,20 +59,36 @@ fn stage_extension_resource_uploads(
     snapshot: &ContributionSnapshot,
     surface_resources: &SharedSurfaceResourceStore,
 ) -> Result<ExtensionResourceUploadLease, ExtensionResourceUploadError> {
+    stage_image_uploads(
+        uploads,
+        &mut invocation.resource_refs,
+        snapshot,
+        &invocation.plugin_id,
+        &invocation.command_id,
+        surface_resources,
+    )
+}
+
+// 两个已认证入口共享同一权限/解码/注册/回收实现；Art不借此获得通用管理路由。
+fn stage_image_uploads(
+    uploads: Vec<ExtensionResourceUpload>,
+    references: &mut Vec<ExtensionResourceRef>,
+    snapshot: &ContributionSnapshot,
+    plugin_id: &str,
+    command_id: &str,
+    surface_resources: &SharedSurfaceResourceStore,
+) -> Result<ExtensionResourceUploadLease, ExtensionResourceUploadError> {
     let mut lease = ExtensionResourceUploadLease::new(surface_resources);
     if uploads.is_empty() {
         return Ok(lease);
     }
     if uploads.len() > MAX_EXTENSION_RESOURCE_UPLOADS
-        || invocation
-            .resource_refs
-            .len()
-            .saturating_add(uploads.len())
+        || references.len().saturating_add(uploads.len())
             > loom_protocol::MAX_EXTENSION_RESOURCE_REFS
     {
         return Err(ExtensionResourceUploadError::Invalid);
     }
-    if !command_allows_image_upload(snapshot, invocation) {
+    if !command_allows_image_upload(snapshot, plugin_id, command_id) {
         return Err(ExtensionResourceUploadError::PermissionDenied);
     }
 
@@ -114,27 +130,29 @@ fn stage_extension_resource_uploads(
         });
         lease.lease_ids.push(resource_lease.lease_id);
     }
-    invocation.resource_refs.extend(uploaded_refs);
+    references.extend(uploaded_refs);
     Ok(lease)
 }
 
 fn command_allows_image_upload(
     snapshot: &ContributionSnapshot,
-    invocation: &ExtensionInvocation,
+    plugin_id: &str,
+    command_id: &str,
 ) -> bool {
     let granted = snapshot.plugins.iter().any(|plugin| {
-        plugin.id == invocation.plugin_id
+        plugin.id == plugin_id
             && plugin.trust_status == loom_protocol::ExtensionTrustStatus::Trusted
-            && plugin.effective_permissions.iter().any(|permission| {
-                permission == EXTENSION_IMAGE_READ_PERMISSION
-            })
+            && plugin
+                .effective_permissions
+                .iter()
+                .any(|permission| permission == EXTENSION_IMAGE_READ_PERMISSION)
     });
     if !granted {
         return false;
     }
     snapshot.contributions.commands.iter().any(|command| {
-        command.id == invocation.command_id
-            && command.plugin_id == invocation.plugin_id
+        command.id == command_id
+            && command.plugin_id == plugin_id
             && command
                 .payload
                 .get("permissions")

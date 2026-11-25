@@ -1,0 +1,67 @@
+/* Shared domain layout only; fields, actions, states and choices keep their standard skins. */
+.loom-device-settings,
+.loom-device-settings__section {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 14px;
+}
+.loom-device-settings {
+  padding: 16px;
+}
+.loom-device-settings > header,
+.loom-device-settings__actions,
+.loom-device-settings__metadata,
+.loom-device-settings__file {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.loom-device-settings > header {
+  justify-content: space-between;
+}
+.loom-device-settings :is(h2, h3) {
+  margin: 0;
+}
+.loom-device-settings code,
+.loom-device-settings .n-notice {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.loom-device-settings__fields {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.loom-device-settings__fields > *,
+.loom-device-settings .n-field {
+  min-width: 0;
+}
+.loom-device-settings__wide {
+  grid-column: 1 / -1;
+}
+.loom-device-settings__actions {
+  justify-content: flex-end;
+}
+.loom-device-settings__filename {
+  min-width: 0;
+  flex: 1 1 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .loom-device-settings {
+    padding: 12px;
+  }
+  .loom-device-settings__fields {
+    grid-template-columns: 1fr;
+  }
+}

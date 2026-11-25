@@ -108,6 +108,16 @@ pub fn secure_client(
     timeout: Duration,
     policy: OutboundPolicy,
 ) -> Result<Client, String> {
+    secure_client_with_roots(user_agent, timeout, policy, &[])
+}
+
+/// Extra roots are scoped to this client; callers must obtain them from an approved trust record.
+pub fn secure_client_with_roots(
+    user_agent: &str,
+    timeout: Duration,
+    policy: OutboundPolicy,
+    roots: &[reqwest::Certificate],
+) -> Result<Client, String> {
     let redirect_policy = policy.clone();
     let proxy = crate::network_proxy::protected_proxy(policy.clone())?;
     let builder = Client::builder()
@@ -123,7 +133,10 @@ pub fn secure_client(
                 Err(error) => attempt.error(error),
             }
         }));
-    let builder = builder.no_proxy();
+    let mut builder = builder.no_proxy();
+    for certificate in roots {
+        builder = builder.add_root_certificate(certificate.clone());
+    }
     let builder = match proxy {
         Some(proxy) => builder.proxy(proxy),
         None => builder,

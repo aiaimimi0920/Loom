@@ -8,12 +8,15 @@ mod local;
 mod model;
 mod peer;
 mod receiver;
+mod shared_import;
+mod shared_source;
 mod store;
 mod wire;
 use model::{Create, Offer, Record};
 pub(crate) use store::Store;
 const MAX_BODY: usize = loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES;
 pub(crate) const ROUTES: &[&str] = &[
+    "/v1/offline-projections/import",
     "/v1/offline-projections/edit",
     "/v1/offline-projections/create",
     "/v1/offline-projections/inbox",

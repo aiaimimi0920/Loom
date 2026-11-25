@@ -1,4 +1,5 @@
 // Otter bridge, managed-device, and workflow-instantiation contracts.
+import type { OtterLocaleState } from "./otterLocaleTypes.ts";
 
 export interface LoomOtterBridgeStatus {
   running?: boolean;
@@ -22,8 +23,10 @@ export interface LoomManagedDevice {
   approval: LoomDeviceApproval;
   createdAt: number;
   lastSeenAt?: number | null;
+  online?: boolean;
   isLocal?: boolean;
   enabled?: boolean;
+  locale?: OtterLocaleState | null;
 }
 
 export interface LoomDevicesResponse {

@@ -31,6 +31,7 @@ fn explicit_revoke_provenance_survives_removal_and_device_reenable() {
         sha256_bytes(token.as_bytes()),
         ActiveDeviceSession {
             device_id: owner,
+            last_activity_at_ms: unix_time_millis(),
             expires_at_ms: unix_time_millis().saturating_add(60_000),
             session_epoch: epoch,
             used_nonces: BTreeSet::new(),

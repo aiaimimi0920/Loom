@@ -16,6 +16,23 @@ capability reporting. Art execution remains in Loom.
 per-frame Base64. A live session may reference a Surface attachment, but its
 media uses a separate binary WebSocket or a negotiated same-machine transport.
 
+## Shared-Loom designated viewer
+
+An authenticated standalone source can include `directViewerDeviceId` in the
+`POST /v1/live/sessions` request outside the envelope. This is an immutable grant to
+one other device, not initial membership. Such a source cannot advertise input or
+window observation. The authenticated directory exposes it only to the source
+and the exact recipient, with `directView: true` in the snapshot. Discovery is not
+a credential.
+
+`POST /v1/live/sessions/{sessionId}/direct-viewer` accepts a `session_ack` envelope
+under the same paired Device session and nonce requirements. Under the membership
+lock Loom checks the exact recipient before consuming a sequence or appending
+`viewer_joined`. Surface and Local Art attachment, control, triggers and Wall access
+are not alternate ways to use this grant. The established media WSS, reliable
+control history, device revocation and source close contracts are unchanged.
+This is not a cross-Loom or internet media transport.
+
 ## Control envelope
 
 Every JSON control message contains:

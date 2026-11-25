@@ -6,7 +6,9 @@ param(
     [string]$PreparedPayloadRoot = "",
     [switch]$NoZip,
     [switch]$DryRun,
-    [switch]$RequireCleanSource
+    [switch]$RequireCleanSource,
+    [switch]$DevelopmentOnly,
+    [string]$LibAria2BuildRoot = ""
 )
 
 Set-StrictMode -Version Latest
@@ -30,6 +32,12 @@ $moduleRoot = Join-Path $PSScriptRoot "build-release"
 . (Join-Path $moduleRoot "Archives.ps1")
 
 $resolvedVersionId = Resolve-VersionId -ExplicitVersionId $VersionId
+if ($DevelopmentOnly -and $resolvedVersionId -notmatch '^internal-') {
+    throw 'Development-only packages require an internal- VersionId.'
+}
+if ($DevelopmentOnly -and ($RequireCleanSource -or $PreparedPayloadRoot)) {
+    throw 'Development-only packages rebuild current source and cannot use formal-release options.'
+}
 $resolvedOutputRoot = Resolve-OutputRoot -Value $OutputRoot
 Assert-LoomBuildOutputRoot -OutputRoot $resolvedOutputRoot
 $destination = Resolve-LoomPackageRelativePath -PackageDir $resolvedOutputRoot -RelativePath $resolvedVersionId
@@ -111,6 +119,7 @@ if ($RequireCleanSource -and $sourceGitDirty -ne $false) {
 if ($DryRun) {
     $plan = New-Plan -Catalog $catalog -ResolvedVersionId $resolvedVersionId -ResolvedOutputRoot $resolvedOutputRoot -Destination $destination
     $plan.preparedPayload = $null -ne $preparedPayload
+    $plan.developmentOnly = [bool]$DevelopmentOnly
     Write-Output ($plan | ConvertTo-Json -Depth 20)
     exit 0
 }
@@ -120,8 +129,10 @@ if (Test-Path -LiteralPath $destination) {
 }
 
 $aria2Policy = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'security/libaria2-runtime.json') | ConvertFrom-Json
-if (-not $aria2Policy.releaseApproved) { throw 'LIBARIA2_RELEASE_NOT_APPROVED' }
-& (Join-Path $repoRoot 'scripts/Install-LoomLibAria2.ps1') -BuildRoot (Join-Path $repoRoot '.tmp/libaria2-build') -Destination (Join-Path $repoRoot '.tmp/download-engine')
+if (-not $DevelopmentOnly -and -not $aria2Policy.releaseApproved) { throw 'LIBARIA2_RELEASE_NOT_APPROVED' }
+if ([string]::IsNullOrWhiteSpace($LibAria2BuildRoot)) { $LibAria2BuildRoot = Join-Path $repoRoot '.tmp/libaria2-build' }
+# Internal staging still verifies the pinned DLL, source receipt and current bridge hash.
+& (Join-Path $repoRoot 'scripts/Install-LoomLibAria2.ps1') -BuildRoot $LibAria2BuildRoot -Destination (Join-Path $repoRoot '.tmp/download-engine') -DevelopmentOnly:$DevelopmentOnly
 
 if (-not (Test-Path -LiteralPath $resolvedOutputRoot)) {
     New-Item -ItemType Directory -Path $resolvedOutputRoot -Force | Out-Null
@@ -213,6 +224,9 @@ Write-Utf8NoBom -Path $buildInfoPath -Value (New-BuildInfo `
     -Catalog $catalog `
     -GitHead $gitHead `
     -GitDirty $gitDirty)
+if ($DevelopmentOnly) {
+    [IO.File]::AppendAllText($buildInfoPath, "distribution=internal-manual-test`nformalReleaseApproved=false`n", [Text.UTF8Encoding]::new($false))
+}
 $buildInfoDigest = Get-LoomFileDigest -Path $buildInfoPath
 $buildInfo = [ordered]@{
     kind = "build-info"
@@ -307,7 +321,9 @@ $provenance = [ordered]@{
     sourcePaths = @(".")
     commands = @($commandRecords)
     subjects = $provenanceSubjects
+    developmentOnly = [bool]$DevelopmentOnly
 }
+if ($DevelopmentOnly) { $provenance.formalReleaseApproved = $false }
 Write-Utf8NoBom -Path $provenancePath -Value (($provenance | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
 $provenanceDigest = Get-LoomFileDigest -Path $provenancePath
 $provenanceRecord = [ordered]@{
@@ -351,7 +367,10 @@ $manifest = [ordered]@{
     checksums = "checksums.sha256"
     sourceGitDirty = $gitDirty
     sourcePaths = @(".")
+    distribution = if ($DevelopmentOnly) { 'internal-manual-test' } else { 'release' }
+    libaria2ReleaseApproved = [bool]$aria2Policy.releaseApproved
 }
+if ($DevelopmentOnly) { $manifest.formalReleaseApproved = $false }
 $manifestPath = Resolve-LoomPackageRelativePath -PackageDir $destination -RelativePath "manifest.json"
 Write-Utf8NoBom -Path $manifestPath -Value (($manifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
 $checksumRecord = Write-Checksums -Destination $destination

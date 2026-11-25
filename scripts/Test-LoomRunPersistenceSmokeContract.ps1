@@ -72,4 +72,39 @@ $packagePreflightIndex = $raw.IndexOf('$packageFullPath = [System.IO.Path]::GetF
 Assert-True ($runtimeTryIndex -ge 0 -and $runtimeCatchIndex -gt $runtimeTryIndex) "Smoke must have a main try/catch execution boundary."
 Assert-True ($packagePreflightIndex -gt $runtimeTryIndex -and $packagePreflightIndex -lt $runtimeCatchIndex) "Package preflight must write a failed summary through the main finally block."
 
+$processPath = Join-Path $scriptRoot "run-persistence-smoke\Process.ps1"
+Assert-Contains '. (Join-Path $PSScriptRoot "run-persistence-smoke\Process.ps1")' $raw "Smoke must load its process identity definitions."
+$null = [Management.Automation.Language.Parser]::ParseFile($processPath, [ref]$tokens, [ref]$parseErrors)
+Assert-Equal 0 @($parseErrors).Count "Process definitions must parse."
+
+# Run only the extracted process policy with deterministic mocks, never a real user process.
+& {
+    . $processPath
+    $script:fixtureStoppedIds = @()
+    $script:fixtureSnapshot = [pscustomobject]@{ ExecutablePath = "C:\fixture\other.exe" }
+    function Get-ProcessSnapshotById { param([int]$ProcessId) return $script:fixtureSnapshot }
+    function Stop-Process {
+        param([int]$Id, [switch]$Force, [string]$ErrorAction)
+        $script:fixtureStoppedIds += $Id
+        $script:fixtureSnapshot = $null
+    }
+    Assert-Equal $true (Stop-ExactProcessById -ProcessId $null -ExpectedExecutablePath "C:\fixture\loom.exe") "Missing process id must be a no-op."
+    Assert-Equal $false (Stop-ExactProcessById -ProcessId 42 -ExpectedExecutablePath "C:\fixture\loom.exe") "A reused id with another executable must be preserved."
+    Assert-Equal 0 $script:fixtureStoppedIds.Count "Path mismatch must never stop a process."
+    $script:fixtureSnapshot = [pscustomobject]@{ ExecutablePath = "C:\fixture\loom.exe" }
+    Assert-Equal $true (Stop-ExactProcessById -ProcessId 42 -ExpectedExecutablePath "C:\fixture\loom.exe") "Owned process must stop after its snapshot disappears."
+    Assert-Equal 1 $script:fixtureStoppedIds.Count "Owned process must be stopped once."
+    Assert-Equal 42 $script:fixtureStoppedIds[0] "Cleanup must preserve process identity."
+    function Get-CandidateProcessSnapshot {
+        param([string[]]$ExecutablePaths)
+        return @(
+            [pscustomobject]@{ processId = 10; parentProcessId = 99 },
+            [pscustomobject]@{ processId = 11; parentProcessId = 98 },
+            [pscustomobject]@{ processId = 12; parentProcessId = 99 }
+        )
+    }
+    $sibling = Wait-ForSiblingDaemon -DesktopPid 99 -DaemonExecutablePath "C:\fixture\loom.exe" -BaselinePidSet @{ "10" = $true }
+    Assert-Equal 12 $sibling.processId "Sidecar selection must exclude baseline and unrelated parents."
+}
+
 Write-Host "Loom run persistence smoke contract passed."

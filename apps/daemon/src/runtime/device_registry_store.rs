@@ -58,6 +58,7 @@ struct DeviceRegistryStore {
     devices: BTreeMap<String, ManagedDevice>,
     challenges: BTreeMap<String, DeviceSessionChallenge>,
     sessions: BTreeMap<String, ActiveDeviceSession>,
+    locales: otter_locale::Store,
 }
 
 const DEVICE_CHALLENGE_TTL_MILLIS: u64 = 60_000;
@@ -76,6 +77,7 @@ struct DeviceSessionChallenge {
 
 struct ActiveDeviceSession {
     device_id: String,
+    last_activity_at_ms: u64,
     expires_at_ms: u64,
     session_epoch: u64,
     used_nonces: BTreeSet<String>,
@@ -120,7 +122,11 @@ impl DeviceRegistryStore {
         Self::new_with_identity(path, local_addr, None)
     }
 
-    fn new_with_identity(path: PathBuf, local_addr: SocketAddr, loom_id: Option<&str>) -> Result<Self> {
+    fn new_with_identity(
+        path: PathBuf,
+        local_addr: SocketAddr,
+        loom_id: Option<&str>,
+    ) -> Result<Self> {
         let mut devices: BTreeMap<String, ManagedDevice> = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<DeviceRegistryDocument>(&bytes)
                 .with_context(|| {
@@ -179,7 +185,10 @@ impl DeviceRegistryStore {
         );
         let mut store = Self {
             lan: lan_listener::Manager::open(&path.with_file_name("loom-lan.json"), local_addr)?,
-            connection_policy: connection_policy::Store::open_with_identity(&path.with_file_name("loom-connection.json"), loom_id)?,
+            connection_policy: connection_policy::Store::open_with_identity(
+                &path.with_file_name("loom-connection.json"),
+                loom_id,
+            )?,
             connection_policy_revision: 0,
             connection_requests: BTreeMap::new(),
             connection_attempts: Vec::new(),
@@ -195,6 +204,7 @@ impl DeviceRegistryStore {
             devices,
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            locales: otter_locale::Store::default(),
         };
         if let Err(error) = store.expire_pending_pairings(now) {
             // The cleanup restores every record; readable authorization state is
@@ -334,6 +344,7 @@ impl DeviceRegistryStore {
             token_hash,
             ActiveDeviceSession {
                 device_id: device.id.clone(),
+                last_activity_at_ms: unix_time_millis(),
                 expires_at_ms,
                 session_epoch: device.session_epoch,
                 used_nonces: BTreeSet::new(),
@@ -382,6 +393,7 @@ impl DeviceRegistryStore {
                 "device request nonce has already been used",
             ));
         }
+        session.last_activity_at_ms = unix_time_millis();
         Ok(device_id)
     }
 
@@ -427,6 +439,7 @@ impl DeviceRegistryStore {
     }
 
     fn revoke_device_sessions(&mut self, device_id: &str) {
+        self.locales.revoke(device_id);
         self.sessions.retain(|_, session| {
             if session.device_id == device_id {
                 session.revoked.store(true, Ordering::SeqCst);

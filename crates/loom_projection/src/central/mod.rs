@@ -50,7 +50,13 @@ impl CentralClient {
     pub async fn execute(&self, operation: &CentralOperation) -> Result<CentralResponse> {
         if let Some(envelope) = operation.envelope() {
             envelope.validate(self.identity.origin())?;
-            if envelope.source.account_id != self.identity.session().account_id {
+            if !matches!(
+                operation,
+                CentralOperation::Inspect { .. } | CentralOperation::Accept { .. }
+            ) && (envelope.source.account_id != self.identity.session().account_id
+                || envelope.source.device_id != self.identity.session().device_id
+                || envelope.source.public_key != self.identity.session().public_key)
+            {
                 return Err(error(403, "projection_access_denied"));
             }
         }

@@ -168,8 +168,8 @@ impl LiveSessionStore {
     }
 }
 
-fn send_live_video_policy(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+fn send_live_video_policy<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
     sessions: &LiveSessionStore,
     session_id: &str,
     previous: &mut Option<loom_protocol::LiveVideoSourceControl>,
@@ -190,8 +190,8 @@ fn send_live_video_policy(
     true
 }
 
-fn service_live_video_viewer_control(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+fn service_live_video_viewer_control<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
     lease: &LiveVideoViewerLease,
     grant: &LiveMediaDeviceGrant,
     profile: LiveMediaProfile,

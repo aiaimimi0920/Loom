@@ -127,6 +127,7 @@ fn test_daemon_runtime_from_config(
         &capability_runtime,
     )));
     DaemonRuntime {
+        local_art_tasks: local_art::Tasks::default(),
         offline_peers: offline_peers::OfflinePeers::new(control_plane_root).expect("offline peers"),
         projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())
             .expect("projection owner"),

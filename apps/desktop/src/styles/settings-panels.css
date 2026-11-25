@@ -1,4 +1,19 @@
-/* Owns settings information rows, cache/About panels, version links, and shared scrollbar presentation. */
+/* Owns settings information rows, account/cloud layout, cache/About panels and scrollbars. */
+
+.settings-account-panel,
+.settings-cloud-panel,
+.settings-cloud-item {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.settings-account-panel p,
+.settings-cloud-panel p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 
 .settings-network-row:last-child {
   border-bottom: 0;
@@ -25,26 +40,7 @@
 }
 
 .settings-general-toggle {
-  display: inline-flex;
-  min-height: 40px;
   justify-self: end;
-  align-items: center;
-  gap: 9px;
-  color: var(--loom-theme-text);
-  font-size: 0.78rem;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.settings-general-toggle input {
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  accent-color: var(--loom-theme-accent-text);
-}
-
-.settings-general-toggle:focus-within {
-  color: var(--loom-theme-accent-text);
 }
 
 .settings-network-address {
@@ -129,7 +125,7 @@
 
 .otter-cache-row b {
   color: var(--loom-theme-text);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--n-mono);
   font-size: 0.8rem;
   font-weight: 750;
 }
@@ -138,28 +134,6 @@
   width: 184px;
   min-width: 0;
   justify-self: end;
-}
-
-.otter-cache-row .ghost-button,
-.otter-cache-row .danger-button {
-  min-width: 124px;
-  min-height: 36px;
-  border-radius: 7px;
-  padding: 7px 12px;
-}
-
-.otter-cache-row--loading {
-  grid-template-columns: 1fr;
-  color: var(--loom-theme-muted);
-  text-align: center;
-}
-
-.otter-cache-row--total {
-  background: color-mix(in srgb, var(--loom-theme-secondary) 2.5%, transparent);
-}
-
-.otter-cache-row--total b {
-  color: var(--loom-theme-accent-text);
 }
 
 .settings-section__body .about-panel {
@@ -246,7 +220,7 @@
   min-width: 0;
   flex: 1 1 auto;
   color: var(--loom-theme-muted);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--n-mono);
   font-size: 0.72rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -254,21 +228,18 @@
 }
 
 .about-panel__repository-link {
-  display: flex;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  border: 0;
-  padding: 5px 0;
-  background: transparent;
-  color: var(--loom-theme-secondary-text);
-  cursor: pointer;
-  font: inherit;
 }
 
-.about-panel__repository-link span {
+.about-panel__repository-link .n-button-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.about-panel__repository-link .n-button-label > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -286,18 +257,6 @@
   stroke-width: 1.8;
 }
 
-.about-panel__repository-link:hover {
-  color: var(--loom-theme-accent-text);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.about-panel__repository-link:focus-visible {
-  border-radius: 4px;
-  outline: 2px solid var(--loom-theme-accent-text);
-  outline-offset: 2px;
-}
-
 .about-panel__commit {
   flex: 0 0 auto;
   border: 1px solid color-mix(in srgb, var(--loom-theme-accent) 28%, transparent);
@@ -305,16 +264,13 @@
   padding: 3px 7px;
   background: color-mix(in srgb, var(--loom-theme-accent) 7.5%, transparent);
   color: var(--loom-theme-accent-text);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--n-mono);
   font-size: 0.72rem;
   letter-spacing: 0.04em;
 }
 
 .about-panel__log-level {
   width: min(220px, 100%);
-  background: var(--loom-theme-control);
-  color: var(--loom-theme-text);
-  -webkit-text-fill-color: var(--loom-theme-text);
 }
 
 .about-panel__log-file {
@@ -324,13 +280,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.about-panel .ghost-button:disabled {
-  border-color: var(--loom-theme-line);
-  background: var(--loom-theme-control);
-  color: var(--loom-theme-muted);
-  cursor: not-allowed;
 }
 
 ::-webkit-scrollbar {

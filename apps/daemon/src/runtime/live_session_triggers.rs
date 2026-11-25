@@ -87,7 +87,14 @@ impl LiveSessionStore {
         };
         let mut sessions = self.lock_state()?;
         let record = active_record_mut(&mut sessions, &envelope.session_id)?;
+        ensure_live_collaboration(record)?;
         ensure_viewer(record, actor_device_id)?;
+        if record.local_art_triggers.0.contains_key(binding_id) {
+            return Err(local_trigger_error(
+                409,
+                "local_art_trigger_binding_conflict",
+            ));
+        }
         validate_control_sequence(record, actor_device_id, envelope.epoch, envelope.sequence)?;
         if let Some(existing) = record.trigger_registrations.get(binding_id) {
             if condition.revision <= existing.condition.revision {
@@ -100,7 +107,9 @@ impl LiveSessionStore {
                     ),
                 ));
             }
-        } else if record.trigger_registrations.len() >= loom_protocol::LIVE_MAX_TRIGGER_BINDINGS {
+        } else if record.trigger_registrations.len() + record.local_art_triggers.len()
+            >= loom_protocol::LIVE_MAX_TRIGGER_BINDINGS
+        {
             return Err(LiveRuntimeError::new(
                 429,
                 "live_trigger_binding_limit",
@@ -219,72 +228,19 @@ fn evaluate_live_triggers(
         {
             continue;
         }
-        let reason = trigger_safety_skip_reason(&registration.condition, observation);
-        let matches =
-            reason.is_none() && trigger_condition_matches(&registration.condition, observation);
-        let state = &mut registration.state;
-        if let Some(reason) = reason {
-            if registration.condition.rearm {
-                state.armed = true;
-            }
-            state.initialized = true;
-            state.last_match = false;
-            state.pending_offline_match = false;
-            if state.last_skip_reason.as_deref() != Some(reason) {
-                state.last_skip_reason = Some(reason.to_owned());
-                evaluated.push((registration.clone(), Some(reason.to_owned()), false));
-            }
-            continue;
-        }
-        if !matches {
-            if registration.condition.rearm {
-                state.armed = true;
-            }
-            state.initialized = true;
-            state.last_match = false;
-            state.pending_offline_match = false;
-            state.last_skip_reason = None;
-            continue;
-        }
-        if registration.condition.rising_edge && !state.initialized {
-            state.initialized = true;
-            state.last_match = true;
-            let reason = "rising_edge_not_observed";
-            if state.last_skip_reason.as_deref() != Some(reason) {
-                state.last_skip_reason = Some(reason.to_owned());
-                evaluated.push((registration.clone(), Some(reason.to_owned()), false));
-            }
-            continue;
-        }
         let authorizer_online = viewer_connections
             .get(&registration.binding.authorized_by)
             .copied()
             .unwrap_or_default()
             > 0;
-        if !authorizer_online {
-            state.initialized = true;
-            state.last_match = false;
-            state.pending_offline_match = true;
-            let reason = "authorizer_offline";
-            if state.last_skip_reason.as_deref() != Some(reason) {
-                state.last_skip_reason = Some(reason.to_owned());
-                evaluated.push((registration.clone(), Some(reason.to_owned()), false));
-            }
-            continue;
+        if let Some((reason, fire)) = evaluate_live_trigger_state(
+            &registration.condition,
+            &mut registration.state,
+            observation,
+            authorizer_online,
+        ) {
+            evaluated.push((registration.clone(), reason, fire));
         }
-        if !state.armed || (registration.condition.rising_edge && state.last_match) {
-            state.initialized = true;
-            state.last_match = true;
-            state.pending_offline_match = false;
-            state.last_skip_reason = None;
-            continue;
-        }
-        state.initialized = true;
-        state.last_match = true;
-        state.armed = false;
-        state.pending_offline_match = false;
-        state.last_skip_reason = None;
-        evaluated.push((registration.clone(), None, true));
     }
 
     let mut dispatches = Vec::new();

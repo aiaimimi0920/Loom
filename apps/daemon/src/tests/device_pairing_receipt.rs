@@ -108,3 +108,65 @@ fn public_pairing_returns_only_submitted_identity_receipt() {
         .to_string()
         .contains("private://administrator-address"));
 }
+
+#[test]
+fn managed_device_online_tracks_recent_authenticated_activity_without_losing_history() {
+    let f = Fixture::new();
+    let (local, local_token) = wall_http::pair(f.port, "Local Otter");
+    let (code, _) = wall_http::pair(f.port, "CODE");
+    let (old, _) = wall_http::pair(f.port, "Historical Otter");
+    let list = || wall_http::admin(f.port, "GET", "/v1/devices", None).1;
+    let online = |value: &serde_json::Value| {
+        value["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["isLocal"] != true && entry["online"] == true)
+            .map(|entry| entry["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    {
+        let mut store = f.devices.lock().unwrap();
+        for session in store.sessions.values_mut().filter(|s| s.device_id == old) {
+            session.last_activity_at_ms = unix_time_millis().saturating_sub(30_001);
+        }
+    }
+    let current = list();
+    let active = online(&current);
+    assert_eq!(active.len(), 2);
+    assert!(active.contains(&local) && active.contains(&code));
+    assert_eq!(current["devices"].as_array().unwrap().len(), 4);
+    {
+        let mut store = f.devices.lock().unwrap();
+        for session in store.sessions.values_mut() {
+            session.last_activity_at_ms = 0;
+        }
+    }
+    assert!(
+        online(&list()).is_empty(),
+        "a 15-minute credential is not online evidence"
+    );
+    assert_eq!(
+        wall_http::device(
+            f.port,
+            &local_token,
+            "POST",
+            "/v1/projections/targets",
+            Some(json!({}))
+        )
+        .0,
+        200
+    );
+    assert_eq!(online(&list()), vec![local.clone()]);
+    f.devices
+        .lock()
+        .unwrap()
+        .devices
+        .get_mut(&local)
+        .unwrap()
+        .session_epoch += 1;
+    assert!(
+        online(&list()).is_empty(),
+        "old-epoch activity must not revive a device"
+    );
+}

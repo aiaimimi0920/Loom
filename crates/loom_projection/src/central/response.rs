@@ -113,12 +113,19 @@ fn validate_projection_view(
             {
                 return Err(invalid_response());
             }
-            if let CentralOperation::Accept { .. } = operation {
-                if record
-                    .receiver
-                    .as_ref()
-                    .is_none_or(|receiver| receiver.device_id != identity.session().device_id)
-                {
+            if let CentralOperation::Accept {
+                receiver_unit_id,
+                expected_revision,
+                expected_digest,
+                ..
+            } = operation
+            {
+                if record.receiver.as_ref().is_none_or(|receiver| {
+                    receiver.device_id != identity.session().device_id
+                        || receiver.unit_id != *receiver_unit_id
+                        || receiver.revision != *expected_revision
+                        || receiver.digest != *expected_digest
+                }) {
                     return Err(invalid_response());
                 }
             }
@@ -186,7 +193,9 @@ fn validate_view(view: &View, identity: &Identity, now: u64, allow_guest: bool) 
 
 fn validate_record(record: &Record, identity: &Identity) -> Result<()> {
     record.envelope.validate(identity.origin())?;
-    if record.envelope.source.account_id != identity.session().account_id
+    if (record.envelope.source.device_id == identity.session().device_id
+        && (record.envelope.source.account_id != identity.session().account_id
+            || record.envelope.source.public_key != identity.session().public_key))
         || record.envelope.source.revision != 1
     {
         return Err(invalid_response());

@@ -179,6 +179,32 @@ fn native_tls_fixed_subscription_updates_and_stop_joins_idle_socket() {
 }
 
 #[test]
+fn pong_renews_expired_read_slice_without_reconnecting() {
+    let fixture = Fixture::new();
+    let discovery = fixture.identity.discovery().clone();
+    let worker = std::thread::spawn(move || {
+        let mut socket = fixture.accept();
+        for payload in [Vec::new(), vec![1, 2, 3]] {
+            socket.send(Message::Ping(payload.clone())).unwrap();
+            assert_eq!(socket.read().unwrap(), Message::Pong(payload));
+        }
+    });
+    let mut socket = loom_local_channel::connect(&discovery, Duration::from_secs(2)).unwrap();
+    for payload in [Vec::new(), vec![1, 2, 3]] {
+        assert_eq!(socket.read().unwrap(), Message::Ping(payload));
+        // Deterministically model preemption after Ping consumes its read slice.
+        socket.get_mut().sock.set_operation_deadline(Instant::now());
+        let error = socket.flush().unwrap_err();
+        assert!(matches!(
+            error,
+            tungstenite::Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
+        session::flush_pong(&mut socket).unwrap();
+    }
+    worker.join().unwrap();
+}
+
+#[test]
 fn failed_handshake_never_subscribes_or_marks_connected() {
     let fixture = Fixture::new();
     let shared = Arc::new(Shared::default());

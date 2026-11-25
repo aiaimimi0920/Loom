@@ -18,13 +18,25 @@ fn approve_managed_device(
         let previous = device.approval.clone();
         let previous_epoch = device.session_epoch;
         device.approval = "approved".to_owned();
-        device.session_epoch = device.session_epoch.saturating_add(1);
+        if previous != "approved" {
+            device.session_epoch = device.session_epoch.saturating_add(1);
+        }
+        let epoch = device.session_epoch;
         if let Err(error) = store.persist() {
             if let Some(device) = store.devices.get_mut(device_id) {
                 device.approval = previous;
                 device.session_epoch = previous_epoch;
             }
             return Err(error);
+        }
+        // Device approval is the only approval. Existing connection receipts inherit it.
+        for request in store.connection_requests.values_mut().filter(|request| {
+            request.device_id == device_id
+                && request.phase == "pending"
+                && request.expires_at_ms > unix_time_millis()
+        }) {
+            request.phase = "approved".into();
+            request.device_epoch = epoch;
         }
     }
     managed_devices_response(device_registry, hook_bridge)

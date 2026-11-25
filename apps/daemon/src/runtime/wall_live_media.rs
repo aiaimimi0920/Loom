@@ -18,6 +18,7 @@ impl LiveSessionStore {
         self.state.lock().ok().is_some_and(|sessions| {
             sessions.get(session_id).is_some_and(|record| {
                 !record.closed
+                    && record.direct_viewer.is_none()
                     && record.source_connected
                     && epoch.is_none_or(|epoch| record.epoch == epoch)
                     && record
@@ -149,16 +150,20 @@ fn prepare_wall_live_upgrade(
     ))
 }
 
-fn handle_wall_live_upgrade(
-    mut stream: TcpStream,
+fn handle_wall_live_upgrade<S: LiveMediaSocket>(
+    mut stream: S,
     request: ParsedHttpRequest,
     runtime: &DaemonRuntime,
 ) {
+    // 有界TLS/写缓冲覆盖拒绝及101响应；原grant/nonce/permit/loop仍是唯一业务owner。
+    if stream.prepare_media().is_err() {
+        return;
+    }
     let (grant, accept_key) = match prepare_wall_live_upgrade(&request, runtime) {
         Ok(value) => value,
         Err(error) => {
             if let Ok((status, body)) = live_error_response(error) {
-                write_response_safely(stream, status, &body);
+                let _ = write_response(&mut stream, status, &body);
             }
             return;
         }
@@ -169,13 +174,17 @@ fn handle_wall_live_upgrade(
             "live_media_busy",
             "media connection limit reached",
         )) {
-            write_response_safely(stream, status, &body);
+            let _ = write_response(&mut stream, status, &body);
         }
         return;
     };
     // Upgrade and subsequent writes have the same bounded socket deadline.
-    let _ = stream.set_read_timeout(Some(LIVE_VIEWER_CONTROL_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(LIVE_MEDIA_SOCKET_TIMEOUT));
+    if stream
+        .set_media_read_timeout(LIVE_VIEWER_CONTROL_TIMEOUT)
+        .is_err()
+    {
+        return;
+    }
     let response = format!("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept_key}\r\nSec-WebSocket-Protocol: {WALL_MEDIA_PROTOCOL_VERSION}\r\n\r\n");
     if stream.write_all(response.as_bytes()).is_err() || stream.flush().is_err() {
         return;
@@ -207,8 +216,8 @@ fn handle_wall_live_upgrade(
     }
 }
 
-fn run_wall_live_socket(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+fn run_wall_live_socket<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
     sessions: &SharedLiveSessionStore,
     walls: &SharedWallStore,
     devices: &SharedDeviceRegistryStore,

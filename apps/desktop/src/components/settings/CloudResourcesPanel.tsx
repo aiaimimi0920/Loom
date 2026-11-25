@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button, EmptyState, Notice, Stack } from "@neuro/ui";
 import { postJson } from "../../services/loomApi/transport";
 import { cloudError } from "../../services/naccount";
 
@@ -22,13 +23,13 @@ export function CloudResourcesPanel({ baseUrl }: { baseUrl: string }) {
     } catch (e) { if (generation.current === token) setError(cloudError(e)); }
     finally { if (generation.current === token) setBusy(false); }
   }
-  return <div aria-label="AssetLibrary 云端资源">
+  return <div className="settings-cloud-panel" aria-label="AssetLibrary 云端资源">
     <h4>AssetLibrary</h4>
-    <button className="ghost-button" disabled={busy} onClick={() => void read()}>读取云端资源</button>
+    <Stack horizontal><Button compact disabled={busy} onClick={() => void read()}>读取云端资源</Button></Stack>
     {page?.items.map((resource) => <p key={resource.id}>{resource.title} · {resource.kind}</p>)}
-    {page?.items.length === 0 && <p>暂无资源</p>}
-    {page?.nextCursor && <button className="ghost-button" disabled={busy} onClick={() => void read(page.nextCursor!)}>下一页</button>}
-    {busy && <p role="status">正在读取…</p>}
-    {error && <p role="alert">{error}</p>}
+    {page?.items.length === 0 && <EmptyState title="暂无资源" />}
+    {page?.nextCursor && <Stack horizontal><Button compact disabled={busy} onClick={() => void read(page.nextCursor!)}>下一页</Button></Stack>}
+    {busy && <Notice>正在读取…</Notice>}
+    {error && <Notice tone="danger">{error}</Notice>}
   </div>;
 }

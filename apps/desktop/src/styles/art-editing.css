@@ -1,4 +1,67 @@
-/* Owns Art edit identity, runtime settings, credentials, workflow interface bindings, and narrow-dialog adaptations. */
+/* Owns Art edit composition, fixed scroll boundaries, parameter slots, and responsive domain layout. */
+
+.n-dialog.art-edit-dialog {
+  display: flex;
+  width: min(920px, calc(100vw - 32px));
+  height: min(720px, calc(100dvh - 32px));
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.art-edit-dialog__form {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.art-edit-dialog__scroll {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--n-muted) transparent;
+  scrollbar-width: thin;
+}
+
+.art-edit-dialog__section,
+.art-edit-dialog__secret {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 12px;
+}
+
+.art-edit-dialog__overview {
+  display: grid;
+  align-content: start;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  grid-auto-rows: max-content;
+  gap: 12px;
+}
+
+.art-edit-dialog__identity-meta {
+  display: grid;
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) minmax(120px, 0.9fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.art-edit-dialog__publisher {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
 
 .art-edit-dialog__publisher-icon {
   display: grid;
@@ -7,12 +70,12 @@
   width: 28px;
   height: 28px;
   overflow: hidden;
-  border: 1px solid rgba(17, 22, 20, 0.14);
-  border-radius: 8px;
-  background: rgba(17, 22, 20, 0.08);
-  color: #18211d;
+  border: 1px solid var(--n-line);
+  border-radius: 6px;
+  background: var(--n-control);
+  color: var(--n-text);
   font-size: 0.72rem;
-  font-weight: 950;
+  font-weight: 800;
 }
 
 .art-edit-dialog__publisher-icon img {
@@ -35,21 +98,21 @@
   font-size: 0.78rem;
 }
 
-.art-edit-dialog__english-name {
-  color: rgba(17, 22, 20, 0.76);
-  font-size: 0.84rem;
+.art-edit-dialog__english-name,
+.art-edit-dialog__id {
+  color: var(--n-muted);
+  font-size: 0.76rem;
 }
 
 .art-edit-dialog__name {
-  width: 100%;
-  min-width: 0;
   font-size: 1rem;
-  font-weight: 850;
+  font-weight: 800;
 }
 
-.art-edit-dialog__id {
-  color: rgba(17, 22, 20, 0.5);
-  font-size: 0.76rem;
+.art-edit-dialog__description {
+  min-height: 78px;
+  max-height: 180px;
+  resize: vertical;
 }
 
 .art-edit-dialog__workspace {
@@ -65,11 +128,11 @@
   grid-template-columns: 1fr;
 }
 
-.art-edit-dialog__parameters,
 .art-edit-dialog__secret-list,
 .art-edit-dialog__fields {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .art-edit-dialog__fields {
@@ -92,224 +155,90 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 22px;
+  min-height: 24px;
   font-size: 0.86rem;
-  font-weight: 850;
+  font-weight: 700;
 }
 
-.art-edit-dialog__binding-toggle,
-.art-edit-dialog__boolean {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  gap: 7px;
-  font-size: 0.78rem;
-  font-weight: 800;
+.art-edit-dialog__parameter-head > label:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.art-edit-dialog__binding-toggle input,
-.art-edit-dialog__boolean input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: #9fbe1e;
+.art-edit-dialog__parameter-head > .n-check {
+  flex: 0 0 auto;
 }
 
-.art-edit-dialog__value-input--number {
-  border-color: rgba(89, 115, 5, 0.28);
-  background: rgba(247, 250, 236, 0.92);
-  box-shadow: inset -28px 0 0 color-mix(in srgb, var(--loom-theme-accent) 12%, transparent);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+/* Both branches share a track so a reference checkbox never resizes its row. */
+.art-edit-dialog__value-slot {
+  display: grid;
+  min-width: 0;
+}
+
+.art-edit-dialog__value-slot > div {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.art-edit-dialog__value-slot > [data-active="false"] {
+  visibility: hidden;
+}
+
+.art-edit-dialog__value-slot .n-switch {
+  min-height: 44px;
+}
+
+.art-edit-dialog__numeric {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-.art-edit-dialog__value-input--number::-webkit-inner-spin-button,
-.art-edit-dialog__value-input--number::-webkit-outer-spin-button {
-  opacity: 1;
-  cursor: pointer;
-}
-
-.art-edit-dialog__boolean {
-  justify-self: stretch;
-  justify-content: center;
-  width: 100%;
-  min-height: 44px;
-  border: 1px solid rgba(17, 22, 20, 0.12);
-  border-radius: 8px;
-  background: rgba(247, 249, 240, 0.84);
-}
-
 .art-edit-dialog__version-primary,
-.art-edit-dialog__toggle {
+.art-edit-dialog__version-state {
   display: flex;
   align-items: center;
-}
-
-.art-edit-dialog__version {
-  align-content: start;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .art-edit-dialog__version-primary {
   justify-content: space-between;
-  gap: 12px;
   min-height: 32px;
 }
 
 .art-edit-dialog__current-version {
-  color: #111614;
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 1rem;
-}
-
-.art-edit-dialog__toggle {
-  width: fit-content;
-  gap: 8px;
-  font-weight: 800;
-}
-
-.art-edit-dialog__toggle input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  accent-color: #9fbe1e;
 }
 
 .art-edit-dialog__version-action {
   display: grid;
-  grid-template-columns: minmax(104px, 0.82fr) minmax(116px, 1.18fr);
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-}
-
-.art-edit-dialog__version-select {
-  position: relative;
-  min-width: 0;
-}
-
-.art-edit-dialog__version-select .studio-input,
-.art-edit-dialog__version-update {
-  width: 100%;
-  min-height: 44px;
-}
-
-.art-edit-dialog__version-update {
-  padding-inline: 16px;
-  font-weight: 900;
-}
-
-.art-edit-dialog__version-new {
-  position: absolute;
-  z-index: 1;
-  top: -8px;
-  right: 8px;
-  border: 1px solid rgba(105, 128, 7, 0.42);
-  border-radius: 999px;
-  background: var(--loom-theme-accent);
-  color: var(--neuro-on-signal);
-  padding: 2px 6px;
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  font-size: 0.62rem;
-  font-weight: 950;
-  line-height: 1;
-  text-transform: uppercase;
 }
 
 .art-edit-dialog__optional {
   grid-column: 1 / -1;
-}
-
-.art-edit-dialog__optional > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
-  cursor: pointer;
-  list-style: none;
-  padding: 0;
-  color: rgba(17, 22, 20, 0.62);
-  font-size: 0.82rem;
-  font-weight: 850;
-}
-
-.art-edit-dialog__optional > summary::-webkit-details-marker {
-  display: none;
-}
-
-.art-edit-dialog__optional > summary::after {
-  content: "+";
-  color: rgba(17, 22, 20, 0.52);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  font-size: 1rem;
-}
-
-.art-edit-dialog__optional[open] > summary::after {
-  content: "−";
-}
-
-.art-edit-dialog__optional > .art-edit-dialog__fields {
-  padding-top: 8px;
+  min-width: 0;
 }
 
 .art-edit-dialog__secrets {
-  align-self: start;
-}
-
-.art-edit-dialog__secret {
-  display: grid;
-  gap: 7px;
-  border: 1px solid rgba(17, 22, 20, 0.1);
-  border-radius: 8px;
-  background: rgba(245, 247, 239, 0.72);
-  padding: 10px;
-}
-
-.art-edit-dialog__secret-label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 0.86rem;
-  font-weight: 850;
-}
-
-.art-edit-dialog__secret-label code {
-  overflow: hidden;
-  color: rgba(17, 22, 20, 0.48);
-  font-size: 0.72rem;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.art-edit-dialog__secret-controls {
-  display: grid;
-  gap: 8px;
-}
-
-.art-edit-dialog__secret-empty {
-  display: flex;
-  align-items: center;
-  min-height: 38px;
-  border: 1px dashed rgba(17, 22, 20, 0.16);
-  border-radius: 8px;
-  color: rgba(17, 22, 20, 0.48);
-  padding: 0 10px;
-  font-size: 0.8rem;
+  min-width: 0;
 }
 
 .art-edit-dialog__secret-status {
-  color: #176c42;
-  font-size: 0.76rem;
-  font-weight: 750;
+  min-height: 24px;
+}
+
+.art-edit-dialog__secret-status[data-active="false"] {
+  visibility: hidden;
 }
 
 .art-edit-dialog__json {
   min-height: 86px;
   max-height: 220px;
   resize: vertical;
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
 }
 
 .art-edit-dialog__actions {
@@ -317,8 +246,7 @@
   flex: 0 0 auto;
   justify-content: flex-end;
   gap: 10px;
-  border-top: 1px solid var(--loom-theme-line);
-  background: var(--loom-theme-panel);
+  border-top: 1px solid var(--n-line);
   padding-top: 12px;
 }
 
@@ -335,8 +263,11 @@
 
 @media (max-width: 720px) {
   .art-edit-dialog__identity-meta {
-    grid-template-columns: auto minmax(0, 1fr) minmax(96px, 0.95fr);
-    gap: 6px;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .art-edit-dialog__id {
+    grid-column: 1 / -1;
   }
 
   .art-edit-dialog__publisher strong {
@@ -346,13 +277,5 @@
   .art-edit-dialog__fields,
   .art-edit-dialog__fields--optional {
     grid-template-columns: 1fr;
-  }
-
-  .art-edit-dialog__secret-controls {
-    grid-template-columns: 1fr;
-  }
-
-  .art-edit-dialog__version-action {
-    grid-template-columns: minmax(96px, 0.82fr) minmax(112px, 1.18fr);
   }
 }

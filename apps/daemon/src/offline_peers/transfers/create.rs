@@ -65,6 +65,7 @@ impl OfflinePeers {
             } else {
                 let record = Record {
                     incoming: false,
+                    shared_source: false,
                     peer_id: input.peer_id,
                     trust_revision: state.document.revision,
                     revision: 1,

@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock, Weak,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -55,7 +55,12 @@ impl Server {
                 .as_ref()
                 .is_some_and(|worker| !worker.is_finished())
     }
-    fn start(document: &Document, backend: SocketAddr, ingress: String) -> Result<Self> {
+    fn start(
+        document: &Document,
+        backend: SocketAddr,
+        ingress: String,
+        runtime: Arc<OnceLock<Weak<crate::DaemonRuntime>>>,
+    ) -> Result<Self> {
         ensure!(
             backend.ip().is_loopback(),
             "LAN requires a loopback management listener"
@@ -98,15 +103,14 @@ impl Server {
                             let identity = identity.clone();
                             let ingress = ingress.clone();
                             let host = host.clone();
+                            let runtime = Arc::clone(&runtime);
+                            let stopped = Arc::clone(&flag);
                             if let Ok(worker) = thread::Builder::new()
                                 .name("loom-lan-request".into())
                                 .spawn(move || {
-                                    if let Ok(mut stream) = lan_tls::accept(&identity, tcp) {
+                                    if let Ok(stream) = lan_tls::accept(&identity, tcp) {
                                         crate::lan_http::serve(
-                                            &mut stream,
-                                            &host,
-                                            backend,
-                                            &ingress,
+                                            stream, &host, backend, &ingress, &runtime, stopped,
                                         );
                                     }
                                 })
@@ -145,6 +149,7 @@ impl Drop for Server {
 }
 
 pub(crate) struct Manager {
+    runtime: Arc<OnceLock<Weak<crate::DaemonRuntime>>>,
     ingress: String,
     path: PathBuf,
     backend: SocketAddr,
@@ -171,6 +176,7 @@ impl Manager {
         };
         validate(&document)?;
         let mut manager = Self {
+            runtime: Arc::new(OnceLock::new()),
             ingress: uuid::Uuid::new_v4().to_string(),
             path: path.into(),
             backend,
@@ -179,12 +185,24 @@ impl Manager {
             error: None,
         };
         if manager.document.enabled {
-            match Server::start(&manager.document, backend, manager.ingress.clone()) {
+            match Server::start(
+                &manager.document,
+                backend,
+                manager.ingress.clone(),
+                Arc::clone(&manager.runtime),
+            ) {
                 Ok(server) => manager.server = Some(server),
                 Err(error) => manager.error = Some(error.to_string()),
             }
         }
         Ok(manager)
+    }
+
+    // Registry owns Manager. A strong runtime here would create a permanent ownership cycle.
+    pub fn bind_runtime(&self, runtime: Weak<crate::DaemonRuntime>) -> Result<()> {
+        self.runtime
+            .set(runtime)
+            .map_err(|_| anyhow::anyhow!("LAN runtime already bound"))
     }
 
     pub fn endpoint(&self) -> Option<String> {
@@ -226,6 +244,15 @@ impl Manager {
         }
     }
 
+    pub fn public_trust(&self) -> serde_json::Value {
+        match (self.endpoint(), self.document.identity.as_ref()) {
+            (Some(origin), Some(identity)) => serde_json::json!({
+                "origin": origin, "certificate": identity.certificate,
+            }),
+            _ => serde_json::Value::Null,
+        }
+    }
+
     pub fn update(&mut self, input: Update) -> Result<Option<Server>> {
         let mut next = Document {
             enabled: input.enabled,
@@ -251,8 +278,13 @@ impl Manager {
         };
         let server = if next.enabled && !unchanged {
             Some(
-                Server::start(&next, self.backend, ingress.clone())
-                    .context("无法开启局域网监听，请检查 IP 是否属于本机、端口是否被占用")?,
+                Server::start(
+                    &next,
+                    self.backend,
+                    ingress.clone(),
+                    Arc::clone(&self.runtime),
+                )
+                .context("无法开启局域网监听，请检查 IP 是否属于本机、端口是否被占用")?,
             )
         } else {
             None

@@ -1,3 +1,5 @@
+param([string]$OtterRepository = $env:OTTER_REPOSITORY)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -51,9 +53,26 @@ foreach ($requiredText in @(
 Assert-True (-not $pluginSmoke.Contains("Copy-ZipEntry")) "Third-party smoke must not reuse a repo-owned framework runtime."
 Assert-True (-not $pluginSmoke.Contains("FrameworkArtifactRoot")) "Third-party smoke must not depend on repo-owned framework artifacts."
 
-$otterRoot = Resolve-Path (Join-Path $repoRoot "..\Otter")
-$otterSource = Get-ChildItem -LiteralPath (Join-Path $otterRoot "src") -Recurse -File -Include *.ts,*.tsx |
-    Where-Object { $_.FullName -notmatch "\\node_modules\\" }
+if ([string]::IsNullOrWhiteSpace($OtterRepository)) {
+    $OtterRepository = Join-Path $repoRoot "..\Otter"
+}
+$otterRoot = (Resolve-Path -LiteralPath $OtterRepository).Path
+$nativeRoot = Join-Path $otterRoot "native"
+Assert-True (Test-Path -LiteralPath (Join-Path $nativeRoot "Cargo.toml") -PathType Leaf) "Otter native workspace is required; pass -OtterRepository for an independent checkout."
+$sourceRoots = @((Join-Path $nativeRoot "src"))
+foreach ($member in Get-ChildItem -LiteralPath $nativeRoot -Directory) {
+    if (Test-Path -LiteralPath (Join-Path $member.FullName "Cargo.toml") -PathType Leaf) {
+        $sourceRoots += Join-Path $member.FullName "src"
+    }
+}
+# Scan host and layered native crates, never target/ or generated artifacts.
+# Unit-test modules may name installed sample Arts to verify the generic protocol.
+$otterSource = @($sourceRoots | ForEach-Object {
+    Assert-True (Test-Path -LiteralPath $_ -PathType Container) "Otter native source root is missing: $_"
+    Get-ChildItem -LiteralPath $_ -Recurse -File -Filter *.rs |
+        Where-Object { $_.Name -notmatch '(^|_)tests\.rs$' -and $_.FullName -notmatch '[\\/]tests[\\/]' }
+})
+Assert-True ($otterSource.Count -gt 0) "Otter native production-source scan must not be empty."
 
 $forbiddenArtIds = @(
     "custom-1770146354922",
@@ -72,4 +91,4 @@ foreach ($file in $otterSource) {
     }
 }
 
-Write-Host "Art plugin boundary contract passed."
+Write-Host "Art plugin boundary contract passed for $($otterSource.Count) native production-source files."

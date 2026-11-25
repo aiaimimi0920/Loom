@@ -1,6 +1,7 @@
 // Orchestrates live/frozen Otter canvas state while focused modules own rendering.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Notice } from "@neuro/ui";
 
 import {
   buildOtterWorkflowInstantiationGraph,
@@ -45,6 +46,8 @@ interface OtterCanvasThumbnailProps {
   onCreateWorkflowArt?: (request: WorkflowArtCreationRequest) => void;
 }
 
+const EMPTY_TOOLS: LoomToolDefinition[] = [];
+
 const EMPTY_SNAPSHOT: OtterCanvasSnapshot = {
   available: false,
   revision: "empty",
@@ -60,7 +63,7 @@ export function OtterCanvasThumbnail({
   snapshot,
   baseUrl,
   error,
-  tools = [],
+  tools = EMPTY_TOOLS,
   onCreateWorkflowArt,
 }: OtterCanvasThumbnailProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -124,25 +127,18 @@ export function OtterCanvasThumbnail({
   }, [revision, selectedWorkflow]);
 
   const highlighted = useMemo(
-    () => isLive
-      ? connectedNodeIds(activeSnapshot, selectedNodeId)
-      : new Set<string>(selectedNodeId ? [selectedNodeId] : []),
+    () =>
+      isLive
+        ? connectedNodeIds(activeSnapshot, selectedNodeId)
+        : new Set<string>(selectedNodeId ? [selectedNodeId] : []),
     [activeSnapshot, isLive, selectedNodeId],
   );
   const selectedNode = useMemo(
-    () => selectedNodeId
-      ? activeSnapshot.nodes.find((node) => node.id === selectedNodeId) ?? null
-      : null,
+    () => (selectedNodeId ? (activeSnapshot.nodes.find((node) => node.id === selectedNodeId) ?? null) : null),
     [activeSnapshot, selectedNodeId],
   );
-  const workflowInterface = useMemo(
-    () => inferCanvasWorkflowInterface(activeSnapshot),
-    [activeSnapshot],
-  );
-  const paramGroups = useMemo(
-    () => buildNodeParamGroups(activeSnapshot, tools),
-    [activeSnapshot, tools],
-  );
+  const workflowInterface = useMemo(() => inferCanvasWorkflowInterface(activeSnapshot), [activeSnapshot]);
+  const paramGroups = useMemo(() => buildNodeParamGroups(activeSnapshot, tools), [activeSnapshot, tools]);
 
   useEffect(() => {
     setParamValues((previous) => {
@@ -159,17 +155,18 @@ export function OtterCanvasThumbnail({
   }, [paramGroups]);
 
   const exposedParamRows = useMemo(
-    () => paramGroups.flatMap((group) =>
-      group.rows
-        .filter((row) => exposedParams.has(row.key))
-        .map((row) => ({ key: row.key, label: `${group.label} / ${row.label}` })),
-    ),
+    () =>
+      paramGroups.flatMap((group) =>
+        group.rows
+          .filter((row) => exposedParams.has(row.key))
+          .map((row) => ({ key: row.key, label: `${group.label} / ${row.label}` })),
+      ),
     [exposedParams, paramGroups],
   );
 
   const onNodeSelect = useCallback((nodeId: string) => {
     setSaveMessage(null);
-    setSelectedNodeId((current) => current === nodeId ? null : nodeId);
+    setSelectedNodeId((current) => (current === nodeId ? null : nodeId));
   }, []);
   const canvasViewport = useOtterCanvasViewport({
     snapshot: activeSnapshot,
@@ -179,9 +176,7 @@ export function OtterCanvasThumbnail({
     onNodeSelect,
   });
 
-  const currentWorkflowName = workflows.find(
-    (workflow) => workflow.id === selectedWorkflow,
-  )?.name ?? selectedWorkflow;
+  const currentWorkflowName = workflows.find((workflow) => workflow.id === selectedWorkflow)?.name ?? selectedWorkflow;
 
   const saveAsWorkflow = async () => {
     if (!snapshot || !selectedNodeId || !highlighted.size) return;
@@ -372,7 +367,7 @@ export function OtterCanvasThumbnail({
         onKeyDown={canvasViewport.handleSurfaceKeyDown}
         onSelect={canvasViewport.handleNodeSelect}
       />
-      {error && !snapshot ? <p className="error-text" role="alert">{error}</p> : null}
+      {error && !snapshot ? <Notice tone="danger">{error}</Notice> : null}
       {!isLive && hasNodes ? (
         <OtterCanvasWorkflowInterface
           workflowInterface={workflowInterface}

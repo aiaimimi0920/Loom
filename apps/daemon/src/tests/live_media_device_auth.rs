@@ -8,12 +8,13 @@ mod live_media_device_auth {
     include!("device_pairing_budget.rs");
     include!("device_pairing_receipt.rs");
     include!("otter_connections.rs");
-include!("otter_lan.rs");
-include!("otter_lan_policy.rs");
+    include!("otter_lan.rs");
+    include!("otter_lan_policy.rs");
     include!("otter_connection_admission.rs");
     include!("otter_connection_discovery.rs");
     include!("otter_connection_revocation.rs");
     include!("otter_connection_lease.rs");
+    include!("otter_locale_http.rs");
     include!("device_challenge_budget.rs");
     include!("http_body_admission.rs");
     type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
@@ -305,6 +306,7 @@ include!("otter_lan_policy.rs");
                 hash.clone(),
                 ActiveDeviceSession {
                     device_id: owner.clone(),
+                    last_activity_at_ms: unix_time_millis(),
                     expires_at_ms: expiry,
                     session_epoch: epoch,
                     used_nonces: used.clone(),

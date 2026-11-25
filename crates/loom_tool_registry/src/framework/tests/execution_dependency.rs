@@ -18,7 +18,10 @@ fn package_with_runtime_dependency() -> Vec<u8> {
             bytes = serde_json::to_vec(&manifest).unwrap();
         }
         output
-            .start_file(entry.name().unwrap(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&bytes).unwrap();
     }

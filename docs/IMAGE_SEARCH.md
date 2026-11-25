@@ -40,6 +40,13 @@ downloadable image URLs have distinct meanings: Brave's `source` supplies the
 source page, while its `url` supplies the image URL. The adapter discards a
 source-page URL equal to the image URL rather than inventing a page/Referer.
 
+The runtime entry orchestrates requests through package-local
+`image-search-candidates.ps1` (bounded result normalization and provenance) and
+`image-search-download.ps1` (address policy, redirects, and bounded downloads).
+Shared request/path/output helpers remain in `common.ps1`; bitmap ownership and
+thumbnail transforms live in `image-runtime-bitmap.ps1`. Sample and smoke package
+builders include the complete module graph before hashing or signing the package.
+
 The MCP framework obtains the selected tool's `inputSchema` from `tools/list`.
 It normalizes supported scalar types, aliases and enum values, checks required
 arguments, and omits undeclared properties when `additionalProperties` is false.

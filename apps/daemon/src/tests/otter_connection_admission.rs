@@ -63,7 +63,7 @@ fn otter_connection_anonymous_budget_cannot_block_authenticated_admission() {
         Some(input),
     );
     assert_eq!(status, 201, "{response}");
-    assert_eq!(response["connection"]["phase"], "pending");
+    assert_eq!(response["connection"]["phase"], "approved");
     let store = f.devices.lock().unwrap();
     assert_eq!(store.connection_attempts.len(), 20);
     assert_eq!(store.connection_authenticated_attempts.len(), 1);

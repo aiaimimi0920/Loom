@@ -38,6 +38,7 @@ struct StoredLiveFrame {
 struct LiveSessionRecord {
     session: LiveScreenshotSession,
     request_nonce: String,
+    direct_viewer: Option<String>,
     epoch: u64,
     last_frame_id: u64,
     published_frames: u64,
@@ -56,6 +57,7 @@ struct LiveSessionRecord {
     inbound_observation_sequences: BTreeMap<String, (u64, u64)>,
     observations: BTreeMap<String, LiveObservation>,
     trigger_registrations: BTreeMap<String, LiveTriggerRegistration>,
+    local_art_triggers: LocalArtTriggers,
     trigger_audits: VecDeque<LiveTriggerAudit>,
     trigger_idempotency_keys: BTreeSet<String>,
     trigger_idempotency_order: VecDeque<String>,
@@ -67,6 +69,8 @@ struct LiveSessionRecord {
 #[serde(rename_all = "camelCase")]
 struct LiveSessionRuntimeSnapshot {
     session: LiveScreenshotSession,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    direct_view: bool,
     epoch: u64,
     last_frame_id: u64,
     published_frames: u64,
@@ -145,10 +149,20 @@ impl LiveSessionStore {
         }
     }
 
+    #[cfg(test)]
     fn create(
         &self,
         actor_device_id: &str,
         envelope: LiveControlEnvelope,
+    ) -> std::result::Result<(bool, LiveSessionRuntimeSnapshot), LiveRuntimeError> {
+        self.create_with_direct_viewer(actor_device_id, envelope, None)
+    }
+
+    fn create_with_direct_viewer(
+        &self,
+        actor_device_id: &str,
+        envelope: LiveControlEnvelope,
+        direct_viewer: Option<String>,
     ) -> std::result::Result<(bool, LiveSessionRuntimeSnapshot), LiveRuntimeError> {
         let LiveControlMessage::SessionStart(start) = envelope.message else {
             return Err(LiveRuntimeError::new(
@@ -181,6 +195,7 @@ impl LiveSessionStore {
             if !existing.closed
                 && existing.session.source_device_id == actor_device_id
                 && existing.request_nonce == start.request_nonce
+                && existing.direct_viewer == direct_viewer
             {
                 return Ok((false, snapshot(existing)));
             }
@@ -201,6 +216,7 @@ impl LiveSessionStore {
         let mut record = LiveSessionRecord {
             session: start.session,
             request_nonce: start.request_nonce,
+            direct_viewer,
             epoch: envelope.epoch,
             last_frame_id: 0,
             published_frames: 0,
@@ -219,6 +235,7 @@ impl LiveSessionStore {
             inbound_observation_sequences: BTreeMap::new(),
             observations: BTreeMap::new(),
             trigger_registrations: BTreeMap::new(),
+            local_art_triggers: LocalArtTriggers::default(),
             trigger_audits: VecDeque::with_capacity(LIVE_TRIGGER_AUDIT_LIMIT),
             trigger_idempotency_keys: BTreeSet::new(),
             trigger_idempotency_order: VecDeque::with_capacity(LIVE_TRIGGER_IDEMPOTENCY_LIMIT),
@@ -252,6 +269,21 @@ impl LiveSessionStore {
         envelope: LiveControlEnvelope,
         require_existing_membership: bool,
     ) -> std::result::Result<LiveSessionRuntimeSnapshot, LiveRuntimeError> {
+        self.attach_viewer_authorized(
+            actor_device_id,
+            envelope,
+            require_existing_membership,
+            false,
+        )
+    }
+
+    fn attach_viewer_authorized(
+        &self,
+        actor_device_id: &str,
+        envelope: LiveControlEnvelope,
+        require_existing_membership: bool,
+        direct: bool,
+    ) -> std::result::Result<LiveSessionRuntimeSnapshot, LiveRuntimeError> {
         let LiveControlMessage::SessionAck(ack) = &envelope.message else {
             return Err(LiveRuntimeError::new(
                 400,
@@ -275,6 +307,7 @@ impl LiveSessionStore {
                 "the source device cannot join as a remote viewer",
             ));
         }
+        authorize_direct_viewer(record, actor_device_id, direct)?;
         let already_member = record
             .session
             .viewer_devices
@@ -386,6 +419,7 @@ impl LiveSessionStore {
         record.frames.clear();
         record.observations.clear();
         record.trigger_registrations.clear();
+        record.local_art_triggers.0.clear();
         record.trigger_audits.clear();
         record.trigger_idempotency_keys.clear();
         record.trigger_idempotency_order.clear();
@@ -396,14 +430,28 @@ impl LiveSessionStore {
         Ok(snapshot(record))
     }
 
+    #[cfg(test)]
     fn list(&self) -> std::result::Result<Vec<LiveSessionRuntimeSnapshot>, LiveRuntimeError> {
+        self.list_for_actor(None)
+    }
+
+    fn list_for_actor(
+        &self,
+        actor: Option<&str>,
+    ) -> std::result::Result<Vec<LiveSessionRuntimeSnapshot>, LiveRuntimeError> {
         let mut sessions = self.lock_state()?;
         for record in sessions.values_mut() {
             expire_controller(record);
         }
         Ok(sessions
             .values()
-            .filter(|record| !record.closed)
+            .filter(|record| {
+                !record.closed
+                    && record.direct_viewer.as_deref().is_none_or(|target| {
+                        actor == Some(target)
+                            || actor == Some(record.session.source_device_id.as_str())
+                    })
+            })
             .map(|record| {
                 let mut discovery = snapshot(record);
                 discovery.observations.clear();

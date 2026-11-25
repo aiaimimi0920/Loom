@@ -7,9 +7,14 @@ function Get-LoomCatalog {
         [string]$SampleArtPackageOutputRoot
     )
 
+    if ($env:CARGO_TARGET_DIR -and $env:CARGO_TARGET_DIR -notmatch '^[A-Za-z]:[\\/]') {
+        throw 'Release builds require an absolute CARGO_TARGET_DIR so each Cargo workspace uses the same cache.'
+    }
+    $nativeTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot 'target' }
+    $desktopTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot 'apps/desktop/src-tauri/target' }
     $exes = @(
-        New-ExeSpec -Name "Loom.exe" -Source (Join-Path $repoRoot "apps\desktop\src-tauri\target\release\loom-desktop.exe")
-        New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $repoRoot "target\release\loom-daemon.exe") -DestinationRelativePath "runtime\loom-daemon.exe"
+        New-ExeSpec -Name "Loom.exe" -Source (Join-Path $desktopTarget "release\loom-desktop.exe")
+        New-ExeSpec -Name "loom-daemon.exe" -Source (Join-Path $nativeTarget "release\loom-daemon.exe") -DestinationRelativePath "runtime\loom-daemon.exe"
     )
 
     # Capability payloads are distributed through the signed capability catalog,
@@ -20,14 +25,14 @@ function Get-LoomCatalog {
 
     $cliArtifact = [ordered]@{
         name = "loom-cli"
-        source = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "target\release\loom.exe"))
+        source = [System.IO.Path]::GetFullPath((Join-Path $nativeTarget "release\loom.exe"))
         entryName = "loom.exe"
         zipNamePattern = "Loom-CLI-{versionId}-windows-x64.zip"
     }
 
     $pluginSdkArtifact = [ordered]@{
         name = "loom-plugin-sdk"
-        pluginCliSource = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "target\release\loom-plugin.exe"))
+        pluginCliSource = [System.IO.Path]::GetFullPath((Join-Path $nativeTarget "release\loom-plugin.exe"))
         pluginCliEntryName = "loom-plugin.exe"
         zipNamePattern = "Loom-Plugin-SDK-{versionId}-windows-x64.zip"
         files = @(

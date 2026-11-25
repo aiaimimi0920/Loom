@@ -312,6 +312,9 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             Assert-True ($null -ne $manifestEntry) "Sample Art ZIP lacks manifest.json: $zipPath"
             if ($entry.Value.executionType -eq "framework_art") {
                 Assert-True ($null -ne $runtimeEntry) "Sample Art ZIP lacks art.runtime.json: $zipPath"
+                foreach ($sharedEntry in @("runtime/common.ps1", "runtime/image-runtime-bitmap.ps1")) {
+                    Assert-True ($null -ne $archive.GetEntry($sharedEntry)) "Sample Art ZIP lacks shared image runtime: $zipPath -> $sharedEntry"
+                }
             }
             else {
                 Assert-True ($null -ne $workflowEntry) "Workflow sample Art ZIP lacks workflow.yaml: $zipPath"
@@ -342,6 +345,9 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             Assert-True (-not $seenZipGlobalIds.ContainsKey($zipGlobalId)) "Duplicate packaged Art global id: $zipGlobalId"
             $seenZipGlobalIds[$zipGlobalId] = $true
             if ($entry.Key -eq "image-search") {
+                foreach ($module in @("image-search-candidates.ps1", "image-search-download.ps1")) {
+                    Assert-True ($null -ne $archive.GetEntry("runtime/$module")) "Packaged image search module is missing: $module"
+                }
                 $zipSecret = @($zipManifest.params | Where-Object { [string]$_.id -eq "brave_api_key" }) | Select-Object -First 1
                 Assert-True ($null -eq $zipSecret) "Packaged image search must not retain an MCP credential parameter."
                 Assert-True ([string]$zipManifest.metadata.mcp.toolName -eq "brave_image_search") "Packaged image search MCP tool is invalid."
@@ -363,6 +369,7 @@ if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
             if ($entry.Key -eq "stock-monitor") {
                 $expectedRuntimeEntries = @(
                     "runtime/common.ps1",
+                    "runtime/image-runtime-bitmap.ps1",
                     "runtime/lib/Constants.ps1",
                     "runtime/lib/Domain.ps1",
                     "runtime/lib/Mcp.ps1",

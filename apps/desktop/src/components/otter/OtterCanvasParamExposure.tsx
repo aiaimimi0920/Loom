@@ -1,5 +1,6 @@
 // Edits which workflow parameters remain runtime inputs versus baked constants.
 
+import { Checkbox, Input, Select } from "@neuro/ui";
 import { mapParamUiType } from "../../services/workflowStudio.ts";
 import type { NodeParamGroup } from "./otterCanvasThumbnailModel.ts";
 
@@ -20,10 +21,8 @@ export function OtterCanvasParamExposure({
 }: OtterCanvasParamExposureProps) {
   if (!groups.length) return null;
   return (
-    <div className="otter-canvas-param-expose">
-      <p className="otter-canvas-param-expose__hint">
-        勾选要外露的参数，未勾选的将以当前值固定。外露的参数会成为封装节点的输入。
-      </p>
+    <fieldset className="otter-canvas-param-expose">
+      <legend>外露参数</legend>
       {groups.map((group) => (
         <div key={group.workflowNodeId} className="otter-canvas-param-expose__group">
           <p className="otter-canvas-param-expose__node">{group.label}</p>
@@ -34,16 +33,14 @@ export function OtterCanvasParamExposure({
             const valueLabel = `${group.label} / ${row.label} 常量值`;
             return (
               <div key={row.key} className="otter-canvas-param-expose__row">
-                <label className="otter-canvas-param-expose__toggle">
-                  <input
-                    type="checkbox"
-                    checked={isExposed}
-                    onChange={(event) => onExposureChange(row.key, event.target.checked)}
-                  />
-                  <span>{row.label}</span>
-                </label>
+                <Checkbox
+                  label={row.label}
+                  aria-label={`外露参数 ${group.label} / ${row.label}`}
+                  checked={isExposed}
+                  onChange={(event) => onExposureChange(row.key, event.target.checked)}
+                />
                 {uiType === "boolean" ? (
-                  <select
+                  <Select
                     className="otter-canvas-param-expose__value"
                     value={value || "false"}
                     disabled={isExposed}
@@ -52,9 +49,9 @@ export function OtterCanvasParamExposure({
                   >
                     <option value="true">true</option>
                     <option value="false">false</option>
-                  </select>
+                  </Select>
                 ) : uiType === "int" || uiType === "float" ? (
-                  <input
+                  <Input
                     className="otter-canvas-param-expose__value"
                     type="number"
                     value={value}
@@ -67,7 +64,7 @@ export function OtterCanvasParamExposure({
                     aria-label={valueLabel}
                   />
                 ) : (
-                  <input
+                  <Input
                     className="otter-canvas-param-expose__value"
                     value={value}
                     disabled={isExposed}
@@ -81,6 +78,6 @@ export function OtterCanvasParamExposure({
           })}
         </div>
       ))}
-    </div>
+    </fieldset>
   );
 }

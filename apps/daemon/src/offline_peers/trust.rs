@@ -3,7 +3,8 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 pub(super) const MAX_PEERS: usize = 16;
-const MAX_DOCUMENT_BYTES: u64 = 65_536;
+// Sixteen peers may each carry an 8 KiB public LAN certificate plus bounded metadata.
+const MAX_DOCUMENT_BYTES: u64 = 192 * 1024;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -12,6 +13,8 @@ pub(super) struct Peer {
     pub name: String,
     pub origin: String,
     pub public_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
     pub enabled: bool,
 }
 
@@ -47,6 +50,24 @@ pub(super) fn peer_id(public_key: &str) -> PeerResult<String> {
 }
 
 impl Peer {
+    pub fn tls_certificate(&self) -> PeerResult<Option<reqwest::Certificate>> {
+        let Some(encoded) = &self.certificate else {
+            return Ok(None);
+        };
+        if encoded.is_empty() || encoded.len() > 8192 || !self.origin.starts_with("https://") {
+            return Err(failure(400, "peer_invalid_certificate"));
+        }
+        let bytes = BASE64
+            .decode(encoded)
+            .map_err(|_| failure(400, "peer_invalid_certificate"))?;
+        if BASE64.encode(&bytes) != *encoded {
+            return Err(failure(400, "peer_invalid_certificate"));
+        }
+        let certificate = reqwest::Certificate::from_der(&bytes)
+            .map_err(|_| failure(400, "peer_invalid_certificate"))?;
+        Ok(Some(certificate))
+    }
+
     pub fn validate(&self, local_id: &str) -> PeerResult<()> {
         if self.peer_id != peer_id(&self.public_key)?
             || self.peer_id == local_id
@@ -56,6 +77,15 @@ impl Peer {
             || !loom_protocol::projection::projection_origin_valid(&self.origin)
         {
             return Err(failure(400, "peer_invalid_configuration"));
+        }
+        if let Some(certificate) = self.tls_certificate()? {
+            // from_der only wraps bytes with rustls; building validates the X.509 trust anchor.
+            reqwest::blocking::Client::builder()
+                .no_proxy()
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(certificate)
+                .build()
+                .map_err(|_| failure(400, "peer_invalid_certificate"))?;
         }
         Ok(())
     }
@@ -135,7 +165,14 @@ pub(super) fn commit(path: &Path, state: &mut State, mut next: Document) -> Peer
         .checked_add(1)
         .ok_or_else(|| failure(409, "peer_revision_exhausted"))?;
     next.validate()?;
-    write_json_atomically(path, &next).map_err(|_| failure(503, "peer_storage_unavailable"))?;
+    let mut bytes =
+        serde_json::to_vec_pretty(&next).map_err(|_| failure(503, "peer_storage_unavailable"))?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(failure(413, "peer_storage_too_large"));
+    }
+    write_bytes_atomically(path, &bytes, AtomicWritePermissions::Restrict)
+        .map_err(|_| failure(503, "peer_storage_unavailable"))?;
     state.document = next;
     Ok(())
 }

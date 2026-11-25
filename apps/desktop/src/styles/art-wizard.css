@@ -1,0 +1,134 @@
+/* Owns Art creation composition, source/port bounds and the fixed frame, not control skins. */
+.n-dialog.loom-art-create-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1120px, calc(100vw - 32px));
+  height: min(820px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+
+.art-create-dialog__scroll,
+.add-art-wizard,
+.art-creator-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.n-tab-list.loom-art-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex-shrink: 0;
+}
+
+.art-creator-panel__scroll {
+  display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 3px;
+}
+
+.art-creator-identity,
+.art-creator-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.art-creator-config,
+.art-script-creator,
+.advanced-port-editor,
+.port-editor-section,
+.art-workflow-preview-policy {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.art-creator-field--wide,
+.art-creator-field--full,
+.art-creator-inline-action,
+.art-workflow-preview-policy {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.art-creator-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.art-creator-inline-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.art-creator-inline-action .n-select {
+  flex: 1;
+  min-width: min(230px, 100%);
+}
+
+.art-script-source {
+  min-height: 220px;
+  max-height: 320px;
+  resize: vertical;
+  font-family: var(--n-mono);
+}
+
+.art-creator-fields--additional {
+  border-top: 1px solid var(--n-line);
+  padding-top: 12px;
+}
+
+.art-creator-ports__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.art-creator-ports__title small {
+  color: var(--n-muted);
+}
+
+.section-heading-row--compact h4 {
+  margin: 0;
+}
+
+.port-editor-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.art-creator-panel__footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.art-creator-panel__footer .n-button {
+  min-width: min(180px, 100%);
+}
+
+@media (max-width: 520px) {
+  .art-creator-path-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

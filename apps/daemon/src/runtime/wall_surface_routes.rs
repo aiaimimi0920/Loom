@@ -179,7 +179,11 @@ impl WallSurfaceServices<'_> {
                 let ack = self
                     .actions
                     .submit(&link.instance_id, input.event)
-                    .map_err(wall_surface_store_error)?;
+                    .map_err(|error| {
+                        #[cfg(test)]
+                        eprintln!("wall-surface-event-submit: {error:?}");
+                        wall_surface_store_error(error)
+                    })?;
                 if ack.accepted {
                     current
                         .accepted_requests

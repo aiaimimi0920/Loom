@@ -9,6 +9,7 @@ mod wall_http {
     include!("wall_identification_http.rs");
     include!("wall_surface_fixture.rs");
     include!("wall_surface_http.rs");
+    include!("tile_native_joint.rs");
 
     struct Root(PathBuf);
 
@@ -25,16 +26,28 @@ mod wall_http {
     }
 
     fn start(root: &Path) -> (u16, ConcurrencyTestFixture) {
+        let (port, server, _) = start_with_sessions(root);
+        (port, server)
+    }
+    fn start_with_sessions(root: &Path) -> (u16, ConcurrencyTestFixture, SharedLiveSessionStore) {
+        start_with_setup(root, |_| {})
+    }
+    fn start_with_setup(
+        root: &Path,
+        prepare: impl FnOnce(&LoomDaemon),
+    ) -> (u16, ConcurrencyTestFixture, SharedLiveSessionStore) {
         let daemon = LoomDaemon::bind(
             DaemonConfig::localhost(0)
                 .with_control_plane_root(root)
                 .with_bounded_request_executor(4, 16),
         )
         .expect("bind wall daemon");
+        prepare(&daemon);
         let port = daemon.local_addr().unwrap().port();
+        let sessions = Arc::clone(&daemon.runtime.live_sessions);
         let (tx, rx) = mpsc::channel();
         let server = thread::spawn(move || daemon.serve_until(rx));
-        (port, ConcurrencyTestFixture::new(tx, server))
+        (port, ConcurrencyTestFixture::new(tx, server), sessions)
     }
 
     fn response(raw: String) -> (u16, Value) {

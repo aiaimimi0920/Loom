@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Record {
     pub incoming: bool,
+    #[serde(default)]
+    pub shared_source: bool,
     pub peer_id: String,
     pub trust_revision: u64,
     pub envelope: ProjectionEnvelope,
@@ -39,6 +41,7 @@ impl Record {
     // Construction paths validate signatures and PNGs before acquiring shared locks.
     pub fn validate_metadata(&self) -> PeerResult<()> {
         if !loom_protocol::projection::projection_identifier_valid(&self.target_id)
+            || (self.shared_source && !self.incoming)
             || self.peer_id.len() != 69
             || !self.peer_id.starts_with("loom-")
             || !self.peer_id[5..].bytes().all(|b| b.is_ascii_hexdigit())

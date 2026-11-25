@@ -43,66 +43,9 @@
   gap: 3px;
 }
 
-.settings-app-tab {
-  position: relative;
-  min-width: 84px;
-  min-height: 40px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 7px 7px 0 0;
-  padding: 8px 16px;
-  background: transparent;
-  color: var(--loom-theme-muted);
-  font-weight: 850;
-  cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
-}
-
-.settings-app-tab:hover {
-  background: var(--loom-theme-hover);
-  color: var(--loom-theme-text);
-}
-
-.settings-app-tab--active {
-  border-color: var(--loom-theme-line);
-  background: var(--loom-theme-surface);
-  color: var(--loom-theme-accent-text);
-}
-
-.settings-app-tab--active::before {
-  position: absolute;
-  top: -1px;
-  right: -1px;
-  left: -1px;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    var(--loom-theme-accent-text),
-    var(--loom-theme-secondary-text)
-  );
-  content: "";
-}
-
-.settings-app-tab--active::after {
-  position: absolute;
-  right: -1px;
-  bottom: -2px;
-  left: -1px;
-  z-index: 2;
-  height: 3px;
-  background: var(--loom-theme-surface);
-  content: "";
-}
-
-.settings-app-tab:focus-visible {
-  outline: 2px solid var(--loom-theme-accent-text);
-  outline-offset: -3px;
-}
-
 .settings-app-panel {
   width: 100%;
   min-width: 0;
-  border-top: 1px solid var(--loom-theme-line);
 }
 
 .settings-accordion,
@@ -111,67 +54,22 @@
   min-width: 0;
 }
 
-.settings-section {
-  border-bottom: 1px solid var(--loom-theme-line);
-}
-
-.settings-section__heading {
-  margin: 0;
-}
-
-.settings-section__trigger {
-  display: grid;
-  width: 100%;
-  min-height: 66px;
-  grid-template-columns: 30px minmax(0, 1fr) 26px;
+.settings-section__heading,
+.otter-shortcut-group__heading {
+  display: flex;
   align-items: center;
   gap: 10px;
-  border: 0;
-  padding: 0 6px;
-  background: transparent;
-  color: var(--loom-theme-text);
-  text-align: left;
-  cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
-}
-
-.settings-section__trigger > span {
-  font-size: 1rem;
-  font-weight: 850;
-}
-
-.settings-section__trigger:hover {
-  background: var(--loom-theme-hover);
-}
-
-.settings-section__trigger:focus-visible {
-  outline: 2px solid var(--loom-theme-accent-text);
-  outline-offset: -2px;
+  margin: 0;
+  font: inherit;
 }
 
 .settings-section__icon,
-.settings-section__chevron {
+.otter-shortcut-group__heading svg {
   display: block;
   width: 22px;
   height: 22px;
-}
-
-.settings-section__icon {
-  color: var(--loom-theme-accent-text);
-}
-
-.settings-section__chevron {
-  color: var(--loom-theme-muted);
-  transition: transform 160ms ease, color 160ms ease;
-}
-
-.settings-section--open .settings-section__icon {
+  flex: 0 0 auto;
   color: var(--loom-theme-secondary-text);
-}
-
-.settings-section--open .settings-section__chevron {
-  color: var(--loom-theme-accent-text);
-  transform: rotate(180deg);
 }
 
 .settings-section__body {
@@ -188,53 +86,6 @@
   }
 }
 
-.settings-field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.settings-field-stack {
-  display: grid;
-  gap: 10px;
-}
-
-.settings-page .field-label {
-  color: var(--loom-theme-muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.05em;
-  text-transform: none;
-}
-
-.settings-page .studio-input {
-  min-height: 40px;
-  border-color: var(--loom-theme-line);
-  border-radius: 7px;
-  background: var(--loom-theme-control);
-  color: var(--loom-theme-text);
-  color-scheme: inherit;
-  padding: 9px 11px;
-}
-
-.settings-page .studio-input option {
-  background: var(--loom-theme-control);
-  color: var(--loom-theme-text);
-}
-
-.settings-page .studio-input option:checked {
-  background: color-mix(in srgb, var(--loom-theme-accent) 18%, var(--loom-theme-control));
-  color: var(--loom-theme-accent-text);
-}
-
-.settings-page .studio-input:focus {
-  border-color: color-mix(in srgb, var(--loom-theme-accent-text) 60%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--loom-theme-accent-text) 16%, transparent);
-}
-
-.settings-page .studio-input::placeholder {
-  color: var(--loom-theme-muted);
-}
-
 .otter-shortcut-groups {
   display: grid;
   gap: 14px;
@@ -242,72 +93,6 @@
 
 .otter-shortcut-group {
   min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--loom-theme-line);
-  border-radius: 8px;
-  background: var(--loom-theme-panel);
-}
-
-.otter-shortcut-group__header {
-  min-height: 52px;
-}
-
-.otter-shortcut-group--open .otter-shortcut-group__header {
-  border-bottom: 1px solid var(--loom-theme-line);
-}
-
-.otter-shortcut-group__header h3 {
-  width: 100%;
-  margin: 0;
-}
-
-.otter-shortcut-group__trigger {
-  display: grid;
-  width: 100%;
-  min-height: 52px;
-  grid-template-columns: 22px minmax(0, 1fr) 20px;
-  align-items: center;
-  gap: 11px;
-  border: 0;
-  padding: 0 18px;
-  background: transparent;
-  color: var(--loom-theme-text);
-  text-align: left;
-  cursor: pointer;
-  transition: background 130ms ease, color 130ms ease;
-}
-
-.otter-shortcut-group__trigger:hover {
-  background: var(--loom-theme-hover);
-}
-
-.otter-shortcut-group__trigger:focus-visible {
-  outline: 2px solid var(--loom-theme-accent-text);
-  outline-offset: -2px;
-}
-
-.otter-shortcut-group__trigger > span {
-  font-size: 0.94rem;
-  font-weight: 850;
-}
-
-.otter-shortcut-group__trigger svg {
-  width: 21px;
-  height: 21px;
-  flex: 0 0 auto;
-  color: var(--loom-theme-secondary-text);
-}
-
-.otter-shortcut-group__trigger .otter-shortcut-group__chevron {
-  width: 18px;
-  height: 18px;
-  color: var(--loom-theme-muted);
-  transition: transform 150ms ease, color 150ms ease;
-}
-
-.otter-shortcut-group--open .otter-shortcut-group__chevron {
-  color: var(--loom-theme-accent-text);
-  transform: rotate(180deg);
 }
 
 .otter-shortcut-list {
@@ -366,24 +151,9 @@
   gap: 6px;
 }
 
-.otter-shortcut-row__keys--editable {
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 4px 5px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  transition: border-color 130ms ease, background 130ms ease;
-}
-
-.otter-shortcut-row__keys--editable:hover {
-  border-color: color-mix(in srgb, var(--loom-theme-secondary-text) 34%, transparent);
-  background: color-mix(in srgb, var(--loom-theme-secondary) 9%, transparent);
-}
-
-.otter-shortcut-row__keys--editable:focus-visible {
-  outline: 2px solid var(--loom-theme-accent-text);
-  outline-offset: 2px;
+.otter-shortcut-row__keys > .n-button-label {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .otter-shortcut-key-sequences,
@@ -424,18 +194,11 @@
   background: var(--loom-theme-control);
   box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.3);
   color: var(--loom-theme-text);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--n-mono);
   font-size: 0.74rem;
   font-weight: 760;
   line-height: 1;
   white-space: nowrap;
-}
-
-.otter-shortcut-row__edit-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  color: var(--loom-theme-secondary-text);
 }
 
 .otter-quick-binding-actions {

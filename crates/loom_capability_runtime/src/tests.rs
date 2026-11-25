@@ -17,8 +17,10 @@ use uuid::Uuid;
 
 use super::*;
 
+mod confirmation_tests;
 mod fixture;
 mod idle_tests;
+mod invocation_control_tests;
 #[cfg(windows)]
 mod process_tree_tests;
 mod runtime_health_tests;

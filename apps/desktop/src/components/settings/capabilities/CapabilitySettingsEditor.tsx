@@ -1,5 +1,6 @@
 // Renders bounded, manifest-declared fields without loading plugin UI code.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button, Disclosure, EmptyState, Field, Input, Notice, Select, Switch } from "@neuro/ui";
 import {
   getCapabilitySettings,
   saveCapabilitySettings,
@@ -27,25 +28,21 @@ function CapabilitySettingControl({
   disabled: boolean;
   onChange: (value: unknown) => void;
 }) {
-  const inputId = `capability-setting-${field.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   if (field.payload.type === "boolean") {
     return (
-      <label className="capability-setting capability-setting--toggle" htmlFor={inputId}>
-        <input id={inputId} type="checkbox" checked={value === true} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
-        <span><strong>{field.title ?? field.id}</strong><small>{field.payload.description}</small></span>
-      </label>
+      <Field label={field.title ?? field.id} description={field.payload.description}>
+        <Switch checked={value === true} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
+      </Field>
     );
   }
   return (
-    <label className="capability-setting" htmlFor={inputId}>
-      <span><strong>{field.title ?? field.id}</strong><small>{field.payload.description}</small></span>
+    <Field label={field.title ?? field.id} description={field.payload.description}>
       {field.payload.type === "enum" ? (
-        <select id={inputId} value={typeof value === "string" ? value : ""} disabled={disabled} onChange={(event) => onChange(event.currentTarget.value)}>
+        <Select value={typeof value === "string" ? value : ""} disabled={disabled} onChange={(event) => onChange(event.currentTarget.value)}>
           {(field.payload.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
-        </select>
+        </Select>
       ) : (
-        <input
-          id={inputId}
+        <Input
           type={field.payload.type === "number" ? "number" : "text"}
           value={typeof value === "string" || typeof value === "number" ? value : ""}
           disabled={disabled}
@@ -54,7 +51,7 @@ function CapabilitySettingControl({
             : event.currentTarget.value)}
         />
       )}
-    </label>
+    </Field>
   );
 }
 
@@ -99,6 +96,7 @@ export function CapabilitySettingsEditor({
   const save = useCallback(async () => {
     if (!snapshot || saving) return;
     setSaving(true);
+    setError(null);
     try {
       const editableIds = new Set(editableFields.map((field) => field.id));
       const values = Object.fromEntries(snapshot.fields.flatMap((field) => {
@@ -127,14 +125,11 @@ export function CapabilitySettingsEditor({
   }, [baseUrl, draft, editableFields, qualifiedId, saving, snapshot]);
 
   return (
-    <section className="capability-plugin-settings">
-      <button className="capability-plugin-settings__toggle" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        插件设置 <span aria-hidden="true">{open ? "−" : "+"}</span>
-      </button>
+    <Disclosure className="capability-plugin-settings" title="插件设置" open={open} onOpenChange={setOpen}>
       {open ? <div className="capability-plugin-settings__body">
-        {loading ? <p role="status">正在验证并读取设置…</p> : null}
-        {error ? <p className="capability-diagnostic" role="alert">{error}</p> : null}
-        {!loading && snapshot && editableFields.length === 0 ? <p>此扩展未声明可编辑设置。</p> : null}
+        {loading ? <Notice>正在验证并读取设置…</Notice> : null}
+        {error ? <Notice tone="danger">{error}</Notice> : null}
+        {!loading && snapshot && editableFields.length === 0 ? <EmptyState title="此扩展未声明可编辑设置。" /> : null}
         {editableFields.map((field) => <CapabilitySettingControl
           key={field.id}
           field={field}
@@ -142,10 +137,8 @@ export function CapabilitySettingsEditor({
           disabled={disabled || saving}
           onChange={(value) => setDraft((current) => ({ ...current, [field.id]: value }))}
         />)}
-        {editableFields.length ? <button className="signal-button" type="button" disabled={disabled || loading || saving} onClick={() => void save()}>
-          {saving ? "保存中…" : "保存插件设置"}
-        </button> : null}
+        {editableFields.length ? <Button compact variant="primary" loading={saving} disabled={disabled || loading} onClick={() => void save()}>保存插件设置</Button> : null}
       </div> : null}
-    </section>
+    </Disclosure>
   );
 }

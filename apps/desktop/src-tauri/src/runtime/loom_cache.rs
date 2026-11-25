@@ -47,7 +47,10 @@ pub(super) fn read_loom_persisted_general_settings() -> Option<LoomGeneralRuntim
         .join("settings.json");
     let bytes = read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom 通用设置").ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    serde_json::from_value(value.get("general")?.clone()).ok()
+    // Daemon-owned disk settings use snake_case; camelCase belongs only to Tauri IPC.
+    Some(LoomGeneralRuntimeSettings {
+        minimize_to_tray: value.get("general")?.get("minimize_to_tray")?.as_bool()?,
+    })
 }
 
 #[tauri::command]
@@ -88,7 +91,20 @@ pub(super) fn read_loom_persisted_cache_settings() -> Option<LoomCachePreference
         .join("settings.json");
     let bytes = read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom 缓存设置").ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    serde_json::from_value(value.get("loom_cache")?.clone()).ok()
+    let settings = value.get("loom_cache")?;
+    Some(LoomCachePreferences {
+        art_cache_max_bytes: settings.get("art_cache_max_bytes")?.as_u64()?,
+        art_cache_retention_days: settings
+            .get("art_cache_retention_days")?
+            .as_u64()?
+            .try_into()
+            .ok()?,
+        framework_temp_retention_days: settings
+            .get("framework_temp_retention_days")?
+            .as_u64()?
+            .try_into()
+            .ok()?,
+    })
 }
 
 pub(super) fn loom_framework_temporary_dir() -> PathBuf {

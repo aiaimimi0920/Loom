@@ -6,6 +6,9 @@ import os
 import struct
 import sys
 import zlib
+# The embedded Python distribution does not add the script directory to sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from shader_payload import make_shader_output
 
 def value(obj, *names, default=None):
     if not isinstance(obj, dict):
@@ -475,26 +478,9 @@ def lut_texture_data_url(table, size=16):
     return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
 
 
-def shader_source(filename):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
-
-
-def shader_output(source_stats, reference_stats, params, size=16):
+def shader_output(source_stats, reference_stats, params, size=16, abi=None):
     lut = build_transfer_lut(source_stats, reference_stats, size)
-    uniforms = {
-        name: (1.0 if value else 0.0) if isinstance(value, bool) else value
-        for name, value in params.items()
-    }
-    return {
-        "type": "shader",
-        "vertex_shader": shader_source("color_transfer.vert"),
-        "fragment_shader": shader_source("color_transfer.frag"),
-        "uniforms": uniforms,
-        "textures": {"lut": lut_texture_data_url(lut, size)},
-        "algorithm": "oklab-statistical-transfer-shader",
-    }
+    return make_shader_output(lut_texture_data_url(lut, size), params, abi)
 
 
 def sample_color_lut(table, size, color):
@@ -536,7 +522,9 @@ def main(request):
     if output_mode == "shader":
         return {
             "status": "success",
-            "output": shader_output(source_stats, reference_stats, applied_params, lut_size),
+            # The flat Hook dispatch puts undeclared transport fields in inputs.
+            "output": shader_output(source_stats, reference_stats, applied_params, lut_size,
+                                    params.get("shader_abi", inputs.get("shader_abi"))),
         }
 
     color_lut = build_color_lut(source_stats, reference_stats, applied_params, lut_size)

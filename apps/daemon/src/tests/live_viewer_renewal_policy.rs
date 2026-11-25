@@ -1,4 +1,69 @@
 // Renewal is a conditional reattachment, not permission to add a missing viewer or keep control.
+
+#[test]
+fn direct_viewer_grant_fences_discovery_and_membership() {
+    let id = "live:direct-viewer";
+    let store = LiveSessionStore::new();
+    let start = live_start_envelope(id);
+    let target = "device-target";
+    store
+        .create_with_direct_viewer("device-source", start.clone(), Some(target.into()))
+        .unwrap();
+    assert!(store
+        .create_with_direct_viewer("device-source", start, Some("wrong".into()))
+        .is_err());
+    assert!(store.list_for_actor(None).unwrap().is_empty());
+    assert!(store.list_for_actor(Some("other")).unwrap().is_empty());
+    assert!(store.list_for_actor(Some(target)).unwrap()[0].direct_view);
+    let ack = live_viewer_envelope(id, target);
+    let body = json!({"envelope": ack}).to_string();
+    assert_eq!(
+        attach_direct_viewer(id, &body, &Arc::new(LiveSessionStore::new()), None)
+            .unwrap_err()
+            .status,
+        401
+    );
+    assert!(store.attach_viewer(target, ack.clone()).is_err());
+    assert!(store
+        .attach_viewer_authorized("other", live_viewer_envelope(id, "other"), false, true)
+        .is_err());
+    assert!(store
+        .attach_viewer_authorized("other", ack.clone(), false, true)
+        .is_err());
+    assert!(store.get(id).unwrap().session.viewer_devices.is_empty());
+    let joined = store
+        .attach_viewer_authorized(target, ack.clone(), false, true)
+        .unwrap();
+    assert_eq!(joined.session.viewer_devices, [target]);
+    assert!(joined.session.controller_device.is_none());
+    assert_eq!(
+        store
+            .change_controller(
+                target,
+                id,
+                &phase_five_lease(LiveControlLeaseAction::Acquire, 2)
+            )
+            .unwrap_err()
+            .code,
+        "live_direct_media_only"
+    );
+    assert_eq!(
+        store
+            .get_for_member(id, target)
+            .unwrap()
+            .requester_control
+            .unwrap()
+            .control_sequence,
+        1
+    );
+    assert!(joined.session.interaction_capabilities.is_empty());
+    assert!(joined.session.observation_capabilities.is_empty());
+    assert!(store
+        .attach_viewer_authorized(target, ack, false, true)
+        .is_err());
+    assert!(!store.wall_source_active(id));
+}
+
 #[test]
 fn viewer_renewal_policy_rechecks_membership_and_closure_after_cursor_read() {
     for closed in [false, true] {

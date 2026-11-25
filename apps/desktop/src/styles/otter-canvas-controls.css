@@ -1,4 +1,4 @@
-/* Owns Otter canvas toolbar, workflow controls, rename and properties panels, parameter exposure, and minimap controls. */
+/* Owns canvas domain layout, fixed graph surfaces and passive node properties; standard controls own their skins. */
 
 .otter-canvas-thumbnail {
   display: grid;
@@ -6,10 +6,14 @@
   min-width: 0;
 }
 
-/* Top toolbar: workflow selector on the left, zoom slider + minimap toggle
-   grouped and right-aligned. */
+.otter-canvas-thumbnail > .n-notice {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .otter-canvas-toolbar {
   display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
@@ -19,125 +23,67 @@
 .otter-canvas-toolbar__controls {
   position: relative;
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-left: auto;
 }
 
 .otter-canvas-workflow-select {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: rgba(31, 41, 29, 0.72);
-}
-
-.otter-canvas-workflow-select__label {
-  white-space: nowrap;
-}
-
-.otter-canvas-workflow-select select {
-  border: 1px solid rgba(17, 22, 20, 0.18);
-  border-radius: 10px;
-  padding: 6px 10px;
-  background: rgba(255, 255, 255, 0.75);
-  color: #10221b;
-  font-size: 0.82rem;
-  font-weight: 700;
-  cursor: pointer;
-  width: 150px;
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .otter-canvas-workflow-actions {
   position: relative;
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
-.otter-canvas-workflow-actions .ghost-button,
-.otter-canvas-toolbar__controls .signal-button {
-  padding: 6px 12px;
-  font-size: 0.76rem;
-  white-space: nowrap;
-}
-
-/* Keep the save button stable beside zoom/minimap controls while its label changes. */
 .otter-canvas-save-workflow {
   min-width: 96px;
-  text-align: center;
 }
-
-/* Float the save result out of flow so it never widens the toolbar row. */
-.otter-canvas-toolbar__controls .success-text,
-.otter-canvas-toolbar__controls .error-text {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  white-space: nowrap;
-  font-size: 0.72rem;
+.otter-canvas-toolbar > .n-notice {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
 }
-
-.otter-canvas-workflow-delete {
-  color: #b4231f;
-  border-color: rgba(180, 35, 31, 0.32);
-}
-
-.otter-canvas-rename-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 50;
+.otter-canvas-zoom {
   display: grid;
-  place-items: center;
-  background: rgba(8, 12, 16, 0.42);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 5ch;
+  align-items: end;
+  gap: 10px;
+  flex: 1 1 220px;
 }
-
-.otter-canvas-rename-dialog {
+.otter-canvas-zoom__value {
+  color: var(--loom-theme-text);
+  font-family: var(--n-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.n-dialog.loom-canvas-rename-dialog {
+  width: min(420px, calc(100vw - 32px));
+}
+.loom-canvas-rename-dialog form {
   display: grid;
   gap: 12px;
-  width: min(88vw, 360px);
-  padding: 20px;
-  border-radius: 16px;
-  background: #f7faf5;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
-}
-
-.otter-canvas-rename-dialog__title {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 800;
-  color: #10221b;
-}
-
-.otter-canvas-rename-dialog__input {
-  border: 1px solid rgba(17, 22, 20, 0.2);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 0.9rem;
-  color: #10221b;
-  background: #ffffff;
-}
-
-.otter-canvas-rename-dialog__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
+  min-width: 0;
 }
 
 /* Selected-node properties panel shown below the canvas. */
 .otter-canvas-node-props {
-  border: 1px solid rgba(17, 22, 20, 0.14);
-  border-radius: 14px;
-  padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.6);
+  min-width: 0;
 }
 
 .otter-canvas-node-props__title {
   margin: 0 0 10px;
   font-size: 0.82rem;
   font-weight: 800;
-  color: #10221b;
 }
 
 .otter-canvas-node-props__grid {
@@ -162,7 +108,7 @@
   flex: 0 0 auto;
   font-size: 0.74rem;
   font-weight: 700;
-  color: rgba(31, 41, 29, 0.6);
+  color: var(--loom-theme-muted);
 }
 
 .otter-canvas-node-props__row dd {
@@ -170,64 +116,79 @@
   min-width: 0;
   font-size: 0.82rem;
   font-weight: 600;
-  color: #10221b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .otter-canvas-node-props__mono {
-  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-family: var(--n-mono);
   font-size: 0.76rem !important;
 }
 
 /* Pipeline-level input/output panel for a saved workflow. */
 .otter-canvas-workflow-io {
-  border: 1px solid rgba(17, 22, 20, 0.14);
-  border-radius: 14px;
-  padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.6);
+  display: grid;
+  min-width: 0;
+  gap: 14px;
 }
 
 .otter-canvas-workflow-io__head {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .otter-canvas-workflow-io__title {
   margin: 0;
-  font-size: 0.82rem;
+  font-size: calc(14rem / 16);
   font-weight: 800;
-  color: #10221b;
 }
 
 .otter-canvas-workflow-io__action {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
 
 .otter-canvas-workflow-io__groups {
   display: grid;
+  min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
 }
 
+/* Exposing a parameter changes this summary, not the position of its editor below. */
+.otter-canvas-workflow-io__group {
+  display: grid;
+  min-width: 0;
+  block-size: 9rem;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
 .otter-canvas-workflow-io__label {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 0.74rem;
   font-weight: 700;
-  color: rgba(31, 41, 29, 0.6);
+  color: var(--loom-theme-muted);
 }
 
 .otter-canvas-workflow-io__list {
+  min-height: 0;
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+  overflow: auto;
+  scrollbar-gutter: stable;
   gap: 6px;
 }
 
@@ -236,136 +197,81 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 6px 10px;
-  border: 1px solid rgba(17, 22, 20, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.7);
+  min-width: 0;
+  padding: 4px 0;
 }
 
 .otter-canvas-workflow-io__port-name {
   min-width: 0;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #10221b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.otter-canvas-workflow-io__port-type {
+.otter-canvas-workflow-io__port > .n-badge {
   flex: 0 0 auto;
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: #2f7d5b;
 }
 
 .otter-canvas-workflow-io__empty {
+  align-self: start;
   margin: 0;
   font-size: 0.78rem;
-  color: rgba(31, 41, 29, 0.5);
+  color: var(--loom-theme-muted);
 }
 
 /* Per-node parameter exposure controls inside the workflow interface panel. */
 .otter-canvas-param-expose {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px dashed rgba(17, 22, 20, 0.16);
+  min-width: 0;
+  margin: 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--loom-theme-line);
   display: grid;
   gap: 12px;
 }
 
-.otter-canvas-param-expose__hint {
+.otter-canvas-param-expose legend {
+  color: var(--loom-theme-muted);
+  font-size: calc(12rem / 16);
+}
+.otter-canvas-param-expose__node {
   margin: 0;
-  font-size: 0.74rem;
-  color: rgba(31, 41, 29, 0.6);
+  font-size: calc(13rem / 16);
+  font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .otter-canvas-param-expose__group {
   display: grid;
+  min-width: 0;
   gap: 6px;
 }
 
-.otter-canvas-param-expose__node {
-  margin: 0;
-  font-size: 0.76rem;
-  font-weight: 800;
-  color: #10221b;
-}
-
 .otter-canvas-param-expose__row {
-  display: flex;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 10px;
 }
 
-.otter-canvas-param-expose__toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1 1 auto;
+.otter-canvas-param-expose__row > .n-check {
   min-width: 0;
-  font-size: 0.8rem;
-  color: #10221b;
-  cursor: pointer;
 }
-
-.otter-canvas-param-expose__toggle span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.otter-canvas-param-expose__row > .n-check span {
+  overflow-wrap: anywhere;
 }
-
 .otter-canvas-param-expose__value {
-  flex: 0 0 40%;
-  border: 1px solid rgba(17, 22, 20, 0.16);
-  border-radius: 8px;
-  padding: 5px 8px;
-  font-size: 0.78rem;
-  color: #10221b;
-  background: rgba(255, 255, 255, 0.8);
-}
-
-.otter-canvas-param-expose__value:disabled {
-  background: rgba(17, 22, 20, 0.06);
-  color: rgba(31, 41, 29, 0.5);
-}
-
-.otter-canvas-workspace {
-  display: grid;
-  gap: 14px;
   min-width: 0;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
 }
-
-.otter-canvas-thumbnail__head,
-.otter-canvas-workspace__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.otter-canvas-thumbnail__head h3,
-.otter-canvas-workspace__head h3,
-.otter-canvas-inspector h4 {
-  margin: 0;
-}
-
-.otter-canvas-status {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  border: 1px solid rgba(17, 22, 20, 0.13);
-  border-radius: 999px;
-  padding: 6px 9px;
-  background: color-mix(in srgb, var(--loom-theme-accent) 20%, transparent);
-  color: #111614;
-  font-size: 0.74rem;
-  font-weight: 900;
-  white-space: nowrap;
+@media (max-width: 700px) {
+  .otter-canvas-node-props__grid,
+  .otter-canvas-workflow-io__groups,
+  .otter-canvas-param-expose__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .otter-canvas-surface {
@@ -389,10 +295,6 @@
   -webkit-user-drag: none;
   user-select: none;
   pointer-events: none;
-}
-
-.otter-canvas-surface--large {
-  min-height: 320px;
 }
 
 .otter-canvas-surface--interactive {

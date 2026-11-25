@@ -16,7 +16,10 @@ fn replacement_package() -> Vec<u8> {
             bytes.extend_from_slice(b"-replacement");
         }
         output
-            .start_file(file.name().unwrap(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                file.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&bytes).unwrap();
     }

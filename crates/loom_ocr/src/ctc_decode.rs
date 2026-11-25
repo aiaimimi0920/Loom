@@ -347,8 +347,11 @@ fn recover_spaces(
             let left = &pair[0];
             let right = &pair[1];
             let advance = right.start_timestep.saturating_sub(left.start_timestep);
+            // Infer a missing separator, not another space beside one already emitted by CTC.
             if advance < minimum_advance
                 || right.start_timestep <= left.end_timestep
+                || left.text.ends_with(char::is_whitespace)
+                || right.text.starts_with(char::is_whitespace)
                 || !has_script_boundary(&left.text, &right.text)
             {
                 return None;
@@ -486,5 +489,48 @@ mod tests {
             decode_ctc(&rows, 12, 5, &keys).expect("decode").text,
             "AB 中AB"
         );
+    }
+
+    #[test]
+    fn does_not_extend_recognized_whitespace_with_an_inferred_space() {
+        let keys = ["#", "A", "B", "中", " ", "-"].map(str::to_owned);
+        for (left, right, expected) in [(4, 3, "AB 中AB"), (5, 4, "AB- AB")] {
+            let output = [
+                &[(1, 0.99)][..],
+                &[(0, 0.99)],
+                &[(2, 0.99)],
+                &[(0, 0.99)],
+                &[(left, 0.90)],
+                &[(0, 0.80), (4, 0.15)],
+                &[(0, 0.99)],
+                &[(right, 0.90)],
+                &[(0, 0.99)],
+                &[(1, 0.99)],
+                &[(0, 0.99)],
+                &[(2, 0.99)],
+            ]
+            .into_iter()
+            .flat_map(|values| scored_row(6, values))
+            .collect::<Vec<_>>();
+            let decoded = decode_ctc(&output, 12, 6, &keys).expect("decode");
+            assert_eq!(decoded.text, expected);
+            assert_eq!(decoded.recovered_symbol_count, 0);
+        }
+    }
+
+    #[test]
+    fn retains_two_greedy_spaces_separated_by_a_ctc_blank() {
+        let keys = ["#", "A", "中", " "].map(str::to_owned);
+        let output = [
+            row(1, 0.9),
+            row(3, 0.9),
+            row(0, 0.9),
+            row(3, 0.9),
+            row(2, 0.9),
+        ]
+        .concat();
+        let decoded = decode_ctc(&output, 5, 4, &keys).expect("decode");
+        assert_eq!(decoded.text, "A  中");
+        assert_eq!(decoded.recovered_symbol_count, 0);
     }
 }

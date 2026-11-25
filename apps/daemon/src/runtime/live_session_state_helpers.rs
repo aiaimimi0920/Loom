@@ -44,6 +44,7 @@ fn validate_control_sequence(
 fn snapshot(record: &LiveSessionRecord) -> LiveSessionRuntimeSnapshot {
     LiveSessionRuntimeSnapshot {
         session: record.session.clone(),
+        direct_view: record.direct_viewer.is_some(),
         epoch: record.epoch,
         last_frame_id: record.last_frame_id,
         published_frames: record.published_frames,

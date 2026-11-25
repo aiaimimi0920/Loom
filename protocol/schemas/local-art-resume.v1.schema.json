@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.local/protocol/local-art-resume.v1.schema.json",
+  "title": "Local Art offline resume envelope",
+  "$ref": "local-art-grant.v1.schema.json",
+  "$defs": {
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "devicePublicKey", "grant"],
+      "properties": {
+        "protocolVersion": {"const": "loom.art.local.resume.v1"},
+        "devicePublicKey": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"},
+        "grant": {"$ref": "local-art-grant.v1.schema.json#/$defs/grant"}
+      }
+    }
+  }
+}

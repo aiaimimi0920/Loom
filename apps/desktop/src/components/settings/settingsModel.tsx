@@ -1,6 +1,7 @@
 // Defines settings navigation, shortcut metadata, and shared controls.
 import desktopPackage from "../../../package.json";
 import { type KeyboardEvent, type ReactNode } from "react";
+import { Disclosure } from "@neuro/ui";
 
 export type SettingsAppId = "loom" | "hook";
 export type SettingsSectionId = "general" | "shortcuts" | "mcp" | "art-store" | "capabilities" | "network" | "cache" | "about";
@@ -346,23 +347,9 @@ export function SettingsAccordionSection({
 }) {
   const contentId = `settings-section-${id}`;
   return (
-    <section className={open ? "settings-section settings-section--open" : "settings-section"}>
-      <h2 className="settings-section__heading">
-        <button
-          className="settings-section__trigger"
-          type="button"
-          aria-expanded={open}
-          aria-controls={contentId}
-          onClick={onToggle}
-        >
-          <SettingsSectionIcon kind={id} />
-          <span>{label}</span>
-          <svg className="settings-section__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-            <path d="m7 9 5 5 5-5" />
-          </svg>
-        </button>
-      </h2>
+    <Disclosure className="settings-section" open={open} onOpenChange={onToggle}
+      title={<h2 className="settings-section__heading"><SettingsSectionIcon kind={id} /><span>{label}</span></h2>}>
       {open ? <div className="settings-section__body" id={contentId}>{children}</div> : null}
-    </section>
+    </Disclosure>
   );
 }

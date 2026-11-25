@@ -38,8 +38,12 @@ test("capability UI exposes installed, local ZIP, and signed catalog workflows",
   assert.match(capabilityPanel, /SBOM/);
   assert.match(capabilityPanel, /Provenance/);
   assert.match(capabilityPanel, /hostCompatibility\.loomCapabilityApi/);
-  assert.match(capabilityPanel, /role="tabpanel"/);
-  assert.match(capabilityPanel, /aria-controls="capability-panel-installed"/);
+  assert.match(capabilityPanel, /<TabsRoot asChild value=\{tab\}/);
+  assert.match(capabilityPanel, /<TabList label="能力扩展来源">/);
+  for (const value of ["installed", "catalog"]) {
+    assert.ok(capabilityPanel.includes(`<Tab value="${value}">`));
+    assert.ok(capabilityPanel.includes(`<TabPanel value="${value}">`));
+  }
 });
 
 test("official OCR quick install reuses the signed catalog lifecycle", () => {
@@ -56,9 +60,10 @@ test("permission review displays digest-bound evidence before activation", () =>
   assert.match(permissionDialog, /权限与不可变包摘要绑定/);
   assert.match(permissionDialog, /review\.digest/);
   assert.match(permissionDialog, /review\.permissions\.map/);
-  assert.match(permissionDialog, /aria-modal="true"/);
-  assert.match(permissionDialog, /querySelectorAll<HTMLElement>/);
-  assert.match(permissionDialog, /previousFocus\?\.focus/);
+  assert.match(permissionDialog, /from "@neuro\/ui"/);
+  assert.match(permissionDialog, /<Dialog open title=/);
+  assert.match(permissionDialog, /busy=\{busy\} initialFocusRef=\{confirmRef\}/);
+  assert.doesNotMatch(permissionDialog, /querySelectorAll|createPortal|previousFocus|addEventListener/);
 });
 
 test("plugin settings are manifest-driven and use the isolated settings API", () => {
@@ -70,4 +75,18 @@ test("plugin settings are manifest-driven and use the isolated settings API", ()
   assert.match(capabilityApi, /pluginPath\(qualifiedId, "settings"\)/);
   assert.match(capabilityApi, /expectedRevision/);
   assert.match(capabilityApi, /packageDigest/);
+});
+
+test("capability presentation uses standard primitives and field-owned unique associations", () => {
+  for (const text of [capabilityPanel, capabilitySettings, officialOcrCard]) {
+    assert.match(text, /from "@neuro\/ui"/);
+    assert.doesNotMatch(text, /<button\b|<(?:input|select)\b(?![^>]*type="file")|className="(?:ghost-button|signal-button|danger-button)"/);
+    assert.doesNotMatch(text, /Capability Plugins|Official Capability|capability-status--/);
+  }
+  assert.match(capabilitySettings, /<Disclosure[^>]*open=\{open\} onOpenChange=\{setOpen\}/);
+  assert.match(capabilitySettings, /<Field label=\{field.title \?\? field.id\} description=\{field.payload.description\}>/);
+  assert.doesNotMatch(capabilitySettings, /field.id.replace|inputId|id=\{/);
+  assert.match(capabilitySettings, /<Switch checked=\{value === true\}/);
+  assert.match(capabilitySettings, /setSaving\(true\);\s+setError\(null\);/);
+  assert.match(capabilityPanel, /已授权.*待授权/);
 });

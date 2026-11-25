@@ -78,6 +78,19 @@ approver, review date, and protecting tests. An agent must not invent approval.
    at most 90 days, a real owner, and independent review. An agent must not
    invent that approval.
 
+## Fast iteration and build-cache discipline
+
+- Batch independent file reads/searches in parallel, plan 150-500 effective-line
+  module boundaries upfront, and write all coordinated files of a slice before
+  invoking heavy Rust builds so you do not pay a second split-and-relink cycle.
+- Use `cargo check`, `tsc --noEmit`, and the effective-line checker during
+  iterative coding; link and run targeted `cargo test` once after the slice
+  compiles cleanly, and reuse the built test binary in `target/debug/deps/` when
+  running additional filters on unchanged Rust source.
+- Keep one Cargo writer per checkout and reuse `target/` incremental caches; never
+  create disposable cold `CARGO_TARGET_DIR` directories in `linshi/` or poll
+  terminals in tight `sleep` / `write_stdin` loops.
+
 Minimum effective-line commands from the repository root:
 
 ```powershell

@@ -146,13 +146,26 @@ fn handle_projection_route(
             }
             "/v1/projections/inspect" => {
                 let input: ProjectionInspect = parse_projection_body(body)?;
-                let record = registry.projections.invitation(&input.envelope, now)?;
+                let saved = registry.projections.get(&input.envelope.projection_id)?;
+                // An authenticated receiver may reopen its exact accepted invitation after expiry.
+                let record = if saved.envelope == input.envelope
+                    && !saved.unlinked
+                    && saved.remote_receiver.is_none()
+                    && saved.receiver.as_deref() == Some(actor)
+                    && saved.receiver_epoch == Some(device.session_epoch)
+                {
+                    saved
+                } else {
+                    registry.projections.invitation(&input.envelope, now)?
+                };
                 projection_target_authorized(record, actor, device.session_epoch)?;
                 projection_source_authorized(&registry, record)?;
                 let source = registry
                     .authorized_keyed_device(&input.envelope.source.device_id)
                     .map_err(|_| ProjectionError::new(403, "projection_source_revoked"))?;
-                if record.receiver.is_none() { projection_receive_allowed(&registry, actor, &source.id, None)?; }
+                if record.receiver.is_none() {
+                    projection_receive_allowed(&registry, actor, &source.id, None)?;
+                }
                 verify_projection_signature(
                     &input.envelope,
                     source.public_key.as_deref().unwrap_or_default(),
@@ -179,7 +192,12 @@ fn handle_projection_route(
                 )?;
                 let existing = registry.projections.get(&input.envelope.projection_id)?;
                 if existing.receiver.is_none() {
-                    projection_receive_allowed(&registry, actor, &existing.envelope.source.device_id, None)?;
+                    projection_receive_allowed(
+                        &registry,
+                        actor,
+                        &existing.envelope.source.device_id,
+                        None,
+                    )?;
                 }
                 let record = registry.projections.accept(
                     &input.envelope,
@@ -200,7 +218,11 @@ fn handle_projection_route(
                     return Err(ProjectionError::new(403, "projection_source_mismatch"));
                 }
                 validate_projection_snapshot(&input.snapshot, &input.digest)?;
-                if !record.unlinked && registry.projection_edits.has_binding(&input.projection_id)? {
+                if !record.unlinked
+                    && registry
+                        .projection_edits
+                        .has_binding(&input.projection_id)?
+                {
                     return Err(ProjectionError::new(409, "projection_edit_snapshot_locked"));
                 }
                 registry.projections.update(
@@ -226,7 +248,8 @@ fn handle_projection_route(
                 let record = registry.projections.get(&input.projection_id)?;
                 projection_source_authorized(&registry, record)?;
                 if record.envelope.source.device_id != actor
-                    && (record.receiver.as_deref() != Some(actor)
+                    && (record.remote_receiver.is_some()
+                        || record.receiver.as_deref() != Some(actor)
                         || record.receiver_epoch != Some(device.session_epoch))
                 {
                     return Err(ProjectionError::new(403, "projection_access_denied"));

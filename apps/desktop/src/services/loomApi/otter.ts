@@ -29,13 +29,6 @@ export async function listManagedDevices(
   return await getJson<LoomDevicesResponse>(baseUrl, "/v1/devices");
 }
 
-export async function addManagedDevice(
-  baseUrl: string,
-  input: { name: string; kind: LoomDeviceKind; address: string },
-): Promise<LoomDevicesResponse> {
-  return await postJson<LoomDevicesResponse>(baseUrl, "/v1/devices", input);
-}
-
 export async function approveManagedDevice(
   baseUrl: string,
   deviceId: string,

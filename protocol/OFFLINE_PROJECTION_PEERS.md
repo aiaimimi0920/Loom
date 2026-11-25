@@ -7,14 +7,14 @@ server, public relay, discovery service or transitive trust is consulted.
 
 ## Administration
 
-GET /v1/projection-peers returns identity {peerId, publicKey}, revision, peers,
+GET /v1/projection-peers returns identity {peerId, publicKey}, localConnection, revision, peers,
 and deliveryAvailable. The administrator bearer is required; Otter device sessions
 cannot read or change this configuration. The private identity key is never returned.
 
 PUT /v1/projection-peers accepts expectedRevision and peer:
 
     {"peerId":"loom-<SHA256 of raw Ed25519 key>","publicKey":"<base64 32-byte key>",
-     "name":"Loom B","origin":"https://loom-b.example.test","enabled":true}
+     "name":"Loom B","origin":"https://loom-b.example.test","certificate":"<optional base64 DER>","enabled":true}
 
 The key-derived peerId is the fingerprint. Obtain the public identity from the
 other Loom administrator over an independently trusted channel. Register both
@@ -26,6 +26,15 @@ DELETE /v1/projection-peers accepts expectedRevision and peerId. Writes compare
 the current revision, atomically persist the next document, then publish it in
 memory. A stale revision returns peer_revision_conflict; reload before retrying.
 No network response is allowed to mutate the trust list.
+
+When the LAN listener is active, localConnection is {origin, certificate}; otherwise
+it is null. The certificate is public base64 DER, never the listener private key.
+Exchange it together with the peer identity through the same independently trusted
+channel. The Devices panel exposes these fields; the setup helper exports them as
+connection in the public identity file. The helper binds that certificate to the
+exported origin and rejects an origin override. Each approved peer may carry one
+certificate (maximum 8192 base64 bytes); publicly trusted HTTPS may omit it.
+No unauthenticated certificate download automatically modifies trust.
 
 POST /v1/projection-peers/probe accepts peerId. A successful result contains
 verified=true, the pinned peerId, configuration revision, and deliveryAvailable=false.
@@ -77,8 +86,11 @@ cannot silently replace a pinned identity.
 
 Limits: 16 peers, 128-byte UTF-8 names, 256-byte origins, 16 KiB request/response,
 one outbound probe per daemon, five-second HTTP timeout, no redirects. HTTPS with
-normal certificate validation is required outside loopback; private-network HTTPS
-is allowed. Install the appropriate LAN CA rather than bypass certificate checks.
+normal certificate and hostname validation is required outside loopback;
+private-network HTTPS is allowed. An explicitly approved certificate contributes a
+root to that peer's client only, without changing system trust or bypassing TLS.
+Mutual Ed25519 challenge authentication is still required. Changing the certificate
+increments the trust revision and invalidates existing transfers like other edits.
 Clocks must be within 30 seconds. At most 128 accepted nonces are retained until
 their timestamp ceases to be valid; this cache is in memory, so restart can permit
 a repeated still-valid connectivity challenge. It cannot authorize data transfer.
@@ -123,7 +135,7 @@ Operator example (after mutual Trust):
 ## Persistence and lifetime
 
 The private document lives at settings/offline-projection-peers.json under the
-control-plane root, with a 64 KiB read limit, schema and key-pair validation, and
+control-plane root, with a 192 KiB read/write limit, schema and key-pair validation, and
 the existing private ACL/atomic-write guarantees. Corruption fails startup rather
 than silently regenerating an identity. A sibling lock file prevents two daemons
 from concurrently owning the same trust state. Identity and trust survive restart.
@@ -157,6 +169,17 @@ per daemon. Network I/O holds neither the device registry nor trust mutex.
 An unchanged local trust revision and unexpired proof are required at publication.
 
 ## Offline delivery lifecycle
+
+The restricted LAN HTTPS adapter exposes only the exact POST device operations
+listed below and signed peer handshake/catalog/raster-check/transfer endpoints.
+Peer administration is never exposed through that adapter. Browser credentials,
+administrator Bearer tokens, URL aliases and query-bearing paths remain rejected;
+the original device session or pinned signed-proof owner still authenticates every
+operation. Image and challenge budgets are unchanged: offline create/update and
+peer raster-check/transfer use 6 MiB; other offline controls use 1 MiB, while
+handshake/catalog requests use 16 KiB. Source read remains metadata-only; an
+authorized receiver read obtains the raster. The catalog response digest follows
+the complete challenge message, unlike raster/transfer metadata within purpose.
 
 Device-authenticated POST /v1/offline-projections/{create,inbox,inspect,accept,read,
 update,receipt,unlink} runs on the Otter own paired Loom. Create additionally takes

@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import test from "node:test";
 
-import {
-  desktopStyleEntrySource,
-  desktopStyleModules,
-  desktopStyleSource,
-} from "./desktopStyleSource.ts";
+import { desktopStyleEntrySource, desktopStyleModules, desktopStyleSource } from "./desktopStyleSource.ts";
 
 const expectedImportOrder = [
   "./styles/foundation.css",
@@ -17,7 +13,6 @@ const expectedImportOrder = [
   "./styles/art-registry.css",
   "./styles/art-editing.css",
   "./styles/workflow-studio.css",
-  "./styles/art-creator.css",
   "./styles/otter-canvas-controls.css",
   "./styles/otter-canvas-surface.css",
   "./styles/settings-shell.css",
@@ -34,6 +29,7 @@ const expectedImportOrder = [
   "./styles/mcp-hub.css",
   "./styles/mcp-dialogs.css",
   "./styles/accessibility.css",
+  "./styles/art-wizard.css",
 ] as const;
 
 test("loads every owned desktop stylesheet exactly once in cascade order", () => {
@@ -42,9 +38,7 @@ test("loads every owned desktop stylesheet exactly once in cascade order", () =>
     expectedImportOrder,
   );
   assert.deepEqual(
-    [...readdirSync(new URL("../styles/", import.meta.url))]
-      .filter((name) => name.endsWith(".css"))
-      .sort(),
+    [...readdirSync(new URL("../styles/", import.meta.url))].filter((name) => name.endsWith(".css")).sort(),
     expectedImportOrder.map((relativePath) => relativePath.slice("./styles/".length)).sort(),
   );
 });
@@ -60,5 +54,5 @@ test("keeps the entry import-only and feature modules independently owned", () =
     assert.doesNotMatch(source, /^[ \t]*@import\b/m, `${relativePath} must not own cascade ordering`);
   }
   assert.match(desktopStyleSource, /:root\s*\{/);
-  assert.match(desktopStyleSource, /\.mcp-server-dialog\s*\{/);
+  assert.match(desktopStyleSource, /\.n-dialog\.loom-mcp-dialog\s*\{/);
 });

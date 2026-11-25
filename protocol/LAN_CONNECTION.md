@@ -42,15 +42,40 @@ Otter 发现监听 UDP `49779`，Loom 每 2 秒从所选网卡发送一跳广播
 
 ## 暴露面与资源边界
 
-入口仅允许 RFC1918 IPv4 绑定和私网来源，使用 TLS 1.3。仅代理公开身份、连接
-申请/状态/取消/激活、设备请求/签名会话和 projection v2 HTTP 白名单路由。
-管理 API、浏览器 Origin/Cookie、Bearer 管理令牌、HTTP upgrade 和重定向均不转发。
-本机 bridge、共享内存、WebSocket、实时媒体与 Surface 流不属于本次远程入口。
+入口仅允许 RFC1918 IPv4 绑定和私网来源，使用 TLS 1.3。HTTP 适配器只代理
+`lan_http`、`lan_http_live`、`lan_http_surface` 的精确白名单：公开身份、连接申请/
+状态/取消/激活、设备请求/签名会话、受控 local Art 准备/资源/异步服务/观看加入，
+以及 shared/offline/projection v2 和 signed peer 投送合同。白名单不是通用路径前缀，
+不会自动开放同目录新增接口。
 
-每次连接只处理一个请求，最多 4 个并发 worker，无无限等待队列。头部最多 16 KiB、
-48 项，请求体最多 1 MiB，响应最多 64 MiB。TLS 握手/请求读取共用 5 秒绝对期限，
-loopback 后端请求限时 8 秒，响应写入限时 3 秒。设备权限、审批与 nonce 校验仍由
-原服务执行，局域网适配器不会授予管理员身份。
+本地 Art 的 Live 控制另用精确 `POST /v1/art/local/live-viewer/control`，最多32KiB，
+只允许 Device/nonce 的 acquire/release/input，不是通用前缀或JS权限。Preview不自动
+join/取得控制；仍需有效签名/绑定、当前审批/工具/设备、已有成员、Source输入许可及
+原controller/epoch/双序号。Art过期或撤审批后，仅允许有效Device精确身份释放自己
+已有的controller；不能重新获取或转发输入。原Surface控制合同不变。
+
+Live 开放 status、sessions 目录/创建、单会话读取/events，以及 viewers/resume/
+control/input/observations/triggers/close 的既有精确路由。WSS 只允许
+`GET /v1/live/media` 的规范 sessionId/role/可选游标参数，经 Device 会话、nonce
+及原媒体握手/成员授权核验后，将 TLS 流移交原媒体 worker；其他 Upgrade 仍拒绝。
+媒体连接不占用四个短 HTTP worker，继续服从原媒体连接配额、帧预算及停止回收。
+
+Surface 只开放 `POST /v1/surfaces/attach`、
+`POST /v1/surfaces/instances/{raw-id}/lifecycle` 和 `GET /v1/surfaces/stream`。
+必须携带 Device 会话及 nonce，JSON 请求最多 16 KiB；stream 只接受规范数字
+after/timeoutMs，无重复或未知键，timeoutMs 最多 5000。路径别名/转义拒绝；
+设备撤权、nonce 重放、附件归属和生命周期版本仍由原 runtime 核验。
+Surface CRUD 管理、任意 events、mount、resources、本机 bridge 与共享内存不开放。
+管理 API、浏览器 Origin/Cookie、Bearer 管理令牌、GET 请求体及重定向均不转发。
+
+普通 HTTP 每次连接只处理一个请求，最多 4 个并发 worker，无无限等待队列。
+头部最多 16 KiB/48 项，响应最多 64 MiB；默认请求体最多 1 MiB，Art、Surface
+和投送按各自既有合同限额，不能将默认值当成所有路由的统一上限。
+TLS 握手/请求读取共用 5 秒绝对期限，loopback 后端请求限时 8 秒，响应写入限时
+3 秒；这些短 HTTP 期限不冒充已升级媒体流的整个寿命。设备权限、审批与 nonce
+校验仍由原服务执行，局域网适配器不会授予管理员身份。
 
 定向测试：`cargo test --locked -p loom-daemon lan_ --lib`，包含真实 HTTPS 证书拒绝、
-审批、签名会话、激活、禁用及证书复用。回环测试不替代第二台电脑的手动验收。
+审批、签名会话、激活、禁用及证书复用。Live/Surface 联合另核真实 HTTPS/WSS、
+原生 Application、精确像素及 Source 输入释放；合成捕获和自有窗口消息不等于真实
+桌面捕获或普通可见双产品运行，回环测试也不替代物理跨机和最终用户验收。

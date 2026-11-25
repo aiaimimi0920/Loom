@@ -36,6 +36,7 @@ impl LiveSessionStore {
         }
         let mut sessions = self.lock_state()?;
         let record = active_record_mut(&mut sessions, session_id)?;
+        ensure_live_collaboration(record)?;
         if record.wall_controller.is_some()
             && !matches!(request.action, LiveControlLeaseAction::Revoke)
         {

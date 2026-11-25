@@ -42,13 +42,8 @@ import {
 import { applyLoomGeneralSettings } from "./services/loomGeneralSettings";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { IconButton, NavigationItem as NeuroNavigationItem } from "@neuro/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export default function App() {
   const snapshotRequestGate = useRef(createLatestRequestGate());
@@ -59,7 +54,7 @@ export default function App() {
   const packagedArtsBootstrapBaseUrl = useRef<string | null>(null);
   const appMountedRef = useRef(true);
   const [activeSection, setActiveSection] = useState<SectionId>("mcp");
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(() => window.matchMedia("(max-width: 820px)").matches);
   const [snapshot, setSnapshot] = useState<LoomSnapshot>(fallbackSnapshot);
   const [loading, setLoading] = useState(false);
   const [autoStartAttempted, setAutoStartAttempted] = useState(false);
@@ -74,6 +69,13 @@ export default function App() {
     baseUrl: snapshot.baseUrl,
     refreshVersion: otterCanvasRefreshVersion,
   });
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 820px)");
+    const updateRail = (event: MediaQueryListEvent) => setRailCollapsed(event.matches);
+    query.addEventListener("change", updateRail);
+    return () => query.removeEventListener("change", updateRail);
+  }, []);
 
   const refreshSnapshot = useCallback(async (abortSignal?: AbortSignal): Promise<LoomSnapshot> => {
     if (!appMountedRef.current) return fallbackSnapshot;
@@ -220,10 +222,7 @@ export default function App() {
   }, [autoStartAttempted, loading, snapshot.connectionState, snapshot.checkedAt]);
 
   useEffect(() => {
-    if (
-      snapshot.connectionState !== "online"
-      || packagedArtsBootstrapBaseUrl.current === snapshot.baseUrl
-    ) {
+    if (snapshot.connectionState !== "online" || packagedArtsBootstrapBaseUrl.current === snapshot.baseUrl) {
       return;
     }
     packagedArtsBootstrapBaseUrl.current = snapshot.baseUrl;
@@ -272,10 +271,7 @@ export default function App() {
   }, [hookBridgeUrl, snapshot.connectionState, snapshot.baseUrl]);
 
   useEffect(() => {
-    if (
-      snapshot.connectionState !== "online"
-      || typeof window === "undefined"
-    ) {
+    if (snapshot.connectionState !== "online" || typeof window === "undefined") {
       return;
     }
     const sync = startOtterBridgeWorkflowSync({
@@ -312,9 +308,7 @@ export default function App() {
     [activeSection],
   );
 
-  const runWindowCommand = useCallback(async (
-    command: "minimize" | "toggle-maximize" | "close",
-  ): Promise<void> => {
+  const runWindowCommand = useCallback(async (command: "minimize" | "toggle-maximize" | "close"): Promise<void> => {
     try {
       const currentWindow = getCurrentWindow();
       if (command === "minimize") await currentWindow.minimize();
@@ -326,19 +320,20 @@ export default function App() {
   }, []);
 
   const renderNavigationItem = (item: NavigationItem) => (
-    <button
-      className={activeSection === item.id ? "rail-item rail-item--active" : "rail-item"}
-      type="button"
+    <NeuroNavigationItem
+      className="rail-item"
+      active={activeSection === item.id}
       key={item.id}
       title={item.label}
       aria-label={item.label}
-      aria-current={activeSection === item.id ? "page" : undefined}
       data-testid={item.id === "otter-bridge" ? "nav-otter-bridge" : undefined}
       onClick={() => setActiveSection(item.id)}
     >
-      <span className="rail-item__icon"><ShellIcon kind={item.icon} /></span>
+      <span className="rail-item__icon">
+        <ShellIcon kind={item.icon} />
+      </span>
       <span className="rail-item__label">{item.label}</span>
-    </button>
+    </NeuroNavigationItem>
   );
 
   return (
@@ -352,73 +347,79 @@ export default function App() {
           onDoubleClick={() => void runWindowCommand("toggle-maximize")}
         >
           {activeSection === "settings" ? (
-            <button
+            <IconButton
               className="app-titlebar__back"
-              type="button"
-              aria-label="返回 MCP"
+              variant="quiet"
+              label="返回 MCP"
               title="返回 MCP"
               onDoubleClick={(event) => event.stopPropagation()}
               onClick={() => setActiveSection("mcp")}
             >
               <ShellIcon kind="back" />
-            </button>
+            </IconButton>
           ) : null}
         </div>
         <div className="app-titlebar__controls">
-          <button
-            className={loading ? "window-control window-control--refresh window-control--loading" : "window-control window-control--refresh"}
-            type="button"
-            aria-label={loading ? "正在刷新" : "刷新"}
-            title={loading ? "正在刷新" : "刷新"}
+          <IconButton
+            className="loom-window-control loom-window-control--refresh"
+            variant="quiet"
+            label="刷新"
+            title="刷新"
+            loading={loading}
             onClick={() => void refresh()}
-            disabled={loading}
           >
             <ShellIcon kind="refresh" />
-          </button>
-          <button
-            className="window-control"
-            type="button"
-            aria-label="最小化"
+          </IconButton>
+          <IconButton
+            className="loom-window-control"
+            variant="quiet"
+            label="最小化"
             title="最小化"
             onClick={() => void runWindowCommand("minimize")}
           >
             <ShellIcon kind="minimize" />
-          </button>
-          <button
-            className="window-control"
-            type="button"
-            aria-label="最大化或还原"
+          </IconButton>
+          <IconButton
+            className="loom-window-control"
+            variant="quiet"
+            label="最大化或还原"
             title="最大化或还原"
             onClick={() => void runWindowCommand("toggle-maximize")}
           >
             <ShellIcon kind="maximize" />
-          </button>
-          <button
-            className="window-control window-control--close"
-            type="button"
-            aria-label="关闭"
+          </IconButton>
+          <IconButton
+            className="loom-window-control"
+            variant="danger"
+            label="关闭"
             title="关闭"
             onClick={() => void runWindowCommand("close")}
           >
             <ShellIcon kind="close" />
-          </button>
+          </IconButton>
         </div>
       </header>
 
       <aside className="left-rail">
         <div className="app-titlebar__brand">
-          <button
-            className="shell-icon-button shell-rail-toggle"
-            type="button"
-            aria-label={railCollapsed ? "展开侧栏" : "收起侧栏"}
+          <IconButton
+            className="shell-rail-toggle"
+            variant="quiet"
+            label={railCollapsed ? "展开侧栏" : "收起侧栏"}
             title={railCollapsed ? "展开侧栏" : "收起侧栏"}
             aria-expanded={!railCollapsed}
             onClick={() => setRailCollapsed((collapsed) => !collapsed)}
           >
-            <span className="shell-rail-toggle__icon"><ShellIcon kind="sidebar" /></span>
-            <span className="shell-rail-toggle__mark"><LoomMark /></span>
-          </button>
-          <span className="app-titlebar__product-mark"><LoomMark /></span>
+            <span className="shell-rail-toggle__icon">
+              <ShellIcon kind="sidebar" />
+            </span>
+            <span className="shell-rail-toggle__mark">
+              <LoomMark />
+            </span>
+          </IconButton>
+          <span className="app-titlebar__product-mark">
+            <LoomMark />
+          </span>
           <strong className="app-titlebar__product-name">Loom</strong>
         </div>
 
@@ -427,52 +428,60 @@ export default function App() {
         </nav>
 
         <div className="rail-footer">
-          <button
-            className={activeSection === "devices" ? "rail-item rail-item--active rail-device-button" : "rail-item rail-device-button"}
-            type="button"
+          <NeuroNavigationItem
+            className="rail-item rail-device-button"
+            active={activeSection === "devices"}
             title="设备管理"
             aria-label="设备管理"
-            aria-current={activeSection === "devices" ? "page" : undefined}
             onClick={() => setActiveSection("devices")}
           >
-            <span className="rail-item__icon"><ShellIcon kind="device" /></span>
+            <span className="rail-item__icon">
+              <ShellIcon kind="device" />
+            </span>
             <span className="rail-item__label">设备管理</span>
-          </button>
+          </NeuroNavigationItem>
           <nav className="rail-utility-nav" aria-label="Loom utilities">
             {utilityNavigationItems.map(renderNavigationItem)}
           </nav>
         </div>
       </aside>
 
-      <section className={activeSection === "settings"
-        ? "workspace-panel workspace-panel--settings"
-        : activeSection === "registry" || activeSection === "otter-bridge"
-          ? "workspace-panel workspace-panel--tooling"
-          : "workspace-panel"}>
-        {activeSection !== "devices" && activeSection !== "settings" ? <header className={activeSection === "registry" || activeSection === "otter-bridge"
-          ? "workspace-header workspace-header--tooling"
-          : "workspace-header"}>
-          <div>
-            {activeNavigation.eyebrow ? (
-              <p className="section-kicker">{activeNavigation.eyebrow}</p>
-            ) : null}
-            <h1>{activeNavigation.label}</h1>
-          </div>
-        </header> : null}
-
-        <div className={activeSection === "devices"
-          ? "workspace-scroll workspace-scroll--devices"
-          : activeSection === "settings"
-            ? "workspace-scroll workspace-scroll--settings"
+      <section
+        className={
+          activeSection === "settings"
+            ? "workspace-panel workspace-panel--settings"
             : activeSection === "registry" || activeSection === "otter-bridge"
-              ? "workspace-scroll workspace-scroll--tooling"
-              : "workspace-scroll"}>
+              ? "workspace-panel workspace-panel--tooling"
+              : "workspace-panel"
+        }
+      >
+        {activeSection !== "devices" && activeSection !== "settings" ? (
+          <header
+            className={
+              activeSection === "registry" || activeSection === "otter-bridge"
+                ? "workspace-header workspace-header--tooling"
+                : "workspace-header"
+            }
+          >
+            <div>
+              <h1>{activeNavigation.label}</h1>
+            </div>
+          </header>
+        ) : null}
+
+        <div
+          className={
+            activeSection === "devices"
+              ? "workspace-scroll workspace-scroll--devices"
+              : activeSection === "settings"
+                ? "workspace-scroll workspace-scroll--settings"
+                : activeSection === "registry" || activeSection === "otter-bridge"
+                  ? "workspace-scroll workspace-scroll--tooling"
+                  : "workspace-scroll"
+          }
+        >
           {activeSection === "mcp" && (
-            <McpPanel
-              servers={snapshot.mcpServers}
-              baseUrl={snapshot.baseUrl}
-              refresh={refresh}
-            />
+            <McpPanel servers={snapshot.mcpServers} baseUrl={snapshot.baseUrl} refresh={refresh} />
           )}
           {activeSection === "registry" && (
             <ArtPanel
@@ -495,10 +504,7 @@ export default function App() {
             />
           )}
           {activeSection === "devices" && (
-            <DeviceManagementPanel
-              baseUrl={snapshot.baseUrl}
-              online={snapshot.connectionState === "online"}
-            />
+            <DeviceManagementPanel baseUrl={snapshot.baseUrl} online={snapshot.connectionState === "online"} />
           )}
           {activeSection === "settings" && <SettingsPanel snapshot={snapshot} />}
         </div>

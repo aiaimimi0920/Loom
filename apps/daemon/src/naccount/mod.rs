@@ -13,6 +13,21 @@ use std::{
 use store::{Account, Store};
 
 pub(crate) const ISSUER: &str = "https://naccount-auth.aiaimimi.com";
+pub(crate) fn user_summary(root: &Path) -> Result<Option<crate::connected_users::User>> {
+    let _lock = LOCK.lock().map_err(|_| error(503, "naccount_busy"))?;
+    Ok(Store::new(root)
+        .read()?
+        .filter(|a| !a.access_token.is_empty())
+        .map(|a| crate::connected_users::User {
+            issuer: ISSUER.into(),
+            name: if a.name.is_empty() {
+                a.principal.clone()
+            } else {
+                a.name
+            },
+            account_id: a.principal,
+        }))
+}
 pub(crate) const CALLBACK: &str = "http://127.0.0.1:8765/v1/naccount/callback";
 const DEFAULT_CLIENT_ID: &str = "E2C4ea99CC5Fee924b9023D76986397f7593282D25AF979d727D26eaB09A0c10";
 static LOCK: Mutex<()> = Mutex::new(());

@@ -276,6 +276,7 @@ fn handle_otter_bridge_websocket_connection(
         ..ExtensionConnectionState::default()
     };
     let mut liveness = OtterBridgeLiveness::new(std::time::Instant::now(), idle_timeout);
+    let mut deferred = None;
 
     loop {
         if cancelled.load(Ordering::SeqCst) {
@@ -301,7 +302,10 @@ fn handle_otter_bridge_websocket_connection(
             }
         }
 
-        let message = match read_otter_bridge_message(&mut websocket) {
+        let message = match deferred
+            .take()
+            .map_or_else(|| read_otter_bridge_message(&mut websocket), Ok)
+        {
             Ok(message) => message,
             Err(error) if otter_bridge_read_timed_out(&error) => continue,
             Err(_) => break,
@@ -309,14 +313,31 @@ fn handle_otter_bridge_websocket_connection(
         liveness.received(std::time::Instant::now());
         match message {
             tungstenite::Message::Text(text) => {
-                if is_extension_bridge_request(&text) {
-                    let result = handle_extension_bridge_text(
-                        &text,
-                        &mut extension_state,
-                        &capability_runtime,
-                        &capability_resources,
-                        &surface_resources,
-                    );
+                if let Some(method) = extension_bridge_method(&text) {
+                    let is_command = method == loom_protocol::EXTENSION_METHOD_COMMAND_INVOKE;
+                    let mut dispatch = |control| {
+                        dispatch_extension_bridge_text(
+                            &text,
+                            &mut extension_state,
+                            &capability_runtime,
+                            &capability_resources,
+                            &surface_resources,
+                            control,
+                        )
+                    };
+                    let result = if is_command {
+                        let Some(result) = wait_otter_extension_command(
+                            &mut websocket,
+                            &cancelled,
+                            &mut deferred,
+                            |control| dispatch(Some(control)),
+                        ) else {
+                            break;
+                        };
+                        result
+                    } else {
+                        dispatch(None)
+                    };
                     track_extension_client(
                         &mut _extension_client_guard,
                         &extension_state,
@@ -331,7 +352,7 @@ fn handle_otter_bridge_websocket_connection(
                         extension_subscription_rx = Some(rx);
                         _extension_subscription_guard = Some(guard);
                     }
-                    // Legitimate synchronous work does not consume the peer's idle budget.
+                    // Legitimate command execution does not consume the peer's idle budget.
                     liveness.received(std::time::Instant::now());
                     if send_otter_bridge_message(
                         &mut websocket,
@@ -346,8 +367,11 @@ fn handle_otter_bridge_websocket_connection(
                 let mut intermediate_send_failed = false;
                 let mut recovery_channels: Option<Vec<String>> = None;
                 let mut emit_intermediate = |message: String| {
-                    if send_otter_bridge_message(&mut websocket, tungstenite::Message::Text(message))
-                        .is_err()
+                    if send_otter_bridge_message(
+                        &mut websocket,
+                        tungstenite::Message::Text(message),
+                    )
+                    .is_err()
                     {
                         intermediate_send_failed = true;
                     }

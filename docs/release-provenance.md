@@ -2,6 +2,19 @@
 
 A publishable Loom release must come from a clean Git worktree.
 
+内部手测使用同一仓库入口，无需保留临时组包脚本：
+
+```powershell
+.\scripts\build-release.ps1 -VersionId internal-YYYYMMDD-test -OutputRoot C:/work/output `
+  -DevelopmentOnly -LibAria2BuildRoot C:/work/pinned-libaria2
+```
+
+该入口重新编译当前 desktop、daemon、CLI 与插件包，允许 dirty 工作区；只接受
+`internal-` 标识，清单和 provenance 固定标记 `formalReleaseApproved=false`。
+libaria2 仍校验固定 DLL、构建回执与当前 bridge 摘要，不修改发行审批。默认正式入口
+继续要求 libaria2 发行批准；内部候选不能使用 `RequireCleanSource` 或旧 prepared payload。
+可使用绝对 `CARGO_TARGET_DIR` 复用缓存；各工作区的产物路径必须与该缓存一致。
+
 Before building, the exact release tag or manually requested ref must pass the
 lockfile inventory contract and the configured OSV vulnerability gate:
 

@@ -1,14 +1,6 @@
 // Authenticated loom.live.v1 HTTP control plane; binary media remains on its own WebSocket route.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LiveSessionCreateRequest {
-    surface_instance_id: Option<String>,
-    source_attachment_id: Option<String>,
-    envelope: LiveControlEnvelope,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LiveViewerAttachRequest {
     surface_instance_id: String,
     attachment_id: String,
@@ -58,7 +50,7 @@ fn route_live_sessions(
 ) -> Option<Result<(u16, String)>> {
     let response = match (request.method.as_str(), route_path) {
         ("GET", "/v1/live/status") => live_status(live_sessions),
-        ("GET", "/v1/live/sessions") => list_live_sessions(live_sessions),
+        ("GET", "/v1/live/sessions") => list_live_sessions(live_sessions, authenticated_device_id),
         ("POST", "/v1/live/sessions") => create_live_session(
             &request.body,
             live_sessions,
@@ -66,27 +58,36 @@ fn route_live_sessions(
             authenticated_device_id,
         ),
         ("GET", path) if live_session_suffix_id(path, "/events").is_some() => live_session_events(
-            live_session_suffix_id(path, "/events").expect("checked live event path"),
+            &live_session_suffix_id(path, "/events").expect("checked live event path"),
             &request.path,
             live_sessions,
             authenticated_device_id,
         ),
         ("POST", path) if live_session_suffix_id(path, "/viewers").is_some() => attach_live_viewer(
-            live_session_suffix_id(path, "/viewers").expect("checked live viewer path"),
+            &live_session_suffix_id(path, "/viewers").expect("checked live viewer path"),
             &request.body,
             live_sessions,
             surface_instances,
             authenticated_device_id,
         ),
+        ("POST", path) if live_session_suffix_id(path, "/direct-viewer").is_some() => {
+            attach_direct_viewer(
+                &live_session_suffix_id(path, "/direct-viewer")
+                    .expect("checked direct viewer path"),
+                &request.body,
+                live_sessions,
+                authenticated_device_id,
+            )
+        }
         ("POST", path) if live_session_suffix_id(path, "/resume").is_some() => resume_live_session(
-            live_session_suffix_id(path, "/resume").expect("checked live resume path"),
+            &live_session_suffix_id(path, "/resume").expect("checked live resume path"),
             &request.body,
             live_sessions,
             authenticated_device_id,
         ),
         ("POST", path) if live_session_suffix_id(path, "/control").is_some() => {
             change_live_controller(
-                live_session_suffix_id(path, "/control").expect("checked live control path"),
+                &live_session_suffix_id(path, "/control").expect("checked live control path"),
                 &request.body,
                 live_sessions,
                 surface_instances,
@@ -94,7 +95,7 @@ fn route_live_sessions(
             )
         }
         ("POST", path) if live_session_suffix_id(path, "/input").is_some() => forward_live_input(
-            live_session_suffix_id(path, "/input").expect("checked live input path"),
+            &live_session_suffix_id(path, "/input").expect("checked live input path"),
             &request.body,
             live_sessions,
             surface_instances,
@@ -102,7 +103,7 @@ fn route_live_sessions(
         ),
         ("POST", path) if live_session_suffix_id(path, "/observations").is_some() => {
             publish_live_observation(
-                live_session_suffix_id(path, "/observations")
+                &live_session_suffix_id(path, "/observations")
                     .expect("checked live observation path"),
                 &request.body,
                 live_sessions,
@@ -113,7 +114,7 @@ fn route_live_sessions(
         }
         ("POST", path) if live_session_suffix_id(path, "/triggers").is_some() => {
             configure_live_trigger(
-                live_session_suffix_id(path, "/triggers").expect("checked live trigger path"),
+                &live_session_suffix_id(path, "/triggers").expect("checked live trigger path"),
                 &request.body,
                 live_sessions,
                 surface_instances,
@@ -121,13 +122,13 @@ fn route_live_sessions(
             )
         }
         ("POST", path) if live_session_suffix_id(path, "/close").is_some() => close_live_session(
-            live_session_suffix_id(path, "/close").expect("checked live close path"),
+            &live_session_suffix_id(path, "/close").expect("checked live close path"),
             &request.body,
             live_sessions,
             authenticated_device_id,
         ),
         ("GET", path) if live_session_path_id(path).is_some() => read_live_session(
-            live_session_path_id(path).expect("checked live session path"),
+            &live_session_path_id(path).expect("checked live session path"),
             live_sessions,
             authenticated_device_id,
         ),
@@ -156,45 +157,6 @@ fn read_live_session(
         None => live_sessions.get(session_id),
     }
     .and_then(json_snapshot)
-}
-
-fn create_live_session(
-    body: &str,
-    live_sessions: &SharedLiveSessionStore,
-    surface_instances: &SharedSurfaceInstanceStore,
-    authenticated_device_id: Option<&str>,
-) -> std::result::Result<(u16, String), LiveRuntimeError> {
-    let mut request: LiveSessionCreateRequest = parse_live_body(body)?;
-    loom_protocol::validate_control_envelope(&request.envelope)
-        .map_err(|error| invalid_live_protocol(error.to_string()))?;
-    let LiveControlMessage::SessionStart(start) = &mut request.envelope.message else {
-        return Err(invalid_live_protocol(
-            "live session creation requires session_start",
-        ));
-    };
-    if start.session.frame_stream.transport != loom_protocol::LiveMediaTransport::WebsocketBinary {
-        return Err(invalid_live_protocol(
-            "Phase 4 live sessions require websocket_binary media",
-        ));
-    }
-    start.session.frame_stream.endpoint = Some("/v1/live/media".to_owned());
-    let actor = authenticated_device_id
-        .unwrap_or(start.requested_by_device_id.as_str())
-        .to_owned();
-    validate_live_source_binding(
-        surface_instances,
-        request.surface_instance_id.as_deref(),
-        request.source_attachment_id.as_deref(),
-        &start.session.source_device_id,
-        Some(&start.session.source_hook_id),
-        authenticated_device_id,
-        true,
-    )?;
-    let (created, snapshot) = live_sessions.create(&actor, request.envelope)?;
-    let status = if created { 201 } else { 200 };
-    serde_json::to_string(&snapshot)
-        .map(|body| (status, body))
-        .map_err(|_| unavailable())
 }
 
 fn attach_live_viewer(
@@ -463,8 +425,9 @@ fn configure_live_trigger(
 
 fn list_live_sessions(
     live_sessions: &SharedLiveSessionStore,
+    actor: Option<&str>,
 ) -> std::result::Result<(u16, String), LiveRuntimeError> {
-    let sessions = live_sessions.list()?;
+    let sessions = live_sessions.list_for_actor(actor)?;
     serde_json::to_string(&json!({
         "protocolVersion": loom_protocol::LIVE_PROTOCOL_VERSION,
         "sessions": sessions,

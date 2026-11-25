@@ -243,7 +243,8 @@ impl LiveSessionStore {
 }
 
 fn ensure_wall_source_ready(record: &LiveSessionRecord) -> std::result::Result<(), WallStoreError> {
-    if !record.source_connected
+    if record.direct_viewer.is_some()
+        || !record.source_connected
         || record
             .frames
             .back()

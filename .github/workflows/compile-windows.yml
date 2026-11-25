@@ -1,0 +1,116 @@
+name: Compile Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: compile-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Compilation evidence is independent of package approval and security gates.
+# No executable is published or presented as an installable release.
+jobs:
+  compile:
+    name: Compile Windows executables without packaging
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: AI/GameEditor/Neuro/Loom
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          path: AI/GameEditor/Neuro/Loom
+          persist-credentials: false
+
+      - name: Checkout Neuro UI source
+        uses: actions/checkout@v5
+        with:
+          repository: aiaimimi0920/NeuroDesign
+          ref: 02420e8d129cf952c6bee3cda96ab7ebc95c2d67
+          path: NeuroDesign
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.22.2"
+
+      - name: Setup npm
+        run: npm install --global npm@11.21.1 --no-audit --no-fund
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            AI/GameEditor/Neuro/Loom -> target
+            AI/GameEditor/Neuro/Loom/apps/desktop/src-tauri -> target
+
+      - name: Check compilation workflow contracts
+        run: node --test scripts/tests/neuro-ui-ci-layout.test.cjs scripts/tests/windows-compilation.test.cjs
+
+      - name: Install Neuro UI dependencies
+        working-directory: NeuroDesign
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Neuro UI library
+        working-directory: NeuroDesign
+        run: node scripts/build.mjs --library --theme neuro
+
+      - name: Install desktop dependencies
+        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile daemon and command line executables
+        run: cargo build --locked --release -p loom-daemon -p loom-cli -p loom-plugin-cli
+
+      - name: Compile desktop executable without bundling
+        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        run: npm run tauri build -- --no-bundle -- --locked
+
+      - name: Record exact-commit compilation evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:GITHUB_SHA) { throw "Compilation commit mismatch" }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw "Compilation changed tracked source or lockfiles" }
+          $files = @(
+            "target/release/loom-daemon.exe",
+            "target/release/loom.exe",
+            "target/release/loom-plugin.exe",
+            "apps/desktop/src-tauri/target/release/loom-desktop.exe"
+          )
+          $outputs = @($files | ForEach-Object {
+            $file = Get-Item -LiteralPath $_ -ErrorAction Stop
+            if ($file.Length -le 0) { throw "Empty executable: $_" }
+            @{ path = $_; bytes = $file.Length; sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+          })
+          $receipt = @{
+            sourceCommit = $head
+            neuroDesignCommit = "02420e8d129cf952c6bee3cda96ab7ebc95c2d67"
+            compilationOnly = $true
+            packageVerified = $false
+            formalReleaseApproved = $false
+            outputs = $outputs
+          }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          [IO.File]::WriteAllText((Join-Path (Get-Location) "artifacts/compilation.json"), ($receipt | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+          "Compiled four Windows executables. This is not package, runtime, security, or release approval." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Retain compilation evidence only
+        uses: actions/upload-artifact@v6
+        with:
+          name: loom-windows-compilation-${{ github.sha }}
+          path: AI/GameEditor/Neuro/Loom/artifacts/compilation.json
+          if-no-files-found: error

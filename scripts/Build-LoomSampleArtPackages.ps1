@@ -67,6 +67,7 @@ $signingContext = New-LoomPackageSigningContext `
     -PublisherId $SigningPublisherId
 $sourceRoot = Join-Path $repoRoot "art-packages\samples"
 $sharedRuntime = Join-Path $repoRoot "art-packages\shared\image-runtime-common.ps1"
+$sharedBitmapRuntime = Join-Path $repoRoot "art-packages\shared\image-runtime-bitmap.ps1"
 $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath($OutputRoot)
 }
@@ -98,6 +99,9 @@ if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
 }
 if (-not (Test-Path -LiteralPath $sharedRuntime -PathType Leaf)) {
     throw "Shared Art image runtime helper not found: $sharedRuntime"
+}
+if (-not (Test-Path -LiteralPath $sharedBitmapRuntime -PathType Leaf)) {
+    throw "Shared Art bitmap runtime helper not found: $sharedBitmapRuntime"
 }
 
 New-Item -ItemType Directory -Force -Path $outputRootPath | Out-Null
@@ -167,6 +171,7 @@ try {
         Copy-DirectoryContents -Source $sourceDirectory -Destination $stageDirectory
         if ($executionType -eq "framework_art") {
             Copy-Item -LiteralPath $sharedRuntime -Destination (Join-Path $stageDirectory "runtime\common.ps1") -Force
+            Copy-Item -LiteralPath $sharedBitmapRuntime -Destination (Join-Path $stageDirectory "runtime\image-runtime-bitmap.ps1") -Force
         }
         Invoke-LoomPackageSigning -Context $signingContext -PackageDirectory $stageDirectory
 

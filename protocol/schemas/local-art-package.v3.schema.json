@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.example/schemas/local-art-package.v3.schema.json",
+  "title": "Local Art signed port visibility package proof",
+  "$ref": "local-art-package.v1.schema.json",
+  "$defs": {
+    "visibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputs", "outputs"],
+      "properties": {
+        "inputs": {"type": "array", "maxItems": 32, "items": {"type": "boolean"}},
+        "outputs": {"type": "array", "maxItems": 32, "items": {"type": "boolean"}}
+      },
+      "description": "Each array must exactly match the corresponding ports array length. The signed ports and visibility share the existing 8 KiB byte budget."
+    },
+    "package": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "package", "ports", "visibility"],
+      "properties": {
+        "protocolVersion": {"const": "loom.art.local.package.v3"},
+        "package": {"$ref": "local-art-package.v1.schema.json#/$defs/package"},
+        "ports": {"$ref": "local-art-package.v2.schema.json#/$defs/ports"},
+        "visibility": {"$ref": "#/$defs/visibility"}
+      }
+    }
+  }
+}

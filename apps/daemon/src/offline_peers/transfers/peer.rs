@@ -17,6 +17,9 @@ impl OfflinePeers {
         mut payload: Value,
         registry: &SharedDeviceRegistryStore,
     ) -> PeerResult<Value> {
+        if payload["action"] == "share" {
+            return self.shared_source_action(peer_id, revision, payload["body"].take(), registry);
+        }
         if payload["action"] == "offer" {
             let offer: Offer = actions::from(payload["body"].take())?;
             verify_projection_signature(&offer.envelope, &offer.source_key).map_err(convert)?;
@@ -78,6 +81,7 @@ impl OfflinePeers {
             }
             let record = Record {
                 incoming: true,
+                shared_source: false,
                 peer_id: peer_id.to_owned(),
                 trust_revision: revision,
                 revision: offer.envelope.source.revision,

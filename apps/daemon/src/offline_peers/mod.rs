@@ -4,6 +4,7 @@ use super::*;
 
 mod catalog;
 mod handshake;
+mod local_art_issuer;
 mod raster;
 mod transfers;
 mod transport;
@@ -143,6 +144,7 @@ impl OfflinePeers {
         request: &ParsedHttpRequest,
         admin: bool,
         registry: &SharedDeviceRegistryStore,
+        root: &Path,
     ) -> PeerResult<Value> {
         let path = request.path.split('?').next().unwrap_or_default();
         if transfers::ROUTES.contains(&path) {
@@ -164,7 +166,7 @@ impl OfflinePeers {
             if request.method != "POST" {
                 return Err(failure(405, "peer_method_not_allowed"));
             }
-            return self.accept_catalog(parse(&request.body)?, registry);
+            return self.accept_catalog(parse(&request.body)?, registry, root);
         }
         if path == "/v1/projection-peer/handshake" {
             if request.method != "POST" {
@@ -188,12 +190,23 @@ impl OfflinePeers {
             let input: ProbePeer = parse(&request.body)?;
             return self.probe(&input.peer_id);
         }
+        // Read only public listener data before taking trust state; never nest the registry lock.
+        let local_connection = registry
+            .lock()
+            .map_err(|_| failure(503, "peer_unavailable"))?
+            .lan
+            .public_trust();
+        let view = |document: &trust::Document| {
+            let mut view = document.view();
+            view["localConnection"] = local_connection.clone();
+            view
+        };
         let mut state = self
             .state
             .lock()
             .map_err(|_| failure(503, "peer_unavailable"))?;
         match request.method.as_str() {
-            "GET" => Ok(state.document.view()),
+            "GET" => Ok(view(&state.document)),
             "PUT" => {
                 let input: PutPeer = parse(&request.body)?;
                 if input.expected_revision != state.document.revision {
@@ -208,7 +221,7 @@ impl OfflinePeers {
                 }
                 next.peers.insert(input.peer.peer_id.clone(), input.peer);
                 trust::commit(&self.path, &mut state, next)?;
-                Ok(state.document.view())
+                Ok(view(&state.document))
             }
             "DELETE" => {
                 let input: RemovePeer = parse(&request.body)?;
@@ -220,7 +233,7 @@ impl OfflinePeers {
                     return Err(failure(404, "peer_not_found"));
                 }
                 trust::commit(&self.path, &mut state, next)?;
-                Ok(state.document.view())
+                Ok(view(&state.document))
             }
             _ => Err(failure(405, "peer_method_not_allowed")),
         }

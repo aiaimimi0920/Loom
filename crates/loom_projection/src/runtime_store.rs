@@ -68,7 +68,9 @@ impl Entry {
         self.envelope.validate(identity.origin())?;
         if !validation::identifier(&self.owner)
             || !validation::identifier(&self.unit_id)
-            || self.envelope.source.account_id != identity.session().account_id
+            || (self.source
+                && (self.envelope.source.account_id != identity.session().account_id
+                    || self.envelope.source.public_key != identity.session().public_key))
             || self.source != (self.envelope.source.device_id == identity.session().device_id)
             || (self.source && self.unit_id != self.envelope.source.unit_id)
         {

@@ -317,4 +317,7 @@ foreach ($requiredIgnore in @('**/target/', '**/node_modules/', '**/dist/', 'app
     Assert-True -Condition $dockerIgnore.Contains($requiredIgnore) -Message "Docker context must ignore generated or unused path: $requiredIgnore"
 }
 
+& node --test (Join-Path $PSScriptRoot "neuro-ui-ci-layout.test.cjs")
+Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Pinned Neuro UI checkout and workflow path contract failed."
+
 Write-Output "Loom GitHub Actions contract passed."

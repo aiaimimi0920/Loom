@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button, EmptyState, Notice, Stack } from "@neuro/ui";
 import { postJson } from "../../services/loomApi/transport";
 import { cloudError } from "../../services/naccount";
 import { canInstallCloudPackage, installCloudPackage, parseCloudDownload } from "../../services/cloudPackageInstall";
@@ -42,21 +43,23 @@ export function CloudDownloadsPanel({ baseUrl }: { baseUrl: string }) {
     } catch (e) { if (token === generation.current) setError(cloudError(e)); }
     finally { if (token === generation.current) { setBusy(false); setTaskId(null); } }
   }
-  return <div aria-label="AssetLibrary 下载">
+  return <div className="settings-cloud-panel" aria-label="AssetLibrary 下载">
     <h4>下载资源库</h4>
-    <button className="ghost-button" disabled={busy} onClick={() => void read()}>读取可下载内容</button>
-    {page?.items.map((item) => <div key={item.id}>
+    <Stack horizontal><Button compact disabled={busy} onClick={() => void read()}>读取可下载内容</Button></Stack>
+    {page?.items.map((item) => <div className="settings-cloud-item" key={item.id}>
       <p>{item.title} · {item.label} · {item.kind} · {item.size} 字节</p>
-      <button className="ghost-button" disabled={busy} onClick={() => void download(item)}>下载 ZIP</button>
-      {canInstallCloudPackage(item) && <button className="ghost-button" disabled={busy}
-        onClick={() => void download(item, true)}>下载并安装</button>}
+      <Stack horizontal>
+        <Button compact disabled={busy} onClick={() => void download(item)}>下载 ZIP</Button>
+        {canInstallCloudPackage(item) && <Button compact disabled={busy}
+          onClick={() => void download(item, true)}>下载并安装</Button>}
+      </Stack>
     </div>)}
-    {page?.items.length === 0 && <p>暂无可下载内容</p>}
-    {page?.nextAfter && <button className="ghost-button" disabled={busy} onClick={() => void read(page.nextAfter!)}>下一页</button>}
-    {busy && <p role="status">正在处理…</p>}
+    {page?.items.length === 0 && <EmptyState title="暂无可下载内容" />}
+    {page?.nextAfter && <Stack horizontal><Button compact disabled={busy} onClick={() => void read(page.nextAfter!)}>下一页</Button></Stack>}
+    {busy && <Notice>正在处理…</Notice>}
     {taskId && <CloudTransferControls key={taskId} baseUrl={baseUrl} taskId={taskId} />}
-    {saved && <p role="status">已校验并保存：{saved}</p>}
-    {installed && <p role="status">{installed}</p>}
-    {error && <p role="alert">{error}</p>}
+    {saved && <Notice tone="success">已校验并保存：{saved}</Notice>}
+    {installed && <Notice tone="success">{installed}</Notice>}
+    {error && <Notice tone="danger">{error}</Notice>}
   </div>;
 }

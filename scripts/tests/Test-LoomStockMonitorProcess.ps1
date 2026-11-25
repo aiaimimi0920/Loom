@@ -10,7 +10,15 @@ if ([string]::IsNullOrWhiteSpace($ArtDirectory)) {
 # Check the exact source bytes before Windows PowerShell can interpret them as ANSI.
 foreach ($source in Get-ChildItem -LiteralPath (Join-Path $ArtDirectory "runtime") -Filter *.ps1 -File -Recurse) {
     $bytes = [IO.File]::ReadAllBytes($source.FullName)
-    Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) "Stock Monitor runtime source requires UTF-8 BOM for Windows PowerShell 5.1: $($source.Name)"
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    if ($source.Name -in @("common.ps1", "image-runtime-bitmap.ps1")) {
+        # Shared image helpers contain no localized literals and follow the UTF-8 no-BOM policy.
+        Assert-True (-not $hasBom) "Shared image runtime must use UTF-8 without BOM: $($source.Name)"
+        $null = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    }
+    else {
+        Assert-True $hasBom "Stock Monitor localized runtime requires UTF-8 BOM for Windows PowerShell 5.1: $($source.Name)"
+    }
     $tokens = $null
     $parseErrors = $null
     $null = [Management.Automation.Language.Parser]::ParseFile($source.FullName, [ref]$tokens, [ref]$parseErrors)
@@ -118,7 +126,7 @@ $null = [Console]::In.ReadToEnd()
     Assert-Equal $unicode ([string]$state.lastRequestId) "The real runtime must round-trip a Unicode action request id."
     $expectedStatus = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5q+PIDEyMCDnp5LliLfmlrA="))
     Assert-Equal $expectedStatus ([string]$state.statusText) "The real runtime must emit its localized source text as UTF-8."
-    Write-Host "Stock Monitor process contract passed: source=UTF8-BOM transport=UTF8 diagnostics=bounded pipes=concurrent timeouts=bounded"
+    Write-Host "Stock Monitor process contract passed: source=UTF8 localized-BOM=preserved shared-BOM=absent transport=UTF8 diagnostics=bounded pipes=concurrent timeouts=bounded"
 }
 finally {
     Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue

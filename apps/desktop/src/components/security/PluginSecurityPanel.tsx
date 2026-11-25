@@ -1,4 +1,5 @@
 // Owns plugin trust, credentials, and publisher identity controls.
+import { Badge, Button, EmptyState, Field, IconButton, Input, Panel, Select } from "@neuro/ui";
 import {
   deletePluginCredential,
   getPublisherIdentity,
@@ -18,26 +19,28 @@ import {
   untrustPluginUser,
 } from "../../services/loomApi";
 import { ArtIcon } from "../app/appShell";
-import { CredentialFieldDialog } from "../devices/DeviceManagementPanel";
+import { CredentialFieldDialog } from "./CredentialFieldDialog";
+import { CredentialFieldList } from "./CredentialFieldList";
 import {
   CredentialFieldDraft,
-  credentialFieldId,
-  credentialValueTypeLabels,
   defaultPluginTrustStore,
   pushAppToast,
   requestAppConfirmation,
 } from "../feedback/AppFeedback";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
+  return <PluginSecuritySession key={baseUrl} baseUrl={baseUrl} />;
+}
+
+// Drafts, secrets and busy state belong to one daemon; changing it starts a fresh UI session.
+function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
   const [trust, setTrust] = useState<LoomPluginTrustStore>(defaultPluginTrustStore);
   const [credentials, setCredentials] = useState<LoomCredentialSummary[]>([]);
-  const [identityState, setIdentityState] = useState<LoomPublisherIdentityState>({ identity: null, hasPrivateKey: false });
+  const [identityState, setIdentityState] = useState<LoomPublisherIdentityState>({
+    identity: null,
+    hasPrivateKey: false,
+  });
   const [privateKey, setPrivateKey] = useState("");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [trustedUserId, setTrustedUserId] = useState("");
@@ -45,6 +48,17 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const loadVersion = useRef(0);
   const secretRevealVersion = useRef(0);
+  const credentialCreateButton = useRef<HTMLButtonElement>(null);
+  const credentialReturnFocus = useRef<HTMLButtonElement>(null);
+  const trustedUserInput = useRef<HTMLInputElement>(null);
+  const removedUserFocus = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (busy !== null || !removedUserFocus.current) return;
+    const removed = !trust.trustedPublishers.includes(removedUserFocus.current);
+    removedUserFocus.current = null;
+    if (removed && document.activeElement === document.body) trustedUserInput.current?.focus();
+  }, [busy, trust.trustedPublishers]);
 
   const load = useCallback(async () => {
     const version = ++loadVersion.current;
@@ -57,11 +71,10 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
         listPluginCredentials(baseUrl),
         getPublisherIdentity(baseUrl),
       ]);
-      const visibleSummaries = summaries.filter((credential) => (
-        !credential.name.startsWith("loom-")
-        && !credential.scope.frameworkId
-        && !credential.scope.artId
-      ));
+      const visibleSummaries = summaries.filter(
+        (credential) =>
+          !credential.name.startsWith("loom-") && !credential.scope.frameworkId && !credential.scope.artId,
+      );
       if (version !== loadVersion.current) return;
       setTrust(nextTrust);
       setCredentials(visibleSummaries);
@@ -148,8 +161,8 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
       if (original && original.name !== credentialDraft.name.trim()) {
         await deletePluginCredential(baseUrl, original.name, original.scope);
       }
-      setCredentialDraft(null);
       await load();
+      setCredentialDraft(null);
       pushAppToast({ level: "info", text: "已保存" });
     } catch (err) {
       pushAppToast({ level: "error", text: err instanceof Error ? err.message : "保存失败。" });
@@ -161,16 +174,21 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   const removeCredential = async () => {
     const credential = credentialDraft?.original;
     if (!credential) return;
-    if (!await requestAppConfirmation({
-      title: "删除凭据",
-      message: `删除 ${credential.name} 后，引用该凭据的 Art 可能无法运行。`,
-      confirmLabel: "删除",
-    })) return;
+    const version = loadVersion.current;
+    if (
+      !(await requestAppConfirmation({
+        title: "删除凭据",
+        message: `删除 ${credential.name} 后，引用该凭据的 Art 可能无法运行。`,
+        confirmLabel: "删除",
+      }))
+    )
+      return;
+    if (version !== loadVersion.current) return;
     setBusy("credential");
     try {
       await deletePluginCredential(baseUrl, credential.name, credential.scope);
-      setCredentialDraft(null);
       await load();
+      setCredentialDraft(null);
       pushAppToast({ level: "info", text: "已删除" });
     } catch (err) {
       pushAppToast({ level: "error", text: err instanceof Error ? err.message : "删除失败。" });
@@ -204,12 +222,18 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   };
 
   const removeTrustedUser = async (userId: string) => {
-    if (!await requestAppConfirmation({
-      title: "移除可信用户",
-      message: `从信任库移除 ${userId} 后，该用户后续发布的 Art 将不再被自动信任。`,
-      confirmLabel: "移除",
-    })) return;
+    const version = loadVersion.current;
+    if (
+      !(await requestAppConfirmation({
+        title: "移除可信用户",
+        message: `从信任库移除 ${userId} 后，该用户后续发布的 Art 将不再被自动信任。`,
+        confirmLabel: "移除",
+      }))
+    )
+      return;
+    if (version !== loadVersion.current) return;
     setBusy(userId);
+    removedUserFocus.current = userId;
     try {
       setTrust(await untrustPluginUser(baseUrl, userId));
     } catch (err) {
@@ -220,11 +244,16 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   };
 
   const resetIdentity = async () => {
-    if (!await requestAppConfirmation({
-      title: "重置密钥",
-      message: "重置会生成新的私钥和公钥。平台仍需保留旧公钥，才能验证旧版本 Art。",
-      confirmLabel: "重置",
-    })) return;
+    const version = loadVersion.current;
+    if (
+      !(await requestAppConfirmation({
+        title: "重置密钥",
+        message: "重置会生成新的私钥和公钥。平台仍需保留旧公钥，才能验证旧版本 Art。",
+        confirmLabel: "重置",
+      }))
+    )
+      return;
+    if (version !== loadVersion.current) return;
     setBusy("identity");
     try {
       setIdentityState(await rotatePublisherIdentity(baseUrl));
@@ -241,56 +270,71 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
   return (
     <div className="plugin-security">
       <section className="security-section security-section--credentials">
-        <div className="credential-field-list" role="list">
-          <div className="credential-field-row credential-field-row--head">
-            <span>名字</span><span>格式</span><span>值</span>
-            <button className="icon-button" type="button" aria-label="添加字段" title="添加字段" disabled={busy !== null} onClick={openNewCredential}>
-              <ArtIcon kind="plus" />
-            </button>
-          </div>
-          {credentials.map((credential) => (
-            <div className="credential-field-row" role="listitem" key={credentialFieldId(credential)}>
-              <strong title={credential.name}>{credential.name}</strong>
-              <span>{credentialValueTypeLabels[credential.valueType ?? "string"]}</span>
-              <code aria-label={`${credential.name} 已安全保存`}>••••••••</code>
-              <button className="icon-button" type="button" aria-label={`编辑 ${credential.name}`} title="编辑" disabled={busy !== null} onClick={() => void openCredential(credential)}>
-                <ArtIcon kind="edit" />
-              </button>
-            </div>
-          ))}
-          {credentials.length === 0 ? <p className="muted-line">暂无字段</p> : null}
-        </div>
+        <CredentialFieldList
+          credentials={credentials}
+          busy={busy !== null}
+          createButton={credentialCreateButton}
+          returnFocus={credentialReturnFocus}
+          onCreate={openNewCredential}
+          onEdit={(credential) => void openCredential(credential)}
+        />
       </section>
 
       <section className="security-section security-section--policy">
         <div className="security-policy-row">
-          <strong>安装策略</strong>
-          <select className="studio-input security-policy-select" aria-label="Art 安装信任原则" value={trust.policy} disabled={busy !== null} onChange={(event) => void updatePolicy(event.target.value as LoomPluginTrustPolicy)}>
-            <option value="require_signed">安装签名认证成功的</option>
-            <option value="require_trusted">安装签名认证成功且在信任库中用户发布的 Art</option>
-            <option value="allow_unsigned">可安装无签名 Art</option>
-          </select>
+          <Field label="安装策略">
+            <Select
+              aria-label="Art 安装信任原则"
+              value={trust.policy}
+              disabled={busy !== null}
+              onChange={(event) => void updatePolicy(event.target.value as LoomPluginTrustPolicy)}
+            >
+              <option value="require_signed">安装签名认证成功的</option>
+              <option value="require_trusted">安装签名认证成功且在信任库中用户发布的 Art</option>
+              <option value="allow_unsigned">可安装无签名 Art</option>
+            </Select>
+          </Field>
         </div>
 
         {trust.policy === "require_trusted" ? (
           <div className="trusted-user-library">
             <div className="trusted-user-library__add">
-              <input className="studio-input" aria-label="可信用户 ID" placeholder="L0000000000" value={trustedUserId} onChange={(event) => setTrustedUserId(event.target.value)} />
-              <button className="icon-button" type="button" aria-label="添加可信用户" title="添加" disabled={busy !== null || !/^(?:NU\d{11}|L\d{10})$/.test(trustedUserId.trim())} onClick={() => void addTrustedUser()}>
+              <Input
+                ref={trustedUserInput}
+                aria-label="可信用户 ID"
+                placeholder="L0000000000"
+                value={trustedUserId}
+                onChange={(event) => setTrustedUserId(event.target.value)}
+              />
+              <IconButton
+                label="添加可信用户"
+                title="添加"
+                loading={busy === "trusted-user"}
+                disabled={busy !== null || !/^(?:NU\d{11}|L\d{10})$/.test(trustedUserId.trim())}
+                onClick={() => void addTrustedUser()}
+              >
                 <ArtIcon kind="plus" />
-              </button>
+              </IconButton>
             </div>
             <div className="trusted-user-library__list">
               {trust.trustedPublishers.map((userId) => (
-                <div className="trusted-user-library__row" key={userId}>
-                  <code>{userId}</code>
-                  <span>{trust.publishers.filter((key) => key.publisherId === userId && !key.revoked).length} keys</span>
-                  <button className="icon-button" type="button" aria-label={`移除 ${userId}`} title="移除" disabled={busy !== null} onClick={() => void removeTrustedUser(userId)}>
+                <Panel className="trusted-user-library__row" key={userId}>
+                  <code title={userId}>{userId}</code>
+                  <Badge>
+                    {trust.publishers.filter((key) => key.publisherId === userId && !key.revoked).length} keys
+                  </Badge>
+                  <IconButton
+                    label={`移除 ${userId}`}
+                    title="移除"
+                    loading={busy === userId}
+                    disabled={busy !== null}
+                    onClick={() => void removeTrustedUser(userId)}
+                  >
                     <ArtIcon kind="trash" />
-                  </button>
-                </div>
+                  </IconButton>
+                </Panel>
               ))}
-              {trust.trustedPublishers.length === 0 ? <p className="muted-line">暂无可信用户</p> : null}
+              {trust.trustedPublishers.length === 0 ? <EmptyState title="暂无可信用户" /> : null}
             </div>
           </div>
         ) : null}
@@ -299,31 +343,49 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
           <div className="publisher-identity__id-row">
             <div className="publisher-identity__id">
               <strong>用户 ID：</strong>
-              <code>{identity?.userId ?? "L0000000000"}</code>
+              <code title={identity?.userId ?? "L0000000000"}>{identity?.userId ?? "L0000000000"}</code>
             </div>
-            <button className="ghost-button publisher-identity__action" type="button" disabled={busy !== null} onClick={() => void resetIdentity()}>
-              {busy === "identity" ? "重置中" : "重置密钥"}
-            </button>
+            <Button
+              className="publisher-identity__action"
+              loading={busy === "identity"}
+              disabled={busy !== null}
+              onClick={() => void resetIdentity()}
+            >
+              重置密钥
+            </Button>
           </div>
           <div className="publisher-identity__keys">
-            <label>
-              <span>私钥</span>
-              <div className="publisher-identity__secret">
-                <input className="studio-input mono-line" readOnly type={showPrivateKey ? "text" : "password"} value={privateKey} />
-                <button className="icon-button" type="button" aria-label={showPrivateKey ? "隐藏私钥" : "显示私钥"} title={showPrivateKey ? "隐藏" : "显示"} disabled={busy !== null || !identityState.hasPrivateKey} onClick={() => void togglePrivateKey()}>
-                  <ArtIcon kind="eye" />
-                </button>
-              </div>
-            </label>
-            <label>
-              <span>公钥</span>
-              <input className="studio-input mono-line" readOnly value={identity?.publicKey ?? ""} />
-            </label>
+            <div className="publisher-identity__secret">
+              <Field label="私钥">
+                <Input
+                  className="mono-line"
+                  readOnly
+                  type={showPrivateKey ? "text" : "password"}
+                  value={privateKey}
+                  autoComplete="off"
+                />
+              </Field>
+              <IconButton
+                label={showPrivateKey ? "隐藏私钥" : "显示私钥"}
+                aria-pressed={showPrivateKey}
+                title={showPrivateKey ? "隐藏" : "显示"}
+                loading={busy === "private-key"}
+                disabled={busy !== null || !identityState.hasPrivateKey}
+                onClick={() => void togglePrivateKey()}
+              >
+                <ArtIcon kind="eye" />
+              </IconButton>
+            </div>
+            <Field label="公钥">
+              <Input className="mono-line" readOnly value={identity?.publicKey ?? ""} />
+            </Field>
           </div>
         </div>
       </section>
 
       <CredentialFieldDialog
+        fallbackFocusRef={credentialCreateButton}
+        returnFocusRef={credentialReturnFocus}
         draft={credentialDraft}
         busy={busy === "credential"}
         onChange={setCredentialDraft}

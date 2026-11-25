@@ -81,6 +81,9 @@ foreach ($existingZip in Get-ChildItem -LiteralPath $outputRootPath -File -Filte
 }
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
+if ($env:CARGO_TARGET_DIR -and $env:CARGO_TARGET_DIR -notmatch '^[A-Za-z]:[\\/]') {
+    throw 'Framework builds require an absolute local CARGO_TARGET_DIR.'
+}
 $cargoArguments = @("build", "--manifest-path", $runtimeHostManifest)
 if ($Configuration -eq "Release") {
     $cargoArguments += "--release"
@@ -91,7 +94,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $profile = if ($Configuration -eq "Release") { "release" } else { "debug" }
-$hostExecutable = Join-Path $packagesRoot ("runtime-host\target\$profile\loom-framework-runtime-host.exe")
+$hostTarget = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $packagesRoot 'runtime-host/target' }
+$hostExecutable = Join-Path $hostTarget "$profile/loom-framework-runtime-host.exe"
 if (-not (Test-Path -LiteralPath $hostExecutable -PathType Leaf)) {
     throw "External framework runtime host executable not found: $hostExecutable"
 }

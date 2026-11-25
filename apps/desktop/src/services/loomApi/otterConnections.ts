@@ -1,6 +1,6 @@
 import { getJson, postJson, putJson } from "./transport.ts";
 
-export type OtterApprovalPolicy = "manual" | "password" | "authenticated";
+export type OtterApprovalPolicy = "manual" | "lan" | "authenticated";
 export interface LoomConnectionIdentity {
   protocolVersion: "loom.connection.v1";
   loomId: string;

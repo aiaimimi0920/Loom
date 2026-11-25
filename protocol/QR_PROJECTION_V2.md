@@ -1,12 +1,14 @@
 # QR projection v2: local Loom ownership and central coordination
 
-Status: central coordination, per-daemon native transport ownership, durable
-source/receiver snapshots, background synchronization and Otter v2 integration
-are implemented. Focused checks cover real Iroh transfers, lost publish replies,
-restart recovery, account isolation and invitation expiry. Self-hosted relay,
-two-machine networking and real OAuth acceptance remain open. The existing v1
-shared-Loom protocol keeps its original meaning. No v1 origin is interpreted as
-an account login endpoint.
+当前开发约定（2026-11-19）：Otter 与 Loom 同时升级到最新代码，投射分享只支持本合同 v2。
+不实现 v1/v2 互联、旧邀请导入、自动协议降级或旧关联迁移；这些项目不作为本阶段验收门。
+账号证明、设备配对和 Live 帧格式各有独立协议标识，不能根据其中的版本数字判断是否属于旧投射兼容代码。
+
+中心协调、每个 daemon 的传输所有权、持久来源/接收快照和后台同步已经实现。
+Windows 原生 Otter 已接入普通账号分享请求、场景检查点和更新调度；真实双 Loom 联合测试
+已验证创建、接受、两次 Iroh PNG 更新、双方重启及解绑保留末图。新版单入口分享面板与二维码
+定向回归已通过，完整普通程序验收仍需以对应候选结果为准。用户认可本阶段使用局域网环境，
+公网 Live 与外网 NAT/relay 验收暂缓；局域网结果不改写为公网通过。真实 OAuth 尚未验证。
 
 ## Ownership and transport
 
@@ -51,9 +53,9 @@ separate. A status proof cannot authorize a projection request.
 
 ## Invitation and lifecycle
 
-The v2 envelope retains the v1 projection ID, source session/Unit/revision,
+The envelope contains the projection ID, source session/Unit/revision,
 content kind/digest, origin, expiry, nonce and signature fields. Its protocol is
-`neuro.qr-projection.v2`; source additionally carries `accountId` and `publicKey`.
+`neuro.qr-projection.v2`; source carries `accountId` and `publicKey`.
 The source session ID is the immutable source epoch. The signature binds every
 field; the public key must match the source's registered Loom account session.
 No account credential, private key or plaintext image enters the QR code.
@@ -204,8 +206,8 @@ nullable `error`. Transport is `direct`, `relay`, `reconnecting` or `offline`;
 direct/relay comes from the selected Iroh connection path. Cached reads at the
 known revision omit the PNG. Otter v2 invokes only the loopback Loom advertised
 by its local manifest; the QR central origin is never a Otter HTTP destination.
-New invitations use v2 and require a Loom account. Saved v1 invitations and
-associations keep the shared-origin v1 command, including deferred unlink.
+Invitations use v2 and require a Loom account. Only v2 JSON and
+`hook://projection/v2#` links are accepted; there is no legacy protocol dispatch.
 
 One account generation owns an endpoint, a bounded receive task set and one
 background synchronization loop. The daemon reconciles account state every

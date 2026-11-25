@@ -6,6 +6,7 @@ fn fixture() -> (Peer, SigningKeyDocument, CatalogProof) {
     let peer = Peer {
         peer_id: id.clone(),
         public_key: key.public_key.clone(),
+        certificate: None,
         name: "B".to_owned(),
         origin: "https://b.example.test".to_owned(),
         enabled: true,
@@ -28,6 +29,7 @@ fn fixture() -> (Peer, SigningKeyDocument, CatalogProof) {
             name: "Receiver".to_owned(),
             policy: "auto".to_owned(),
         }],
+        users: vec![],
     };
     sign(&key, &mut proof);
     (peer, key, proof)
@@ -45,6 +47,23 @@ fn offline_catalog_signature_binds_device_metadata_and_purpose() {
     proof.devices[0].name = "Forged name".to_owned();
     assert!(proof.verify(&peer, &proof.challenge).is_err());
     proof.signature = sign_message(&key, &proof.challenge.message("response")).unwrap();
+    assert!(proof.verify(&peer, &proof.challenge).is_err());
+}
+
+#[test]
+fn offline_catalog_signature_binds_login_identity_without_credentials() {
+    let (peer, key, mut proof) = fixture();
+    proof.users.push(crate::connected_users::User {
+        issuer: "https://accounts.example".into(),
+        account_id: "user-1".into(),
+        name: "Alice".into(),
+    });
+    sign(&key, &mut proof);
+    assert!(proof.verify(&peer, &proof.challenge).is_ok());
+    proof.users[0].name = "Mallory".into();
+    assert!(proof.verify(&peer, &proof.challenge).is_err());
+    proof.users.push(proof.users[0].clone());
+    sign(&key, &mut proof);
     assert!(proof.verify(&peer, &proof.challenge).is_err());
 }
 

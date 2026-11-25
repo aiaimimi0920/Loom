@@ -14,6 +14,19 @@ struct ProjectionRecord {
     updated_at_ms: u64,
     #[serde(default)]
     delivery: Option<ProjectionDelivery>,
+    #[serde(default)]
+    remote_receiver: Option<ProjectionRemoteReceiver>,
+}
+
+// Foreign receivers never enter the local device namespace. The receiver field
+// stores a namespaced target; peer trust and the original epoch remain binding.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectionRemoteReceiver {
+    peer_id: String,
+    device_id: String,
+    trust_revision: u64,
+    status: DeliveryStatus,
 }
 
 struct ProjectionStore {
@@ -94,6 +107,16 @@ impl ProjectionStore {
                         .as_deref()
                         .is_none_or(loom_protocol::projection::projection_identifier_valid)
                     && projection_delivery_record_valid(&record)
+                    && record.remote_receiver.as_ref().is_none_or(|remote| {
+                        record.delivery.is_none()
+                            && record.receiver.is_some()
+                            && remote.peer_id.len() == 69
+                            && remote.peer_id.starts_with("loom-")
+                            && remote.peer_id[5..].bytes().all(|b| b.is_ascii_hexdigit())
+                            && loom_protocol::projection::projection_identifier_valid(
+                                &remote.device_id,
+                            )
+                    })
                     && record.receiver.as_deref()
                         != Some(record.envelope.source.device_id.as_str()),
                 "invalid stored projection"
@@ -218,6 +241,7 @@ impl ProjectionStore {
             unlinked: false,
             updated_at_ms: now,
             delivery,
+            remote_receiver: None,
         })
     }
 
@@ -250,6 +274,9 @@ impl ProjectionStore {
         now: u64,
     ) -> std::result::Result<ProjectionRecord, ProjectionError> {
         let previous = self.get(&envelope.projection_id)?;
+        if previous.remote_receiver.is_some() {
+            return Err(ProjectionError::new(409, "projection_invitation_consumed"));
+        }
         projection_target_authorized(previous, receiver, epoch)?;
         // The same receiver can recover a lost acceptance response without consuming a second invitation.
         if &previous.envelope == envelope
@@ -334,8 +361,9 @@ impl ProjectionStore {
     ) -> std::result::Result<(), ProjectionError> {
         let record = self.get(id)?;
         let source = record.envelope.source.device_id == actor && record.source_epoch == epoch;
-        let receiver =
-            record.receiver.as_deref() == Some(actor) && record.receiver_epoch == Some(epoch);
+        let receiver = record.remote_receiver.is_none()
+            && record.receiver.as_deref() == Some(actor)
+            && record.receiver_epoch == Some(epoch);
         if !source && !receiver {
             return Err(ProjectionError::new(403, "projection_access_denied"));
         }

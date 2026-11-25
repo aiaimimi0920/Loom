@@ -42,7 +42,4 @@ pub(crate) fn append_groups(value: &mut Value, document: &Document) {
         })
         .collect::<Vec<_>>());
     value["settingsRevision"] = json!(document.revision);
-    value["friends"] = json!({
-        "status": "unavailable", "reason": "official_account_not_implemented"
-    });
 }

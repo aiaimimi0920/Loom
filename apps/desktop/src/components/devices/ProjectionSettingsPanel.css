@@ -1,9 +1,35 @@
-.projection-settings > section { display: grid; gap: 12px; min-width: 0; }
-.projection-settings label { display: grid; gap: 6px; min-width: 0; }
-.projection-settings .studio-input { width: 100%; min-width: 0; box-sizing: border-box; }
-.projection-settings details { min-width: 0; }
-.projection-settings details > label { margin: 12px 0; }
-.projection-device-checklist { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--loom-theme-line); }
-.projection-device-checklist > div { display: grid; gap: 8px; max-height: 224px; overflow: auto; }
-.projection-device-checklist label { display: flex; align-items: start; gap: 8px; overflow-wrap: anywhere; }
-.projection-device-checklist input { flex: 0 0 auto; }
+.projection-settings > section,
+.projection-group,
+.projection-device-checklist {
+  min-width: 0;
+}
+.projection-group-create {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+.projection-group-create > .n-field {
+  flex: 1 1 200px;
+}
+.projection-group__name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projection-group__count {
+  min-width: 6em;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.projection-device-checklist .n-check {
+  min-width: 0;
+  align-items: flex-start;
+}
+.projection-device-checklist .n-check > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

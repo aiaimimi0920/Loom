@@ -1,463 +1,59 @@
-// Coordinates settings persistence, diagnostics, caches, and shortcuts.
+// Coordinates settings UI; persistence and shortcut semantics remain in the controller.
+import { Tab, TabList, TabPanel, TabsRoot } from "@neuro/ui";
 import { LoomSnapshot } from "../../services/loomApi";
 import { AboutPanel } from "./AboutPanel";
-import {
-  gestureShortcutModifiers,
-  HOOK_SHORTCUT_GROUPS,
-  OtterShortcutGroupIcon,
-  removeShortcutSlot,
-  SettingsAccordionSection,
-  SHORTCUT_GESTURE_MODIFIERS,
-  ShortcutKeySequence,
-  ShortcutSlot,
-  shortcutSlotCount,
-  ShortcutSlots,
-  splitShortcutAlternatives,
-  toggleGestureShortcutModifier,
-} from "./settingsModel";
-import {
-  GeneralSettingsPanel,
-  OtterCacheSettingsPanel,
-  NetworkSettingsPanel,
-} from "./SettingsPanels";
-import { createPortal } from "react-dom";
+import { SettingsAccordionSection, type SettingsAppId } from "./settingsModel";
+import { GeneralSettingsPanel, OtterCacheSettingsPanel, NetworkSettingsPanel } from "./SettingsPanels";
 import { LoomSettingsSections } from "./LoomSettingsSections";
+import { OtterShortcutSettings } from "./OtterShortcutSettings";
+import { OtterLanguageSettings } from "./OtterLanguageSettings";
+import { QuickBindingDialog, ShortcutEditDialog } from "./SettingsShortcutDialogs";
 import { useSettingsPanelController } from "./useSettingsPanelController";
 
 export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
   const controller = useSettingsPanelController({ snapshot });
-  const {
-    activeSettingsApp,
-    appDiagnostics,
-    applyQuickBindingEditor,
-    applyShortcutEditor,
-    availableArtToolById,
-    availableArtTools,
-    checkApplicationUpdate,
-    clearOtterCache,
-    draft,
-    handleQuickBindingCapture,
-    handleShortcutCapture,
-    otterCacheBusyKind,
-    otterCacheLoading,
-    otterCacheSnapshot,
-    openApplicationLog,
-    openQuickBindingEditor,
-    openRepository,
-    openSettingsSection,
-    openShortcutEditor,
-    openShortcutGroups,
-    quickBindingConflict,
-    quickBindingEditor,
-    resolveShortcutKeys,
-    selectSettingsApp,
-    setDraft,
-    setQuickBindingEditor,
-    setShortcutEditor,
-    shortcutEditor,
-    shortcutEditorConflict,
-    shortcuts,
-    toggleSettingsSection,
-    toggleShortcutGroup,
-    updateOtterCacheDraft,
-    updateOtterGeneralDraft,
-    updateNetworkDraft,
-  } = controller;
-
-  return (
+  const { activeSettingsApp, appDiagnostics, checkApplicationUpdate, clearOtterCache, draft,
+    otterCacheBusyKind, otterCacheLoading, otterCacheSnapshot, openApplicationLog, openRepository,
+    openSettingsSection, selectSettingsApp, setDraft, toggleSettingsSection, updateOtterCacheDraft,
+    updateOtterGeneralDraft, updateNetworkDraft } = controller;
+  return <TabsRoot asChild value={activeSettingsApp} onValueChange={app => selectSettingsApp(app as SettingsAppId)}>
     <section className="settings-page" aria-labelledby="settings-page-title">
       <header className="settings-page__heading">
         <h1 id="settings-page-title">设置</h1>
-        <nav className="settings-app-tabs" aria-label="应用设置" role="tablist">
-          <button
-            className={activeSettingsApp === "loom" ? "settings-app-tab settings-app-tab--active" : "settings-app-tab"}
-            type="button"
-            role="tab"
-            aria-selected={activeSettingsApp === "loom"}
-            aria-controls="settings-app-panel-loom"
-            onClick={() => selectSettingsApp("loom")}
-          >
-            Loom
-          </button>
-          <button
-            className={activeSettingsApp === "hook" ? "settings-app-tab settings-app-tab--active" : "settings-app-tab"}
-            type="button"
-            role="tab"
-            aria-selected={activeSettingsApp === "hook"}
-            aria-controls="settings-app-panel-hook"
-            onClick={() => selectSettingsApp("hook")}
-          >
-            Otter
-          </button>
-        </nav>
+        <TabList className="settings-app-tabs" label="应用设置">
+          <Tab value="loom" onClick={() => selectSettingsApp("loom")}>Loom</Tab>
+          <Tab value="hook" onClick={() => selectSettingsApp("hook")}>Otter</Tab>
+        </TabList>
       </header>
-
-      <div
-        className="settings-app-panel"
-        id={`settings-app-panel-${activeSettingsApp}`}
-        role="tabpanel"
-        aria-label={`${activeSettingsApp === "loom" ? "Loom" : "Otter"} 设置`}
-      >
-      {activeSettingsApp === "loom" ? (
+      <TabPanel className="settings-app-panel" value="loom">
         <LoomSettingsSections baseUrl={snapshot.baseUrl} controller={controller} />
-      ) : (
+      </TabPanel>
+      <TabPanel className="settings-app-panel" value="hook">
         <div className="settings-accordion">
           <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
-            <GeneralSettingsPanel
-              appName="hook"
-              value={{
-                language: draft.hook_general.language,
-                theme: draft.hook_general.theme,
-                closeToTray: draft.hook_general.close_to_tray,
-              }}
-              onChange={updateOtterGeneralDraft}
-            />
+            <OtterLanguageSettings baseUrl={snapshot.baseUrl} online={snapshot.connectionState === "online"}
+              active={activeSettingsApp === "hook" && openSettingsSection === "general"} />
+            <GeneralSettingsPanel appName="hook" value={{ theme: draft.hook_general.theme, closeToTray: draft.hook_general.close_to_tray }} onChange={updateOtterGeneralDraft} />
           </SettingsAccordionSection>
-
           <SettingsAccordionSection id="shortcuts" label="快捷键" open={openSettingsSection === "shortcuts"} onToggle={() => toggleSettingsSection("shortcuts")}>
-            <div className="otter-shortcut-groups">
-              {HOOK_SHORTCUT_GROUPS.map((group) => {
-                const groupOpen = openShortcutGroups.has(group.id);
-                const contentId = `otter-shortcut-group-content-${group.id}`;
-                return (
-                <section className={groupOpen ? "otter-shortcut-group otter-shortcut-group--open" : "otter-shortcut-group"} key={group.id} aria-labelledby={`otter-shortcut-group-${group.id}`}>
-                  <header className="otter-shortcut-group__header">
-                    <h3 id={`otter-shortcut-group-${group.id}`}>
-                      <button
-                        className="otter-shortcut-group__trigger"
-                        type="button"
-                        aria-expanded={groupOpen}
-                        aria-controls={contentId}
-                        onClick={() => toggleShortcutGroup(group.id)}
-                      >
-                        <OtterShortcutGroupIcon kind={group.icon} />
-                        <span>{group.label}</span>
-                        <svg className="otter-shortcut-group__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                          <path d="m7 9 5 5 5-5" />
-                        </svg>
-                      </button>
-                    </h3>
-                  </header>
-                  {groupOpen ? <div className="otter-shortcut-list" id={contentId}>
-                    {group.items.map((item) => (
-                      <div className="otter-shortcut-row" key={item.id}>
-                        <span className="otter-shortcut-row__text">
-                          <strong>{item.label}</strong>
-                          <small>{item.description}</small>
-                        </span>
-                        {item.sourceId ? (
-                          <button
-                            className="otter-shortcut-row__keys otter-shortcut-row__keys--editable"
-                            type="button"
-                            aria-label={`修改${item.label}快捷键`}
-                            title="修改快捷键"
-                            onClick={() => openShortcutEditor(item)}
-                          >
-                            <ShortcutKeySequence shortcuts={resolveShortcutKeys(item)} />
-                            <svg className="otter-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                              <path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" />
-                            </svg>
-                          </button>
-                        ) : (
-                          <span className="otter-shortcut-row__keys" aria-label={`${item.label}操作手势`}>
-                            <ShortcutKeySequence shortcuts={item.keys} />
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                    {group.id === "panels-tools" ? (
-                      <>
-                        {draft.quick_bindings
-                          .filter((binding) => availableArtToolById.has(binding.art))
-                          .map((binding) => {
-                            const tool = availableArtToolById.get(binding.art)!;
-                            return (
-                              <div className="otter-shortcut-row otter-shortcut-row--art-binding" key={binding.id}>
-                                <span className="otter-shortcut-row__text">
-                                  <strong>{tool.name || tool.id}</strong>
-                                  <small>快速添加 Art 节点</small>
-                                </span>
-                                <span className="otter-quick-binding-actions">
-                                  <button
-                                    className="otter-shortcut-row__keys otter-shortcut-row__keys--editable"
-                                    type="button"
-                                    aria-label={`修改${tool.name || tool.id}快捷键`}
-                                    onClick={() => openQuickBindingEditor(binding)}
-                                  >
-                                    <ShortcutKeySequence shortcuts={splitShortcutAlternatives(binding.key)} />
-                                    <svg className="otter-shortcut-row__edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                                      <path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className="otter-quick-binding-remove"
-                                    type="button"
-                                    aria-label={`删除${tool.name || tool.id}快捷键`}
-                                    title="删除"
-                                    onClick={() => setDraft((current) => ({
-                                      ...current,
-                                      quick_bindings: current.quick_bindings.filter((item) => item.id !== binding.id),
-                                    }))}
-                                  >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                                      <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" />
-                                    </svg>
-                                  </button>
-                                </span>
-                              </div>
-                            );
-                          })}
-                        <button
-                          className="otter-shortcut-add-art"
-                          type="button"
-                          disabled={!availableArtTools.length}
-                          onClick={() => openQuickBindingEditor()}
-                        >
-                          <span aria-hidden="true">＋</span>
-                          <strong>添加 Art 快捷键</strong>
-                        </button>
-                      </>
-                    ) : null}
-                  </div> : null}
-                </section>
-              )})}
-            </div>
+            <OtterShortcutSettings controller={controller} />
           </SettingsAccordionSection>
-
           <SettingsAccordionSection id="cache" label="缓存" open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
-            <OtterCacheSettingsPanel
-              settings={draft.hook_cache}
-              snapshot={otterCacheSnapshot}
-              loading={otterCacheLoading}
-              busyKind={otterCacheBusyKind}
-              onSettingsChange={updateOtterCacheDraft}
-              onClear={(kind) => void clearOtterCache(kind)}
-            />
+            <OtterCacheSettingsPanel settings={draft.hook_cache} snapshot={otterCacheSnapshot} loading={otterCacheLoading} busyKind={otterCacheBusyKind}
+              onSettingsChange={updateOtterCacheDraft} onClear={kind => void clearOtterCache(kind)} />
           </SettingsAccordionSection>
-
           <SettingsAccordionSection id="network" label="网络" open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
-            <NetworkSettingsPanel
-              appName="Otter"
-              value={draft.network.hook}
-              onChange={(patch) => updateNetworkDraft("hook", patch)}
-            />
+            <NetworkSettingsPanel appName="Otter" value={draft.network.hook} onChange={patch => updateNetworkDraft("hook", patch)} />
           </SettingsAccordionSection>
-
           <SettingsAccordionSection id="about" label="关于" open={openSettingsSection === "about"} onToggle={() => toggleSettingsSection("about")}>
-            <AboutPanel
-              app="hook"
-              diagnostics={appDiagnostics.hook}
-              logLevel={draft.system.hook_log_level}
-              onLogLevelChange={(logLevel) => setDraft((current) => ({
-                ...current,
-                system: { ...current.system, hook_log_level: logLevel },
-              }))}
-              onCheckUpdate={() => checkApplicationUpdate("hook")}
-              onOpenLog={(target) => void openApplicationLog("hook", target)}
-              onOpenRepository={(url) => void openRepository(url)}
-            />
+            <AboutPanel app="hook" diagnostics={appDiagnostics.hook} logLevel={draft.system.hook_log_level}
+              onLogLevelChange={logLevel => setDraft(current => ({ ...current, system: { ...current.system, hook_log_level: logLevel } }))}
+              onCheckUpdate={() => checkApplicationUpdate("hook")} onOpenLog={target => void openApplicationLog("hook", target)} onOpenRepository={url => void openRepository(url)} />
           </SettingsAccordionSection>
         </div>
-      )}
-      </div>
-      {shortcutEditor ? createPortal(
-        <div className="framework-dialog-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setShortcutEditor(null);
-        }}>
-          <section
-            className="framework-dialog shortcut-edit-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="shortcut-edit-dialog-title"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setShortcutEditor(null);
-            }}
-          >
-            <header className="framework-dialog__header">
-              <div>
-                <h2 id="shortcut-edit-dialog-title">修改快捷键</h2>
-                <p>{shortcutEditor.item.label}</p>
-              </div>
-              <button className="art-card-action" type="button" aria-label="关闭" onClick={() => setShortcutEditor(null)}>×</button>
-            </header>
-            <div className="shortcut-edit-dialog__body">
-              {Array.from({ length: shortcutEditor.slotCount }, (_, index) => index as ShortcutSlot).map((slot) => {
-                const keys = shortcutEditor.keys[slot];
-                return (
-                  <div className="shortcut-capture-slot" key={slot}>
-                    <span>快捷键 {slot + 1}</span>
-                    <div className="shortcut-capture-slot__controls">
-                      {shortcutEditor.item.gestureAction ? (
-                        <div className="shortcut-gesture-picker" role="group" aria-label={`${shortcutEditor.item.label}快捷键 ${slot + 1}`}>
-                          <span className="shortcut-gesture-picker__action">{shortcutEditor.item.gestureAction}</span>
-                          <span className="shortcut-gesture-picker__modifiers">
-                            {SHORTCUT_GESTURE_MODIFIERS.map((modifier) => {
-                              const selected = gestureShortcutModifiers(keys, shortcutEditor.item.gestureAction!).has(modifier);
-                              return (
-                                <button
-                                  className={selected ? "shortcut-gesture-modifier shortcut-gesture-modifier--active" : "shortcut-gesture-modifier"}
-                                  type="button"
-                                  aria-pressed={selected}
-                                  key={modifier}
-                                  onClick={() => setShortcutEditor((current) => current?.item.gestureAction ? {
-                                    ...current,
-                                    activeSlot: slot,
-                                    keys: current.keys.map((value, keyIndex) => keyIndex === slot
-                                      ? toggleGestureShortcutModifier(value, current.item.gestureAction!, modifier)
-                                      : value) as ShortcutSlots,
-                                  } : current)}
-                                >{modifier}</button>
-                              );
-                            })}
-                          </span>
-                        </div>
-                      ) : (
-                        <button
-                          className={shortcutEditor.activeSlot === slot ? "shortcut-capture-field shortcut-capture-field--active" : "shortcut-capture-field"}
-                          type="button"
-                          autoFocus={slot === shortcutEditor.activeSlot}
-                          onFocus={() => setShortcutEditor((current) => current ? { ...current, activeSlot: slot } : current)}
-                          onKeyDown={(event) => handleShortcutCapture(event, slot)}
-                        >
-                          {keys ? <ShortcutKeySequence shortcuts={[keys]} /> : <strong>未设置</strong>}
-                          <small>按下新的组合键</small>
-                        </button>
-                      )}
-                      <button
-                        className="shortcut-capture-clear"
-                        type="button"
-                        disabled={slot === 0 && !keys}
-                        onClick={() => setShortcutEditor((current) => current ? {
-                          ...current,
-                          activeSlot: slot > 0 ? 0 : current.activeSlot,
-                          slotCount: slot > 0 ? Math.max(1, current.slotCount - 1) as 1 | 2 | 3 : current.slotCount,
-                          keys: removeShortcutSlot(current.keys, slot),
-                        } : current)}
-                      >{slot > 0 ? "删除" : "清除"}</button>
-                    </div>
-                  </div>
-                );
-              })}
-              {shortcutEditor.slotCount < 3 ? (
-                <button
-                  className="shortcut-add-secondary"
-                  type="button"
-                  onClick={() => setShortcutEditor((current) => current ? {
-                    ...current,
-                    activeSlot: current.slotCount as ShortcutSlot,
-                    slotCount: (current.slotCount + 1) as 2 | 3,
-                  } : current)}
-                >＋ 添加额外快捷键</button>
-              ) : null}
-              {shortcutEditorConflict ? (
-                <p className="shortcut-edit-dialog__conflict">{shortcutEditorConflict}</p>
-              ) : null}
-            </div>
-            <footer className="shortcut-edit-dialog__footer">
-              <button className="ghost-button" type="button" onClick={() => setShortcutEditor((current) => current ? {
-                ...current,
-                keys: [current.item.keys[0] || "", current.item.keys[1] || "", current.item.keys[2] || ""],
-                activeSlot: 0,
-                slotCount: shortcutSlotCount(current.item.keys),
-              } : current)}>恢复默认</button>
-              <span />
-              <button className="ghost-button" type="button" onClick={() => setShortcutEditor(null)}>取消</button>
-              <button className="signal-button" type="button" disabled={!shortcutEditor.keys.some((keys) => keys.trim()) || Boolean(shortcutEditorConflict)} onClick={applyShortcutEditor}>应用</button>
-            </footer>
-          </section>
-        </div>,
-        document.body,
-      ) : null}
-      {quickBindingEditor ? createPortal(
-        <div className="framework-dialog-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setQuickBindingEditor(null);
-        }}>
-          <section
-            className="framework-dialog shortcut-edit-dialog quick-binding-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="quick-binding-dialog-title"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setQuickBindingEditor(null);
-            }}
-          >
-            <header className="framework-dialog__header">
-              <div>
-                <h2 id="quick-binding-dialog-title">Art 快捷键</h2>
-                <p>选择要快速添加的 Art</p>
-              </div>
-              <button className="art-card-action" type="button" aria-label="关闭" onClick={() => setQuickBindingEditor(null)}>×</button>
-            </header>
-            <div className="shortcut-edit-dialog__body">
-              <label className="quick-binding-dialog__art">
-                <span>Art</span>
-                <select
-                  className="studio-input"
-                  value={quickBindingEditor.art}
-                  onChange={(event) => setQuickBindingEditor((current) => current ? { ...current, art: event.target.value } : current)}
-                >
-                  {availableArtTools.map((tool) => <option value={tool.id} key={tool.id}>{tool.name || tool.id}</option>)}
-                </select>
-              </label>
-              {Array.from({ length: quickBindingEditor.slotCount }, (_, index) => index as ShortcutSlot).map((slot) => {
-                const keys = quickBindingEditor.keys[slot];
-                return (
-                  <div className="shortcut-capture-slot" key={slot}>
-                    <span>快捷键 {slot + 1}</span>
-                    <div className="shortcut-capture-slot__controls">
-                      <button
-                        className={quickBindingEditor.activeSlot === slot ? "shortcut-capture-field shortcut-capture-field--active" : "shortcut-capture-field"}
-                        type="button"
-                        autoFocus={slot === quickBindingEditor.activeSlot}
-                        onFocus={() => setQuickBindingEditor((current) => current ? { ...current, activeSlot: slot } : current)}
-                        onKeyDown={(event) => handleQuickBindingCapture(event, slot)}
-                      >
-                        {keys ? <ShortcutKeySequence shortcuts={[keys]} /> : <strong>未设置</strong>}
-                        <small>按下新的组合键</small>
-                      </button>
-                      <button
-                        className="shortcut-capture-clear"
-                        type="button"
-                        disabled={slot === 0 && !keys}
-                        onClick={() => setQuickBindingEditor((current) => current ? {
-                          ...current,
-                          activeSlot: slot > 0 ? 0 : current.activeSlot,
-                          slotCount: slot > 0 ? Math.max(1, current.slotCount - 1) as 1 | 2 | 3 : current.slotCount,
-                          keys: removeShortcutSlot(current.keys, slot),
-                        } : current)}
-                      >{slot > 0 ? "删除" : "清除"}</button>
-                    </div>
-                  </div>
-                );
-              })}
-              {quickBindingEditor.slotCount < 3 ? (
-                <button
-                  className="shortcut-add-secondary"
-                  type="button"
-                  onClick={() => setQuickBindingEditor((current) => current ? {
-                    ...current,
-                    activeSlot: current.slotCount as ShortcutSlot,
-                    slotCount: (current.slotCount + 1) as 2 | 3,
-                  } : current)}
-                >＋ 添加额外快捷键</button>
-              ) : null}
-              {quickBindingConflict ? <p className="shortcut-edit-dialog__conflict">{quickBindingConflict}</p> : null}
-            </div>
-            <footer className="shortcut-edit-dialog__footer shortcut-edit-dialog__footer--simple">
-              <span />
-              <span />
-              <button className="ghost-button" type="button" onClick={() => setQuickBindingEditor(null)}>取消</button>
-              <button
-                className="signal-button"
-                type="button"
-                disabled={!quickBindingEditor.art || !quickBindingEditor.keys.some((keys) => keys.trim()) || Boolean(quickBindingConflict)}
-                onClick={applyQuickBindingEditor}
-              >应用</button>
-            </footer>
-          </section>
-        </div>,
-        document.body,
-      ) : null}
+      </TabPanel>
+      <ShortcutEditDialog controller={controller} />
+      <QuickBindingDialog controller={controller} />
     </section>
-  );
+  </TabsRoot>;
 }

@@ -200,7 +200,10 @@ New-ZipFixture -ZipPath (Join-Path $storeRoot "arts\store-mcp-art\1.0.0.zip") -T
 } -FileCopies @{
     "art.runtime.json" = (Join-Path $repoRoot "art-packages\samples\image-search\art.runtime.json")
     "runtime/main.ps1" = (Join-Path $repoRoot "art-packages\samples\image-search\runtime\main.ps1")
+    "runtime/image-search-candidates.ps1" = (Join-Path $repoRoot "art-packages\samples\image-search\runtime\image-search-candidates.ps1")
+    "runtime/image-search-download.ps1" = (Join-Path $repoRoot "art-packages\samples\image-search\runtime\image-search-download.ps1")
     "runtime/common.ps1" = (Join-Path $repoRoot "art-packages\shared\image-runtime-common.ps1")
+    "runtime/image-runtime-bitmap.ps1" = (Join-Path $repoRoot "art-packages\shared\image-runtime-bitmap.ps1")
 }
 
 $workflowYaml = @"

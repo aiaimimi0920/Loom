@@ -96,6 +96,12 @@ pub(crate) struct SurfaceResourceStore {
     /// Production construction enforces `MIN_RESOURCE_GC_AGE_MILLIS`.
     gc_min_age_ms: u64,
 }
+#[cfg(test)]
+impl SurfaceResourceStore {
+    pub(crate) fn active_leases_for_test(&self) -> usize {
+        self.leases.len()
+    }
+}
 
 /// Size plus modification time. A missing stamp always forces a full payload re-hash.
 type PayloadStamp = (u64, u128);

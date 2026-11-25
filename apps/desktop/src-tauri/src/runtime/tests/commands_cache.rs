@@ -82,7 +82,7 @@ fn loom_general_settings_restore_and_apply_close_to_tray() {
     fs::create_dir_all(&settings_dir).expect("settings dir");
     fs::write(
         settings_dir.join("settings.json"),
-        br#"{"general":{"minimizeToTray":false}}"#,
+        br#"{"general":{"minimize_to_tray":false}}"#,
     )
     .expect("settings file");
     let previous_root = std::env::var("LOOM_CONTROL_PLANE_ROOT").ok();
@@ -98,6 +98,22 @@ fn loom_general_settings_restore_and_apply_close_to_tray() {
         minimize_to_tray: false,
     });
     assert!(!LOOM_CLOSE_TO_TRAY.load(Ordering::Relaxed));
+
+    for (source, expected) in [
+        (r#"{"general":{"minimize_to_tray":true}}"#, Some(true)),
+        (
+            r#"{"general":{"minimize_to_tray":false,"minimizeToTray":true}}"#,
+            Some(false),
+        ),
+        (r#"{"general":{"minimizeToTray":false}}"#, None),
+        (r#"{"general":{"minimize_to_tray":"false"}}"#, None),
+    ] {
+        fs::write(settings_dir.join("settings.json"), source).expect("write daemon settings");
+        assert_eq!(
+            read_loom_persisted_general_settings().map(|s| s.minimize_to_tray),
+            expected
+        );
+    }
 
     restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
     LOOM_CLOSE_TO_TRAY.store(true, Ordering::Relaxed);
@@ -230,7 +246,7 @@ fn loom_cache_snapshot_and_clear_preserve_installed_art_and_workflow_data() {
         .expect("create settings directory");
     fs::write(
         &settings_path,
-        br#"{"loom_cache":{"artCacheMaxBytes":0,"artCacheRetentionDays":0,"frameworkTempRetentionDays":0}}"#,
+        br#"{"loom_cache":{"art_cache_max_bytes":0,"art_cache_retention_days":0,"framework_temp_retention_days":0}}"#,
     )
     .expect("write Loom cache settings");
 
@@ -268,6 +284,15 @@ fn loom_cache_snapshot_and_clear_preserve_installed_art_and_workflow_data() {
     prune_cache_roots(std::slice::from_ref(&art_cache), 5, 0).expect("enforce Art cache limit");
     assert!(directory_usage(&art_cache).expect("read pruned cache").0 <= 5);
     assert!(art_version.join("manifest.json").is_file());
+
+    for source in [
+        r#"{"loom_cache":{"artCacheMaxBytes":0,"artCacheRetentionDays":0,"frameworkTempRetentionDays":0}}"#,
+        r#"{"loom_cache":{"art_cache_max_bytes":0,"art_cache_retention_days":4294967296,"framework_temp_retention_days":0}}"#,
+        r#"{"loom_cache":{"art_cache_max_bytes":-1,"art_cache_retention_days":0,"framework_temp_retention_days":0}}"#,
+    ] {
+        fs::write(&settings_path, source).expect("write invalid daemon cache settings");
+        assert_eq!(read_loom_persisted_cache_settings(), None);
+    }
 
     restore_env("LOOM_CONTROL_PLANE_ROOT", previous_control_plane);
     restore_env("LOOM_FRAMEWORK_TEMP_DIR", previous_framework_temp);

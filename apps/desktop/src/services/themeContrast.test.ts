@@ -3,17 +3,17 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { desktopStyleSource as styleSource } from "./desktopStyleSource.ts";
+const uiStyles = readFileSync(new URL(import.meta.resolve("@neuro/ui/styles.css")), "utf8");
 
-const appSource = [
-  "../components/app/appShell.tsx",
-  "../components/settings/AboutPanel.tsx",
-].map((relativePath) => readFileSync(new URL(relativePath, import.meta.url), "utf8")).join("\n");
+const appSource = ["../components/app/appShell.tsx", "../components/settings/AboutPanel.tsx"]
+  .map((relativePath) => readFileSync(new URL(relativePath, import.meta.url), "utf8"))
+  .join("\n");
 
 type Rgba = readonly [number, number, number, number];
 
-const extractTokenBlock = (selector: string): Record<string, string> => {
+const extractTokenBlock = (selector: string, source = styleSource): Record<string, string> => {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = styleSource.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\n\\}`));
+  const match = source.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\n\\}`));
   assert.ok(match, `missing theme block: ${selector}`);
 
   return Object.fromEntries(
@@ -60,11 +60,12 @@ const resolveCssColor = (
   return parseColor(normalized);
 };
 
-const extractThemeTokens = (selector: string): Record<string, string> => {
-  const rootTokens = extractTokenBlock(":root");
-  const allTokens = selector === ":root"
-    ? rootTokens
-    : { ...rootTokens, ...extractTokenBlock(selector) };
+const extractThemeTokens = (mode: "dark" | "light"): Record<string, string> => {
+  const allTokens = {
+    ...extractTokenBlock(".neuro-root", uiStyles),
+    ...(mode === "light" ? extractTokenBlock('.neuro-root[data-neuro-mode="light"]', uiStyles) : {}),
+    ...extractTokenBlock(".neuro-root"),
+  };
 
   return Object.fromEntries(
     Object.keys(allTokens)
@@ -105,9 +106,7 @@ const composite = (foreground: Rgba, background: Rgba): Rgba => {
 const luminance = (color: Rgba): number => {
   const channels = color.slice(0, 3).map((channel) => {
     const normalized = channel / 255;
-    return normalized <= 0.04045
-      ? normalized / 12.92
-      : ((normalized + 0.055) / 1.055) ** 2.4;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
   });
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
@@ -117,8 +116,10 @@ const contrastRatio = (foregroundValue: string, backgroundValue: string): number
   const foreground = composite(parseColor(foregroundValue), background);
   const foregroundLuminance = luminance(foreground);
   const backgroundLuminance = luminance(background);
-  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
-    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  );
 };
 
 const assertTokenContrast = (
@@ -129,16 +130,13 @@ const assertTokenContrast = (
   minimum: number,
 ) => {
   const ratio = contrastRatio(tokens[foreground], tokens[background]);
-  assert.ok(
-    ratio >= minimum,
-    `${theme} ${foreground}/${background} contrast ${ratio.toFixed(2)} is below ${minimum}`,
-  );
+  assert.ok(ratio >= minimum, `${theme} ${foreground}/${background} contrast ${ratio.toFixed(2)} is below ${minimum}`);
 };
 
 test("keeps text, status, icon, and brand colors visible in dark and light themes", () => {
   const themes = {
-    dark: extractThemeTokens(":root"),
-    light: extractThemeTokens(':root[data-loom-theme="light"]'),
+    dark: extractThemeTokens("dark"),
+    light: extractThemeTokens("light"),
   };
 
   for (const [theme, tokens] of Object.entries(themes)) {
@@ -146,13 +144,7 @@ test("keeps text, status, icon, and brand colors visible in dark and light theme
       assertTokenContrast(theme, tokens, "text", background, 4.5);
       assertTokenContrast(theme, tokens, "muted", background, 4.5);
     }
-    for (const foreground of [
-      "accent-text",
-      "secondary-text",
-      "success",
-      "warning",
-      "danger",
-    ]) {
+    for (const foreground of ["accent-text", "secondary-text", "success", "warning", "danger"]) {
       assertTokenContrast(theme, tokens, foreground, "panel", 4.5);
     }
     assertTokenContrast(theme, tokens, "brand-primary", "rail", 3);
@@ -161,27 +153,13 @@ test("keeps text, status, icon, and brand colors visible in dark and light theme
   }
 });
 
-test("system light mode reuses the complete accessible light palette", () => {
-  const light = extractThemeTokens(':root[data-loom-theme="light"]');
-  const system = extractThemeTokens(':root[data-loom-theme="system"]');
-  for (const token of [
-    "bg",
-    "surface",
-    "panel",
-    "rail",
-    "control",
-    "control-hover",
-    "text",
-    "muted",
-    "accent-text",
-    "secondary-text",
-    "success",
-    "warning",
-    "danger",
-    "brand-primary",
-    "brand-secondary",
-  ]) {
-    assert.equal(system[token], light[token], `system light token ${token} drifted from light`);
+test("system mode resolves through the same Provider instead of copying a palette", () => {
+  const provider = readFileSync(new URL("../components/LoomUiProvider.tsx", import.meta.url), "utf8");
+  assert.match(provider, /mode === "light" \|\| \(mode === "system" && window\.matchMedia/);
+  assert.match(provider, /<NeuroProvider mode=\{mode\}/);
+  assert.doesNotMatch(styleSource, /--neuro-|--n-[\w-]+\s*:/);
+  for (const name of Object.keys(extractTokenBlock(".neuro-root"))) {
+    assert.equal((styleSource.match(new RegExp(`--${name}:`, "g")) || []).length, 1, `duplicate alias ${name}`);
   }
 });
 
@@ -190,27 +168,38 @@ test("functional graphics and product marks use theme-aware colors", () => {
   assert.match(appSource, /fill="var\(--loom-brand-secondary\)"/);
   assert.match(appSource, /stroke="var\(--loom-brand-primary\)"/);
   assert.match(appSource, /stroke="var\(--loom-brand-secondary\)"/);
-  assert.match(styleSource, /\.rail-item__icon \{[\s\S]*?color: var\(--loom-theme-muted\);/);
+  assert.match(styleSource, /\.rail-item__icon \{[^}]*color: inherit;/);
   assert.match(styleSource, /\.settings-section__icon \{[\s\S]*?color: var\(--loom-theme-accent-text\);/);
 });
 
 test("shared application surfaces consume semantic theme aliases", () => {
-  assert.match(styleSource, /\.app-toast \{[\s\S]*?background: var\(--loom-theme-panel\);/);
-  assert.match(styleSource, /\.app-confirm-dialog \{[\s\S]*?background: var\(--loom-theme-panel\);/);
-  assert.match(styleSource, /\.framework-dialog \{[\s\S]*?background: var\(--loom-theme-panel\);/);
-  assert.match(styleSource, /\.studio-hero \{[\s\S]*?background: var\(--loom-theme-panel\);/);
-  assert.match(styleSource, /\.workflow-live-card \{[\s\S]*?var\(--loom-theme-success\)/);
-  assert.doesNotMatch(styleSource, /\.workflow-live-card \{[\s\S]*?107,\s*93,\s*255/);
+  for (const component of ["n-toast", "n-dialog", "n-panel"]) {
+    assert.match(uiStyles, new RegExp(`\\.${component}\\s*\\{[^}]*background: var\\(--n-panel\\);`));
+    assert.match(uiStyles, new RegExp(`\\.${component}\\s*\\{[^}]*border: 1px solid var\\(--n-line\\);`));
+  }
+  const feedback = readFileSync(new URL("../components/feedback/AppFeedback.tsx", import.meta.url), "utf8");
+  assert.match(feedback, /<ToastViewport entries=\{notifications\}/);
+  assert.match(feedback, /<ConfirmDialog open title=\{active\.title\}/);
+  assert.doesNotMatch(styleSource, /\.app-(?:toast|confirm-)|\.framework-dialog(?:\s|\{|:)/);
 });
 
 test("routes every theme-responsive workspace and control state through semantic colors", () => {
-  assert.match(styleSource, /\.workspace-panel,[\s\S]*?background: var\(--loom-theme-surface\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.ghost-button,[\s\S]*?background: var\(--loom-theme-control\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /:is\(\.studio-input, \.studio-textarea, \.studio-json\):read-only \{[\s\S]*?background: var\(--loom-theme-control-hover\);[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /:is\(\.studio-input, \.studio-textarea, \.studio-json\):disabled \{[\s\S]*?color: var\(--loom-theme-muted\);[\s\S]*?opacity: 1;/);
-  assert.match(styleSource, /\.app-toast \{[\s\S]*?background: var\(--loom-theme-panel\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.app-confirm-dialog \{[\s\S]*?background: var\(--loom-theme-panel\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.device-management,[\s\S]*?background: var\(--loom-theme-surface\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.device-card,[\s\S]*?background: var\(--loom-theme-panel\);[\s\S]*?color: var\(--loom-theme-text\);/);
-  assert.match(styleSource, /\.settings-page \.studio-input:disabled,[\s\S]*?-webkit-text-fill-color: var\(--loom-theme-muted\);[\s\S]*?opacity: 1;/);
+  assert.match(
+    styleSource,
+    /\.workspace-panel,[\s\S]*?background: var\(--loom-theme-surface\);[\s\S]*?color: var\(--loom-theme-text\);/,
+  );
+  assert.match(uiStyles, /\.n-button:disabled\s*\{[^}]*background: var\(--n-control\);[^}]*color: var\(--n-muted\);/);
+  assert.match(
+    uiStyles,
+    /input\.n-input:read-only, textarea\.n-input:read-only\s*\{[^}]*background: var\(--n-control-hover\);/,
+  );
+  assert.match(uiStyles, /\.n-input:disabled\s*\{[^}]*color: var\(--n-muted\);[^}]*opacity: 1;/);
+  assert.match(uiStyles, /\.n-toast\s*\{[^}]*background: var\(--n-panel\);[^}]*color: var\(--n-text\);/);
+  assert.match(uiStyles, /\.n-dialog\s*\{[^}]*color: var\(--n-text\);[^}]*background: var\(--n-panel\);/);
+  assert.match(
+    styleSource,
+    /\.workspace-scroll--devices \{[\s\S]*?background: var\(--loom-theme-surface\);[\s\S]*?color: var\(--loom-theme-text\);/,
+  );
+  assert.doesNotMatch(styleSource, /\.device-(?:card|add-dialog|edit-dialog|request-row)(?:[\s,:.#[]|\{)/);
+  assert.match(uiStyles, /\.neuro-root\[data-neuro-mode="light"\]\s*\{[^}]*color-scheme: light;/);
 });

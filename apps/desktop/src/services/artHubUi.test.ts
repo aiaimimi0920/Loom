@@ -13,6 +13,7 @@ import {
   isLocallyAuthoredTool,
   nextArtWorkspaceIndex,
   officialFrameworkDisplayName,
+  toggleArtFrameworkFilter,
 } from "./artHubUi.ts";
 import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
 import { appSource, styleSource } from "./artHubUiContractSource.ts";
@@ -66,13 +67,16 @@ test("resolves localized Art identity and publisher metadata", () => {
 });
 
 test("resolves installed Art packages by publisher-qualified identity", () => {
-  assert.equal(artPackageIdentity({
-    id: "sample-art",
-    name: "Sample Art",
-    metadata: {
-      artPackage: { qualifiedId: "publisher.test/sample-art" },
-    },
-  }), "publisher.test/sample-art");
+  assert.equal(
+    artPackageIdentity({
+      id: "sample-art",
+      name: "Sample Art",
+      metadata: {
+        artPackage: { qualifiedId: "publisher.test/sample-art" },
+      },
+    }),
+    "publisher.test/sample-art",
+  );
   assert.equal(artPackageIdentity({ id: "compat-art", name: "Compat Art" }), null);
 });
 
@@ -94,10 +98,7 @@ test("falls back safely for older Art metadata and publisher icons", () => {
   assert.equal(artPublisherIconSource("N"), null);
   assert.equal(artPublisherIconSource("http://example.com/icon.png"), null);
   assert.equal(artPublisherIconSource("https://example.com/icon.png"), "https://example.com/icon.png");
-  assert.equal(
-    artPublisherIconSource("data:image/png;base64,AAAA"),
-    "data:image/png;base64,AAAA",
-  );
+  assert.equal(artPublisherIconSource("data:image/png;base64,AAAA"), "data:image/png;base64,AAAA");
 });
 
 test("uses unified official framework display names", () => {
@@ -119,22 +120,31 @@ test("resolves official framework display names from Art references", () => {
 });
 
 test("resolves authored, official, and third-party Art framework references", () => {
-  assert.equal(artFrameworkReference({
-    id: "authored",
-    name: "Authored",
-    execution: { type: "framework_art", framework: "fallback" },
-    metadata: { dependencies: { framework: "neuro.official/process" } },
-  }), "neuro.official/process");
-  assert.equal(artFrameworkReference({
-    id: "official",
-    name: "Official",
-    execution: { type: "framework_art", framework: "process" },
-  }), "process");
-  assert.equal(artFrameworkReference({
-    id: "third-party",
-    name: "Third Party",
-    execution: { type: "framework_art", framework: "publisher.alpha/shared" },
-  }), "publisher.alpha/shared");
+  assert.equal(
+    artFrameworkReference({
+      id: "authored",
+      name: "Authored",
+      execution: { type: "framework_art", framework: "fallback" },
+      metadata: { dependencies: { framework: "neuro.official/process" } },
+    }),
+    "neuro.official/process",
+  );
+  assert.equal(
+    artFrameworkReference({
+      id: "official",
+      name: "Official",
+      execution: { type: "framework_art", framework: "process" },
+    }),
+    "process",
+  );
+  assert.equal(
+    artFrameworkReference({
+      id: "third-party",
+      name: "Third Party",
+      execution: { type: "framework_art", framework: "publisher.alpha/shared" },
+    }),
+    "publisher.alpha/shared",
+  );
 });
 
 test("filters registry Arts by exact framework identity", () => {
@@ -173,27 +183,50 @@ test("filters registry Arts by exact framework identity", () => {
 });
 
 test("recognizes only unpublished locally authored Arts", () => {
-  assert.equal(isLocallyAuthoredTool({
-    id: "local",
-    name: "Local",
-    metadata: { authoring: { origin: "local", owner: "local-user" } },
-  }), true);
-  assert.equal(isLocallyAuthoredTool({
-    id: "published",
-    name: "Published",
-    metadata: {
-      authoring: { origin: "local", owner: "local-user" },
-      packageSecurity: { publisher: { id: "publisher.example" } },
-    },
-  }), false);
+  assert.equal(
+    isLocallyAuthoredTool({
+      id: "local",
+      name: "Local",
+      metadata: { authoring: { origin: "local", owner: "local-user" } },
+    }),
+    true,
+  );
+  assert.equal(
+    isLocallyAuthoredTool({
+      id: "published",
+      name: "Published",
+      metadata: {
+        authoring: { origin: "local", owner: "local-user" },
+        packageSecurity: { publisher: { id: "publisher.example" } },
+      },
+    }),
+    false,
+  );
   assert.equal(isLocallyAuthoredTool({ id: "legacy", name: "Legacy" }), false);
 });
 
+test("framework toggle normalizes only the complete current identity set and leaves its input unchanged", () => {
+  const ids = ["a", "b", "c"];
+  assert.deepEqual(toggleArtFrameworkFilter(null, ids, "b"), new Set(["a", "c"]));
+  const current = new Set(["a", "c"]);
+  assert.equal(toggleArtFrameworkFilter(current, ids, "b"), null);
+  assert.deepEqual(current, new Set(["a", "c"]));
+  assert.deepEqual(toggleArtFrameworkFilter(new Set(["a"]), ids, "a"), new Set());
+});
+
+test("temporarily absent framework selection cannot erase an unrelated explicit exclusion", () => {
+  const current = new Set(["a", "c", "absent"]);
+  const withoutA = toggleArtFrameworkFilter(current, ["a", "b", "c"], "a");
+  const restoredA = toggleArtFrameworkFilter(withoutA, ["a", "b", "c"], "a");
+  assert.deepEqual(restoredA, new Set(["a", "c", "absent"]));
+  assert.equal(restoredA?.has("b"), false);
+  assert.equal(restoredA?.has("absent"), true);
+  assert.deepEqual(current, new Set(["a", "c", "absent"]));
+  assert.equal(toggleArtFrameworkFilter(restoredA, ["a", "b", "c", "absent"], "b"), null);
+});
+
 test("filters the Art store by framework search text and server-certified status", () => {
-  const frameworks = [
-    framework("process", "neuro.official/process"),
-    framework("mcp", "neuro.official/mcp"),
-  ];
+  const frameworks = [framework("process", "neuro.official/process"), framework("mcp", "neuro.official/mcp")];
   const entries = [
     {
       id: "official-script",
@@ -215,8 +248,7 @@ test("filters the Art store by framework search text and server-certified status
   ];
 
   assert.deepEqual(
-    filterArtStoreEntries(entries, frameworks, new Set(["neuro.official/process"]), "", false)
-      .map((entry) => entry.id),
+    filterArtStoreEntries(entries, frameworks, new Set(["neuro.official/process"]), "", false).map((entry) => entry.id),
     ["official-script"],
   );
   assert.deepEqual(

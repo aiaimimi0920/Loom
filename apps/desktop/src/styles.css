@@ -7,7 +7,6 @@
 @import "./styles/art-registry.css";
 @import "./styles/art-editing.css";
 @import "./styles/workflow-studio.css";
-@import "./styles/art-creator.css";
 @import "./styles/otter-canvas-controls.css";
 @import "./styles/otter-canvas-surface.css";
 @import "./styles/settings-shell.css";
@@ -24,3 +23,4 @@
 @import "./styles/mcp-hub.css";
 @import "./styles/mcp-dialogs.css";
 @import "./styles/accessibility.css";
+@import "./styles/art-wizard.css";

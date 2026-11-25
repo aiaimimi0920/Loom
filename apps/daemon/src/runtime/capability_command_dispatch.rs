@@ -45,16 +45,14 @@ fn invoke_capability(
         CapabilityCommandOwner::Core(CoreCapabilityHandler::TeaTicketDecompose) => {
             invoke_tea_ticket_decompose(request, run_store)
         }
-        CapabilityCommandOwner::Plugin(plugin_id) => {
-            invoke_plugin_command(
-                request,
-                &plugin_id,
-                registry.plugin_runtime(),
-                resources,
-                surface_resources,
-                control_plane_root,
-            )
-        }
+        CapabilityCommandOwner::Plugin(plugin_id) => invoke_plugin_command(
+            request,
+            &plugin_id,
+            registry.plugin_runtime(),
+            resources,
+            surface_resources,
+            control_plane_root,
+        ),
     }
 }
 
@@ -173,7 +171,8 @@ fn record_capability_runtime_failure(
     if matches!(error, Error::NotFound(_) | Error::Busy) {
         return;
     }
-    let registry = loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
+    let registry =
+        loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
     match registry.record_runtime_failure(plugin_id) {
         Ok(record)
             if record.status
@@ -190,7 +189,8 @@ fn record_capability_runtime_failure(
 }
 
 fn clear_capability_runtime_failures(control_plane_root: &Path, plugin_id: &str) {
-    let registry = loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
+    let registry =
+        loom_tool_registry::capability::CapabilityPluginRegistry::new(control_plane_root);
     if let Err(error) = registry.clear_runtime_failures(plugin_id) {
         runtime_log_warn(format!(
             "Capability Plugin runtime recovery persistence failed for {plugin_id}: {error}"
@@ -244,9 +244,7 @@ fn cancel_capability_invocation(
             "capability invocation is not active",
             json!({}),
         ),
-        Err(error) => {
-            capability_runtime_invoke_error(&request.request_id, "runtime.cancel", error)
-        }
+        Err(error) => capability_runtime_invoke_error(&request.request_id, "runtime.cancel", error),
     }
 }
 
@@ -260,6 +258,7 @@ fn capability_runtime_invoke_error(
         Error::NotFound(_) => (404, "capability_command_not_found", false),
         Error::Busy => (503, "capability_busy", true),
         Error::Timeout => (504, "capability_timeout", true),
+        Error::Cancelled => (409, "capability_cancelled", false),
         Error::InvalidPackage(_) | Error::Protocol(_) => {
             (400, "capability_runtime_rejected", false)
         }
@@ -271,6 +270,7 @@ fn capability_runtime_invoke_error(
         Error::NotFound(_) => "capability command was not found",
         Error::Busy => "capability runtime is busy",
         Error::Timeout => "capability runtime timed out",
+        Error::Cancelled => "capability invocation was cancelled",
         Error::InvalidPackage(_) | Error::Protocol(_) => "capability runtime rejected the request",
         Error::Unavailable(_) | Error::Io(_) | Error::Process(_) | Error::Json(_) => {
             "capability runtime is unavailable"

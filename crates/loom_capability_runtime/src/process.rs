@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read as _;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -11,6 +11,9 @@ use loom_protocol::{CapabilityRuntimeMessage, CapabilityRuntimeStatus};
 use crate::error::{CapabilityHostError, HostResult};
 use crate::frame::{read_runtime_frame, write_runtime_frame};
 
+mod call;
+use call::RuntimeResponse;
+
 const REQUEST_QUEUE_CAPACITY: usize = 16;
 const STDERR_CAPTURE_BYTES: usize = 64 * 1024;
 const MAX_INTERMEDIATE_RESPONSES: u16 = 1024;
@@ -18,7 +21,6 @@ const MAX_INTERMEDIATE_RESPONSES: u16 = 1024;
 /// cannot grow host memory by replaying finalisations for retired requests.
 const MAX_RETIRED_REQUESTS: usize = 4 * REQUEST_QUEUE_CAPACITY;
 
-type RuntimeResponse = mpsc::Sender<HostResult<CapabilityRuntimeMessage>>;
 type PendingResponses = Arc<Mutex<HashMap<String, RuntimeResponse>>>;
 type RetiredRequestIds = Arc<Mutex<RetiredRequests>>;
 
@@ -131,55 +133,6 @@ impl RuntimeProcess {
     }
 }
 
-impl RuntimeProcessClient {
-    pub(crate) fn call(
-        &self,
-        message: CapabilityRuntimeMessage,
-        timeout: Duration,
-    ) -> HostResult<CapabilityRuntimeMessage> {
-        let request_id = message_request_id(&message)?;
-        let reservation = request_id.clone();
-        let (response, receiver) = mpsc::channel();
-        let request = RuntimeRequest {
-            request_id,
-            message,
-            response,
-        };
-        match self.requests.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => return Err(CapabilityHostError::Busy),
-            Err(TrySendError::Disconnected(_)) => {
-                return Err(CapabilityHostError::Unavailable(
-                    "runtime request writer stopped".to_owned(),
-                ))
-            }
-        }
-        match receiver.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Quarantine the identity before releasing its reservation. A
-                // buffered response from the dying process must never satisfy a
-                // retry that reused the same identity.
-                if let Ok(mut retired) = self.retired.lock() {
-                    retired.insert(reservation.clone());
-                }
-                if let Ok(mut pending) = self.pending.lock() {
-                    pending.remove(&reservation);
-                }
-                terminate_child(&self.child);
-                Err(CapabilityHostError::Timeout)
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(CapabilityHostError::Unavailable(
-                "runtime response reader stopped".to_owned(),
-            )),
-        }
-    }
-
-    pub(crate) fn terminate(&self) {
-        terminate_child(&self.child);
-    }
-}
-
 impl Drop for RuntimeProcess {
     fn drop(&mut self) {
         self.terminate();
@@ -259,7 +212,9 @@ fn response_reader(
             CapabilityRuntimeMessage::Event { .. } => {}
             CapabilityRuntimeMessage::Response {
                 ref request_id,
-                status: CapabilityRuntimeStatus::Accepted | CapabilityRuntimeStatus::Progress,
+                status:
+                    status @ (CapabilityRuntimeStatus::Accepted | CapabilityRuntimeStatus::Progress),
+                ref payload,
                 ..
             } => {
                 // Intermediate frames are only tracked for identities the host
@@ -284,6 +239,26 @@ fn response_reader(
                         &pending,
                         request_id,
                         "too many intermediate runtime responses",
+                    );
+                    continue;
+                }
+                let valid_progress = pending
+                    .lock()
+                    .map(|pending| {
+                        pending
+                            .get(request_id)
+                            .is_none_or(|response| response.publish(status, payload))
+                    })
+                    .unwrap_or(false);
+                if !valid_progress {
+                    intermediate.remove(request_id);
+                    if let Ok(mut retired) = retired.lock() {
+                        retired.insert(request_id.clone());
+                    }
+                    fail_request(
+                        &pending,
+                        request_id,
+                        "runtime progress exceeds snapshot limit",
                     );
                 }
             }
@@ -439,7 +414,7 @@ mod process_tests {
                     CapabilityRuntimeMethod::Command,
                     json!({}),
                 ),
-                response,
+                response: RuntimeResponse::new(response, None),
             })
             .unwrap();
         drop(requests);

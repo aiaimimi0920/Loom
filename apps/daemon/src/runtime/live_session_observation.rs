@@ -55,6 +55,12 @@ impl LiveSessionStore {
         event.sequence = record.next_event_sequence;
         push_live_event(record, event.clone());
         let dispatches = evaluate_live_triggers(record, &observation);
+        record.local_art_triggers.evaluate(
+            &record.session,
+            record.epoch,
+            &record.viewer_connections,
+            &observation,
+        );
         self.changed.notify_all();
         Ok(LiveObservationPublishOutcome { event, dispatches })
     }

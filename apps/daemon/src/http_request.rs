@@ -395,6 +395,15 @@ fn request_body_size_limit(headers: &str) -> usize {
         )
     {
         loom_protocol::projection::MAX_PROJECTION_HTTP_BYTES
+    } else if method == "POST"
+        && matches!(
+            path,
+            "/v1/art/local/service/submit-images"
+                | "/v1/art/local/service/submit-image-output"
+                | "/v1/art/local/service/submit-confirmable"
+        )
+    {
+        loom_protocol::local_art::service::images::MAX_REQUEST
     } else if method.eq_ignore_ascii_case("POST") && is_mcp_server_package_install {
         MAX_MCP_SERVER_PACKAGE_HTTP_BODY_BYTES
     } else if method.eq_ignore_ascii_case("POST")
@@ -509,7 +518,7 @@ impl ParsedHttpRequest {
     }
 }
 
-fn percent_decode_component(value: &str) -> Option<String> {
+pub(super) fn percent_decode_component(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;

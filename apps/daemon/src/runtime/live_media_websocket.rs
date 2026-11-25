@@ -24,8 +24,8 @@ fn is_live_media_websocket_request(request: &ParsedHttpRequest) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-fn handle_live_media_websocket_upgrade(
-    mut stream: TcpStream,
+fn handle_live_media_websocket_upgrade<S: LiveMediaSocket>(
+    stream: S,
     request: ParsedHttpRequest,
     runtime: &DaemonRuntime,
 ) {
@@ -33,12 +33,20 @@ fn handle_live_media_websocket_upgrade(
         handle_wall_live_upgrade(stream, request, runtime);
         return;
     }
+    handle_live_media_stream_upgrade(stream, request, runtime);
+}
+
+fn handle_live_media_stream_upgrade<S: LiveMediaSocket>(
+    mut stream: S,
+    request: ParsedHttpRequest,
+    runtime: &DaemonRuntime,
+) {
     let result = prepare_live_media_upgrade(&request, runtime);
     let (grant, session_id, role, after_epoch, after_frame_id, accept_key) = match result {
         Ok(value) => value,
         Err(error) => {
             if let Ok((status, body)) = live_error_response(error) {
-                write_response_safely(stream, status, &body);
+                let _ = write_response(&mut stream, status, &body);
             }
             return;
         }
@@ -50,7 +58,7 @@ fn handle_live_media_websocket_upgrade(
             "the live media connection limit has been reached",
         );
         if let Ok((status, body)) = live_error_response(error) {
-            write_response_safely(stream, status, &body);
+            let _ = write_response(&mut stream, status, &body);
         }
         return;
     };
@@ -61,8 +69,9 @@ fn handle_live_media_websocket_upgrade(
     if stream.write_all(response.as_bytes()).is_err() || stream.flush().is_err() {
         return;
     }
-    let _ = stream.set_read_timeout(Some(LIVE_MEDIA_SOCKET_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(LIVE_MEDIA_SOCKET_TIMEOUT));
+    if stream.prepare_media().is_err() {
+        return;
+    }
     let sessions = Arc::clone(&runtime.live_sessions);
     let profile = LiveMediaProfile::offered(&request);
     let worker = thread::Builder::new()
@@ -219,8 +228,8 @@ fn parse_live_query_u64(
         .transpose()
 }
 
-fn run_live_media_socket(
-    mut socket: tungstenite::WebSocket<TcpStream>,
+fn run_live_media_socket<S: LiveMediaSocket>(
+    mut socket: tungstenite::WebSocket<S>,
     sessions: SharedLiveSessionStore,
     session_id: String,
     grant: LiveMediaDeviceGrant,
@@ -262,8 +271,8 @@ fn run_live_media_socket(
     let _ = socket.close(grant.revocation_close());
 }
 
-fn run_live_source_socket(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+fn run_live_source_socket<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
     sessions: &SharedLiveSessionStore,
     session_id: &str,
     grant: &LiveMediaDeviceGrant,
@@ -312,8 +321,8 @@ fn run_live_source_socket(
     }
 }
 
-fn run_live_viewer_socket(
-    socket: &mut tungstenite::WebSocket<TcpStream>,
+fn run_live_viewer_socket<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
     sessions: &SharedLiveSessionStore,
     session_id: &str,
     grant: &LiveMediaDeviceGrant,
@@ -333,7 +342,7 @@ fn run_live_viewer_socket(
     }
     let _ = socket
         .get_mut()
-        .set_read_timeout(Some(LIVE_VIEWER_CONTROL_TIMEOUT));
+        .set_media_read_timeout(LIVE_VIEWER_CONTROL_TIMEOUT);
     let mut last_ping = Instant::now();
     while !sessions.media_cancelled.load(Ordering::SeqCst) {
         if grant
@@ -418,7 +427,9 @@ fn run_live_viewer_socket(
     }
 }
 
-fn service_live_viewer_control_messages(socket: &mut tungstenite::WebSocket<TcpStream>) -> bool {
+fn service_live_viewer_control_messages<S: LiveMediaSocket>(
+    socket: &mut tungstenite::WebSocket<S>,
+) -> bool {
     for _ in 0..4 {
         match socket.read() {
             Ok(tungstenite::Message::Ping(bytes)) => {

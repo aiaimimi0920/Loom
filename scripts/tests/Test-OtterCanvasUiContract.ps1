@@ -39,6 +39,7 @@ $desktopRustPaths = @(
     (Join-Path $repoRoot "apps\desktop\src-tauri\src\runtime\types.rs")
 )
 $smokePath = Join-Path $repoRoot "scripts\Invoke-LoomOtterCanvasUiSmoke.ps1"
+$inspectorHelperPath = Join-Path $repoRoot "scripts\otter-canvas-ui-smoke\Inspector.ps1"
 $inspectorPath = Join-Path $repoRoot "scripts\Inspect-LoomWebView.mjs"
 
 Assert-PathExists $thumbnailPath
@@ -72,8 +73,11 @@ Assert-Contains 'await waitForLoomOnline(refreshSnapshot);' $app "Daemon start m
 Assert-NotContains '? await waitForLoomOnline' $app "Daemon readiness polling must not depend on whether a new process was spawned."
 
 Assert-PathExists $smokePath
+Assert-PathExists $inspectorHelperPath
 Assert-PathExists $inspectorPath
 $smoke = Get-Content -Raw -Encoding UTF8 $smokePath
+$inspectorHelper = Get-Content -Raw -Encoding UTF8 $inspectorHelperPath
+Assert-Contains '. (Join-Path $PSScriptRoot "otter-canvas-ui-smoke\Inspector.ps1")' $smoke "Smoke must load its package-local inspector definitions."
 $inspector = Get-Content -Raw -Encoding UTF8 $inspectorPath
 Assert-Contains 'LOOM_WEBVIEW2_REMOTE_DEBUGGING_PORT' $smoke "Smoke must pass an isolated CDP port through Loom runtime configuration."
 Assert-NotContains 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS' $smoke "Smoke must not rely on the WebView2 environment variable ignored by hosted runners."
@@ -92,32 +96,32 @@ Assert-Contains 'status = "error"' $smoke "Otter canvas smoke fixture must prese
 Assert-Contains '$quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints' $smoke "Otter canvas smoke must define the failed Art error message via ASCII-safe Unicode code points."
 Assert-Contains 'errorMessage = $quotaExceededErrorMessage' $smoke "Otter canvas smoke fixture must preserve the failed Art node error reason."
 Assert-Contains 'Wait-ForOtterCanvasUi' $smoke "Smoke must wait on Otter canvas DOM conditions."
-Assert-Contains '[int]$TimeoutSeconds = 90' $smoke "Hosted WebView2 startup needs a bounded 90-second Otter canvas wait budget."
-Assert-Contains 'Inspector diagnostic:' $smoke "Otter canvas timeouts must include the latest Inspector diagnostic."
-Assert-Contains 'Get-CimInstance Win32_Process' $smoke "Otter canvas failures must report the desktop WebView2 process tree."
-Assert-Contains '-OperationTimeoutSec 2' $smoke "Otter canvas process diagnostics must have a bounded CIM operation timeout."
-Assert-Contains 'GetActiveTcpListeners()' $smoke "Otter canvas failures must use a direct TCP listener snapshot."
-Assert-NotContains 'Get-NetTCPConnection' $smoke "Otter canvas failure diagnostics must not block on the NetTCP CIM provider."
-Assert-Contains 'Desktop stderr:' $smoke "Otter canvas failures must include desktop stderr."
-Assert-Contains '-MaxLength 1800' $smoke "Otter canvas process-tree diagnostics must have a reserved section budget."
-Assert-Contains '-MaxLength 500' $smoke "Otter canvas listener diagnostics must have a reserved section budget."
-Assert-Contains '-MaxLength 900' $smoke "Otter canvas desktop stderr must have a reserved section budget."
+Assert-Contains '[int]$TimeoutSeconds = 90' $inspectorHelper "Hosted WebView2 startup needs a bounded 90-second Otter canvas wait budget."
+Assert-Contains 'Inspector diagnostic:' $inspectorHelper "Otter canvas timeouts must include the latest Inspector diagnostic."
+Assert-Contains 'Get-CimInstance Win32_Process' $inspectorHelper "Otter canvas failures must report the desktop WebView2 process tree."
+Assert-Contains '-OperationTimeoutSec 2' $inspectorHelper "Otter canvas process diagnostics must have a bounded CIM operation timeout."
+Assert-Contains 'GetActiveTcpListeners()' $inspectorHelper "Otter canvas failures must use a direct TCP listener snapshot."
+Assert-NotContains 'Get-NetTCPConnection' $inspectorHelper "Otter canvas failure diagnostics must not block on the NetTCP CIM provider."
+Assert-Contains 'Desktop stderr:' $inspectorHelper "Otter canvas failures must include desktop stderr."
+Assert-Contains '-MaxLength 1800' $inspectorHelper "Otter canvas process-tree diagnostics must have a reserved section budget."
+Assert-Contains '-MaxLength 500' $inspectorHelper "Otter canvas listener diagnostics must have a reserved section budget."
+Assert-Contains '-MaxLength 900' $inspectorHelper "Otter canvas desktop stderr must have a reserved section budget."
 Assert-Contains 'Runtime diagnostic:' $smoke "Otter canvas failures must label the reserved runtime diagnostic budget."
 Assert-Contains 'Primary failure:' $smoke "Otter canvas failures must label the bounded primary exception."
 $runtimeDiagnosticIndex = $smoke.IndexOf('"Runtime diagnostic: "')
 $primaryFailureIndex = $smoke.IndexOf('"Primary failure: "')
 Assert-True ($runtimeDiagnosticIndex -ge 0 -and $primaryFailureIndex -gt $runtimeDiagnosticIndex) "Runtime diagnostics must precede the primary exception so truncation cannot remove them."
-Assert-Contains 'function Limit-SmokeText' $smoke "Otter canvas smoke output must have a bounded diagnostic size."
-Assert-Contains '[Math]::Min(20' $smoke "Each Inspector invocation must be capped at 20 seconds within the remaining budget."
-Assert-Contains '-TimeoutSeconds $inspectorTimeoutSeconds' $smoke "Inspector child-process timeout must use the remaining Otter canvas budget."
-Assert-Contains '[System.Diagnostics.ProcessStartInfo]::new()' $smoke "Inspector must use the .NET process API for reliable Windows PowerShell exit codes."
-Assert-Contains 'ReadToEndAsync()' $smoke "Inspector stdout and stderr must be drained asynchronously."
-Assert-Contains '$exitCode = $process.ExitCode' $smoke "Inspector must capture a concrete .NET process exit code."
-Assert-Contains '$process.WaitForExit($TimeoutSeconds * 1000)' $smoke "Otter canvas smoke must wait on the Inspector process with a hard timeout."
-Assert-NotContains '$process.WaitForExit()' $smoke "Inspector cleanup must not contain an unbounded process wait."
-Assert-Contains 'function Read-BoundedTaskText' $smoke "Inspector stream draining must use a bounded task wait."
-Assert-Contains '$Task.Wait($TimeoutMilliseconds)' $smoke "Inspector stream draining must not block indefinitely."
-Assert-NotContains 'Start-Sleep -Seconds 2' $smoke "Smoke must not use a fixed Otter canvas refresh delay."
+Assert-Contains 'function Limit-SmokeText' $inspectorHelper "Otter canvas smoke output must have a bounded diagnostic size."
+Assert-Contains '[Math]::Min(20' $inspectorHelper "Each Inspector invocation must be capped at 20 seconds within the remaining budget."
+Assert-Contains '-TimeoutSeconds $inspectorTimeoutSeconds' $inspectorHelper "Inspector child-process timeout must use the remaining Otter canvas budget."
+Assert-Contains '[System.Diagnostics.ProcessStartInfo]::new()' $inspectorHelper "Inspector must use the .NET process API for reliable Windows PowerShell exit codes."
+Assert-Contains 'ReadToEndAsync()' $inspectorHelper "Inspector stdout and stderr must be drained asynchronously."
+Assert-Contains '$exitCode = $process.ExitCode' $inspectorHelper "Inspector must capture a concrete .NET process exit code."
+Assert-Contains '$process.WaitForExit($TimeoutSeconds * 1000)' $inspectorHelper "Otter canvas smoke must wait on the Inspector process with a hard timeout."
+Assert-NotContains '$process.WaitForExit()' $inspectorHelper "Inspector cleanup must not contain an unbounded process wait."
+Assert-Contains 'function Read-BoundedTaskText' $inspectorHelper "Inspector stream draining must use a bounded task wait."
+Assert-Contains '$Task.Wait($TimeoutMilliseconds)' $inspectorHelper "Inspector stream draining must not block indefinitely."
+Assert-NotContains 'Start-Sleep -Seconds 2' ($smoke + $inspectorHelper) "Smoke must not use a fixed Otter canvas refresh delay."
 Assert-Contains 'failedArtThumbnailFailureVisible' $smoke "Otter canvas smoke must assert the failed Art thumbnail presentation."
 Assert-Contains 'min-nodes' $inspector "Inspector must wait for the expected Otter canvas node count."
 Assert-Contains 'data-revision' $inspector "Inspector must wait for a non-empty Otter canvas revision."
@@ -159,11 +163,10 @@ $tokens = $null
 $parseErrors = $null
 $smokeAst = [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$parseErrors)
 Assert-True (@($parseErrors).Count -eq 0) "Otter canvas smoke must parse before runtime process tests."
-. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Limit-SmokeText")
 . (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Write-Utf8NoBom")
-. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Read-BoundedTaskText")
-. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Get-OtterCanvasFailureDiagnostic")
-. (Get-SmokeFunctionDefinition -Ast $smokeAst -Name "Invoke-Inspector")
+$inspectorHelperAst = [System.Management.Automation.Language.Parser]::ParseFile($inspectorHelperPath, [ref]$tokens, [ref]$parseErrors)
+Assert-True (@($parseErrors).Count -eq 0) "Otter canvas inspector definitions must parse."
+. $inspectorHelperPath
 
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loom-inspector-contract-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null

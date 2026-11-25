@@ -12,6 +12,8 @@ pub enum CapabilityHostError {
     Unavailable(String),
     #[error("capability runtime request timed out")]
     Timeout,
+    #[error("capability runtime request cancelled")]
+    Cancelled,
     #[error("capability runtime queue is full")]
     Busy,
     #[error("capability contribution is not registered: {0}")]

@@ -12,6 +12,7 @@ pub mod capability;
 pub mod device;
 pub mod hook;
 pub mod live;
+pub mod local_art;
 pub mod projection;
 pub mod schemas;
 pub mod surface;

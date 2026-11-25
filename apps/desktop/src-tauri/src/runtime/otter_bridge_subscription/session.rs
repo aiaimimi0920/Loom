@@ -86,7 +86,7 @@ fn read(socket: &mut ClientSocket, deadline: Instant) -> Result<Option<Value>, (
         Ok(Message::Text(text)) => serde_json::from_str(&text).map(Some).map_err(|_| ()),
         Ok(Message::Ping(_)) => {
             // tungstenite queues Pong; flush it even if the peer sends no next frame.
-            socket.flush().map_err(|_| ())?;
+            flush_pong(socket)?;
             Ok(None)
         }
         Ok(Message::Pong(_)) => Ok(None),
@@ -97,6 +97,16 @@ fn read(socket: &mut ClientSocket, deadline: Instant) -> Result<Option<Value>, (
         }
         _ => Err(()),
     }
+}
+
+pub(super) fn flush_pong(socket: &mut ClientSocket) -> Result<(), ()> {
+    // Receiving Ping may exhaust the read slice (or be descheduled afterwards).
+    // Its mandatory response owns a fresh bounded write, not the old read budget.
+    socket
+        .get_mut()
+        .sock
+        .set_operation_deadline(Instant::now() + IO_SLICE);
+    socket.flush().map_err(|_| ())
 }
 
 fn await_confirmation(

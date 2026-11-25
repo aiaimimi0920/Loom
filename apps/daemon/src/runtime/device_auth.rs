@@ -85,7 +85,13 @@ fn device_public_key_fingerprint(encoded: &str) -> std::result::Result<String, D
 fn is_public_device_auth_route(method: &str, path: &str) -> bool {
     path == "/health"
         || (method == "GET" && path == "/v1/otter/identity")
-        || (method == "POST" && matches!(path, "/v1/otter/connections/request" | "/v1/otter/connections/status" | "/v1/otter/connections/cancel"))
+        || (method == "POST"
+            && matches!(
+                path,
+                "/v1/otter/connections/request"
+                    | "/v1/otter/connections/status"
+                    | "/v1/otter/connections/cancel"
+            ))
         || (method == "POST"
             && matches!(
                 path,
@@ -94,13 +100,30 @@ fn is_public_device_auth_route(method: &str, path: &str) -> bool {
 }
 
 fn device_session_route_allowed(method: &str, path: &str) -> bool {
-    if method == "POST" && path == "/v1/otter/connections/activate" { return true; }
-    if method == "POST" && (PROJECTION_ROUTES.contains(&path) || PROJECTION_V2_ROUTES.contains(&path)) { return true; }
+    if local_art::device_route(method, path) {
+        return true;
+    }
+    if method == "POST"
+        && matches!(
+            path,
+            "/v1/otter/connections/activate"
+                | "/v1/otter/connections/disconnect"
+                | "/v1/otter/locale-report"
+        )
+    {
+        return true;
+    }
+    if method == "POST"
+        && (PROJECTION_ROUTES.contains(&path) || PROJECTION_V2_ROUTES.contains(&path))
+    {
+        return true;
+    }
     if wall_device_route_allowed(method, path) {
         return true;
     }
     if method == "GET" {
-        return path == "/v1/capabilities"
+        return path == "/v1/otter/connection-info"
+            || path == "/v1/capabilities"
             || path == "/v1/surfaces/stream"
             || path.starts_with("/v1/surfaces/resources/")
             || path == "/v1/live/sessions"

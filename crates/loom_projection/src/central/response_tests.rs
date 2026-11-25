@@ -57,7 +57,7 @@ fn record(identity: &Identity) -> Record {
 #[test]
 fn inspect_allows_unlinked_receiver_but_sync_requires_participant() {
     let source = identity("00000000-0000-4000-8000-000000000001", "account:fixture");
-    let receiver = identity("00000000-0000-4000-8000-000000000002", "account:fixture");
+    let receiver = identity("00000000-0000-4000-8000-000000000002", "account:receiver");
     let record = record(&source);
     let envelope = record.envelope.clone();
     let peer = Peer {
@@ -108,6 +108,51 @@ fn inspect_allows_unlinked_receiver_but_sync_requires_participant() {
         .code,
         "projection_response_invalid"
     );
+}
+
+#[test]
+fn cross_account_accept_binds_original_receiver_unit_revision_and_digest() {
+    let source = identity("00000000-0000-4000-8000-000000000001", "account:source");
+    let receiver = identity("00000000-0000-4000-8000-000000000002", "account:receiver");
+    let mut record = record(&source);
+    let op = CentralOperation::Accept {
+        envelope: record.envelope.clone(),
+        receiver_unit_id: "unit:receiver".into(),
+        expected_revision: 1,
+        expected_digest: record.digest.clone(),
+        confirmed: true,
+    };
+    record.status = Status::Linked;
+    record.receiver = Some(crate::Receiver {
+        device_id: receiver.session().device_id.clone(),
+        unit_id: "unit:receiver".into(),
+        revision: 1,
+        digest: record.digest.clone(),
+    });
+    record.revision = 2;
+    record.digest = "b".repeat(64);
+    for mutation in 0..4 {
+        let mut changed = record.clone();
+        let accepted = changed.receiver.as_mut().unwrap();
+        match mutation {
+            1 => accepted.unit_id = "wrong:unit".into(),
+            2 => accepted.revision = 2,
+            3 => accepted.digest = "c".repeat(64),
+            _ => {}
+        }
+        let mut response = CentralResponse::Projection {
+            view: View {
+                record: changed,
+                available: true,
+                authorized_until_ms: NOW + 30_000,
+                peer: None,
+            },
+        };
+        assert_eq!(
+            validate(&mut response, &op, &receiver, NOW).is_ok(),
+            mutation == 0
+        );
+    }
 }
 
 #[test]

@@ -1,4 +1,4 @@
-// A live connection requires both a per-connection approval and proof of the device key.
+// A live connection requires device approval and proof of the device key.
 // Heartbeats extend a short lease; a crashed or disconnected Otter cannot stay online forever.
 fn activate_otter_connection(
     request: &ParsedHttpRequest,
@@ -57,4 +57,27 @@ fn activate_otter_connection(
         200,
         serde_json::to_string(&json!({"connection":connection,"loom":loom}))?,
     ))
+}
+
+// Disconnect revokes transport credentials without changing persistent pairing or projection epochs.
+fn disconnect_otter_connection(
+    actor: Option<&str>,
+    registry: &SharedDeviceRegistryStore,
+) -> Result<(u16, String)> {
+    let Some(actor) = actor else {
+        return connection_error(403, "connection_device_required");
+    };
+    let mut store = registry
+        .lock()
+        .map_err(|_| anyhow::anyhow!("device registry unavailable"))?;
+    store.revoke_device_sessions(actor);
+    store.projections.presence.remove(actor);
+    for connection in store
+        .connection_requests
+        .values_mut()
+        .filter(|c| c.device_id == actor)
+    {
+        connection.phase = "cancelled".into();
+    }
+    Ok((200, json!({"connected": false}).to_string()))
 }

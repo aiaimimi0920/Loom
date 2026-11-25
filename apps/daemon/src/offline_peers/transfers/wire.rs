@@ -32,6 +32,7 @@ fn remote_error(payload: &Value) -> PeerError {
         "projection_invitation_mismatch",
         "projection_access_denied",
         "projection_peer_revoked",
+        "projection_source_revoked",
         "projection_target_offline",
         "projection_target_unavailable",
         "projection_content_changed",

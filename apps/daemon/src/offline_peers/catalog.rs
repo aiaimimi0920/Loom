@@ -31,6 +31,7 @@ impl CatalogDevice {
 struct CatalogProof {
     challenge: Challenge,
     devices: Vec<CatalogDevice>,
+    users: Vec<crate::connected_users::User>,
     expires_at_ms: u64,
     transfer_protocol: String,
     signature: String,
@@ -38,9 +39,13 @@ struct CatalogProof {
 
 impl CatalogProof {
     fn message(&self) -> PeerResult<Vec<u8>> {
-        let payload =
-            serde_json::to_vec(&(&self.devices, self.expires_at_ms, &self.transfer_protocol))
-                .map_err(|_| failure(503, "peer_unavailable"))?;
+        let payload = serde_json::to_vec(&(
+            &self.devices,
+            &self.users,
+            self.expires_at_ms,
+            &self.transfer_protocol,
+        ))
+        .map_err(|_| failure(503, "peer_unavailable"))?;
         let mut message = self.challenge.message("catalog-response");
         message.extend_from_slice(format!("\n{:x}", Sha256::digest(payload)).as_bytes());
         Ok(message)
@@ -52,6 +57,15 @@ impl CatalogProof {
         if self.challenge != *challenge
             || self.transfer_protocol != "loom.offline-transfer.v1"
             || self.devices.len() > 64
+            || self.users.len() > 2
+            || !self.users.iter().all(crate::connected_users::User::valid)
+            || self
+                .users
+                .iter()
+                .map(crate::connected_users::User::id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.users.len()
             || self.expires_at_ms != challenge.timestamp_ms.saturating_add(CATALOG_TTL_MS)
             || self.expires_at_ms <= unix_time_millis()
             || self.signature.len() != 88
@@ -72,8 +86,11 @@ impl OfflinePeers {
         &self,
         input: Challenge,
         registry: &SharedDeviceRegistryStore,
+        root: &Path,
     ) -> PeerResult<Value> {
         let state = self.authenticate_challenge(&input, "catalog-request")?;
+        let users = crate::connected_users::local(root)
+            .map_err(|_| failure(503, "account_summary_unavailable"))?;
         let registry = registry.try_lock().map_err(|_| failure(503, "peer_busy"))?;
         let now = unix_time_millis();
         // Read local presence directly: aggregated foreign devices must never be re-exported.
@@ -107,6 +124,7 @@ impl OfflinePeers {
         let mut proof = CatalogProof {
             challenge: input,
             devices,
+            users,
             expires_at_ms,
             transfer_protocol: "loom.offline-transfer.v1".to_owned(),
             signature: String::new(),
@@ -184,6 +202,7 @@ impl OfflinePeers {
             return;
         };
         let mut unavailable = 0;
+        let mut user_targets = Vec::new();
         for reply in replies {
             let Ok((peer, proof)) = reply else {
                 unavailable += 1;
@@ -193,6 +212,7 @@ impl OfflinePeers {
                 unavailable += 1;
                 continue;
             }
+            let mut accepted = Vec::new();
             for device in proof.devices {
                 if targets.len() >= 64 {
                     break;
@@ -207,9 +227,14 @@ impl OfflinePeers {
                     "remoteDeviceId": device.device_id, "deliveryAvailable": true,
                     "transferProtocol": "loom.offline-transfer.v1"}),
                 );
+                accepted.push(id);
             }
+            user_targets.push((proof.users, accepted));
         }
         drop(state);
+        for (users, ids) in user_targets {
+            crate::connected_users::append(response, users, &ids);
+        }
         response["peerDirectory"] = json!({"status": if unavailable == 0 { "complete" } else { "partial" },
             "unavailablePeers": unavailable});
     }

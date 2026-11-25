@@ -5,7 +5,14 @@ Plugin. Otter invokes its namespaced command through `loom.extension.v1` and
 `loom.capability.runtime.v1`; `loom-daemon` does not expose a fixed
 `loom.hook.ocr.execute` branch or link the OCR inference crate. Image bytes are
 passed as a bounded host-mediated resource reference rather than an unbounded
-core `imageBase64` request. The successful result attachment contains:
+core `imageBase64` request. While a command is pending, the Hook connection
+continues handling control frames. Closing that connection (or stopping the
+bridge) cancels its invocation and releases its staged resources. This is not
+an acknowledgement that the plug-in handled a cooperative cancel, and does not
+undo a result already delivered. Send the next command after receiving the
+current result: at most one follow-up request can be deferred on the connection.
+
+The successful result attachment contains:
 
 ```json
 {
@@ -122,8 +129,9 @@ For weak or tiny lines it runs a bounded contrast pass and can compare an
 optional PP-OCRv5 recognition model against the PP-OCRv4 primary result. Candidate
 selection only accepts stronger semantic evidence or narrowly supported added
 symbols. The CTC decoder can restore a repeated punctuation mark when a strong
-internal blank valley supports both copies, and can restore a space only when a
-larger timestep gap and the model's space probability agree. These evidence
+internal blank valley supports both copies, and can restore a missing separator only
+when a larger timestep gap and the model's space probability agree. It does not
+infer another space next to whitespace already emitted by CTC. These evidence
 checks recover model omissions without adding arbitrary language-model guesses.
 Detector fragments that share one evidenced visual row are first merged in
 left-to-right order, preventing their opaque overlay rectangles from covering

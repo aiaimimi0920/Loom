@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:DaemonAuthHeaders = @{}
 . (Join-Path $PSScriptRoot "LoomSmokePorts.ps1")
+. (Join-Path $PSScriptRoot "LoomGatewayBrainPlanFixture.ps1")
 
 function Assert-True {
     param(
@@ -328,170 +329,7 @@ try {
     Assert-Equal 0 $daemonVersion.exitCode "packaged loom-daemon.exe --version failed"
     Assert-True ([string]$daemonVersion.output -match "^loom-daemon ") "packaged loom-daemon.exe version output mismatch"
 
-    $gatewayJob = Start-Job -ArgumentList @($gatewayPort, $gatewayReadyPath, $gatewayCapturePath) -ScriptBlock {
-        param(
-            [int]$Port,
-            [string]$ReadyPath,
-            [string]$CapturePath
-        )
-
-        Set-StrictMode -Version Latest
-        $ErrorActionPreference = "Stop"
-        $listener = $null
-        $client = $null
-        $stream = $null
-        $encoding = [System.Text.UTF8Encoding]::new($false)
-        try {
-            $listener = [System.Net.Sockets.TcpListener]::new(
-                [System.Net.IPAddress]::Parse("127.0.0.1"),
-                $Port
-            )
-            $listener.Start()
-            [System.IO.File]::WriteAllText($ReadyPath, "ready", $encoding)
-
-            $client = $listener.AcceptTcpClient()
-            $stream = $client.GetStream()
-            $memory = [System.IO.MemoryStream]::new()
-            $buffer = New-Object byte[] 8192
-            $headerEnd = -1
-            $contentLength = 0
-            $requestText = ""
-            while ($true) {
-                $count = $stream.Read($buffer, 0, $buffer.Length)
-                if ($count -eq 0) {
-                    break
-                }
-                $memory.Write($buffer, 0, $count)
-                $requestText = [System.Text.Encoding]::UTF8.GetString($memory.ToArray())
-                $headerEnd = $requestText.IndexOf("`r`n`r`n", [System.StringComparison]::Ordinal)
-                if ($headerEnd -lt 0) {
-                    continue
-                }
-                $headerText = $requestText.Substring(0, $headerEnd)
-                foreach ($line in ($headerText -split "`r`n")) {
-                    $separator = $line.IndexOf(":", [System.StringComparison]::Ordinal)
-                    if ($separator -gt 0 -and $line.Substring(0, $separator).Trim().ToLowerInvariant() -eq "content-length") {
-                        $contentLength = [int]$line.Substring($separator + 1).Trim()
-                    }
-                }
-                if ($memory.Length -ge ($headerEnd + 4 + $contentLength)) {
-                    break
-                }
-            }
-
-            if ($headerEnd -lt 0) {
-                throw "Gateway fixture received an incomplete HTTP request"
-            }
-            $headerText = $requestText.Substring(0, $headerEnd)
-            $bodyStart = $headerEnd + 4
-            $bodyText = if ($requestText.Length -ge ($bodyStart + $contentLength)) {
-                $requestText.Substring($bodyStart, $contentLength)
-            } else {
-                ""
-            }
-            $lines = $headerText -split "`r`n"
-            $requestParts = $lines[0] -split " "
-            $method = if ($requestParts.Count -gt 0) { $requestParts[0] } else { "" }
-            $path = if ($requestParts.Count -gt 1) { $requestParts[1] } else { "" }
-            $authorization = ""
-            for ($index = 1; $index -lt $lines.Count; $index++) {
-                $separator = $lines[$index].IndexOf(":", [System.StringComparison]::Ordinal)
-                if ($separator -gt 0 -and $lines[$index].Substring(0, $separator).Trim().ToLowerInvariant() -eq "authorization") {
-                    $authorization = $lines[$index].Substring($separator + 1).Trim()
-                }
-            }
-            $payload = $null
-            try {
-                if (-not [string]::IsNullOrWhiteSpace($bodyText)) {
-                    $payload = $bodyText | ConvertFrom-Json
-                }
-            }
-            catch {
-                $payload = $null
-            }
-            $model = if ($null -ne $payload) { [string]$payload.model } else { "" }
-            $messages = @()
-            if ($null -ne $payload -and $null -ne $payload.messages) {
-                $messages = @($payload.messages | ForEach-Object {
-                    [ordered]@{
-                        role = [string]$_.role
-                        content = [string]$_.content
-                    }
-                })
-            }
-            $valid = (
-                $method -eq "POST" -and
-                $path -eq "/v1/chat/completions" -and
-                $authorization -eq "Bearer smoke-token" -and
-                $model -eq "smoke-planner" -and
-                $messages.Count -ge 2
-            )
-            $userContent = if ($messages.Count -ge 2) { [string]$messages[1].content } else { "" }
-            $capture = [ordered]@{
-                valid = [bool]$valid
-                method = $method
-                path = $path
-                authReceived = ($authorization -eq "Bearer smoke-token")
-                model = $model
-                messageRoles = @($messages | ForEach-Object { [string]$_.role })
-                userContent = $userContent
-            }
-            [System.IO.File]::WriteAllText(
-                $CapturePath,
-                ($capture | ConvertTo-Json -Depth 20),
-                $encoding
-            )
-
-            if ($valid) {
-                $assistantContent = '{"summary":"Packaged Gateway plan","steps":["inspect packaged request","execute packaged plan"]}'
-                $responseObject = [ordered]@{
-                    model = "smoke-resolved-model"
-                    choices = @(
-                        [ordered]@{
-                            message = [ordered]@{
-                                role = "assistant"
-                                content = $assistantContent
-                            }
-                        }
-                    )
-                }
-                $statusLine = "200 OK"
-            }
-            else {
-                $responseObject = [ordered]@{
-                    error = [ordered]@{
-                        code = "invalid_smoke_request"
-                        message = "Gateway smoke request did not match the expected contract"
-                    }
-                }
-                $statusLine = "400 Bad Request"
-            }
-            $responseJson = $responseObject | ConvertTo-Json -Depth 20 -Compress
-            $responseBytes = [System.Text.Encoding]::UTF8.GetBytes($responseJson)
-            $responseHeader = "HTTP/1.1 $statusLine`r`nContent-Type: application/json`r`nContent-Length: $($responseBytes.Length)`r`nConnection: close`r`n`r`n"
-            $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($responseHeader)
-            $stream.Write($headerBytes, 0, $headerBytes.Length)
-            $stream.Write($responseBytes, 0, $responseBytes.Length)
-            $stream.Flush()
-        }
-        catch {
-            $errorCapture = [ordered]@{
-                valid = $false
-                error = $_.Exception.Message
-            }
-            [System.IO.File]::WriteAllText(
-                $CapturePath,
-                ($errorCapture | ConvertTo-Json -Depth 10),
-                $encoding
-            )
-            throw
-        }
-        finally {
-            if ($null -ne $stream) { $stream.Dispose() }
-            if ($null -ne $client) { $client.Dispose() }
-            if ($null -ne $listener) { $listener.Stop() }
-        }
-    }
+    $gatewayJob = Start-LoomGatewayBrainPlanFixture -Port $gatewayPort -ReadyPath $gatewayReadyPath -CapturePath $gatewayCapturePath
     Wait-ForPath -Path $gatewayReadyPath -TimeoutSeconds 15 -Job $gatewayJob
 
     $environmentValues = @{
@@ -644,25 +482,7 @@ finally {
     }
 
     try {
-        if ($null -ne $gatewayJob) {
-            if ($gatewayJob.State -eq "Running" -or $gatewayJob.State -eq "NotStarted") {
-                $wakeClient = $null
-                try {
-                    $wakeClient = [System.Net.Sockets.TcpClient]::new()
-                    $wakeClient.Connect("127.0.0.1", $gatewayPort)
-                }
-                catch {
-                }
-                finally {
-                    if ($null -ne $wakeClient) { $wakeClient.Dispose() }
-                }
-                [void](Wait-Job -Job $gatewayJob -Timeout 3 -ErrorAction SilentlyContinue)
-                if ($gatewayJob.State -eq "Running" -or $gatewayJob.State -eq "NotStarted") {
-                    Stop-Job -Job $gatewayJob -ErrorAction SilentlyContinue
-                }
-            }
-            Remove-Job -Job $gatewayJob -Force -ErrorAction SilentlyContinue
-        }
+        Stop-LoomGatewayBrainPlanFixture -Job $gatewayJob -Port $gatewayPort
         $summary.gatewayJobStopped = $true
     }
     catch {

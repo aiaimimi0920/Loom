@@ -31,12 +31,7 @@ export const artWorkspaceItems: ArtWorkspaceItem[] = [
   { id: "security", label: "密钥与安全" },
 ];
 
-const officialFrameworkExecutionTypes = new Set([
-  "process",
-  "cloud_api",
-  "mcp",
-  "workflow",
-]);
+const officialFrameworkExecutionTypes = new Set(["process", "cloud_api", "mcp", "workflow"]);
 
 const officialFrameworkDisplayNames: Readonly<Record<string, string>> = {
   cloud_api: "云端",
@@ -47,7 +42,7 @@ const officialFrameworkDisplayNames: Readonly<Record<string, string>> = {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 
@@ -58,7 +53,11 @@ function nonEmptyString(value: unknown): string | null {
 function artPublisherInitials(value: string): string {
   const words = value.trim().split(/\s+/u).filter(Boolean);
   if (words.length > 1) {
-    return words.slice(0, 2).map((word) => Array.from(word)[0] ?? "").join("").toUpperCase();
+    return words
+      .slice(0, 2)
+      .map((word) => Array.from(word)[0] ?? "")
+      .join("")
+      .toUpperCase();
   }
   return (Array.from(words[0] ?? "Art")[0] ?? "A").toUpperCase();
 }
@@ -70,14 +69,13 @@ function localizedMetadataValue(
   locale: ArtDisplayLocale,
 ): string | null {
   if (!localization) return null;
-  const directLocale = asRecord(localization[locale])
-    ?? asRecord(localization[locale.startsWith("zh") ? "zh" : "en"]);
+  const directLocale = asRecord(localization[locale]) ?? asRecord(localization[locale.startsWith("zh") ? "zh" : "en"]);
   const directValue = nonEmptyString(directLocale?.[fieldName]);
   if (directValue) return directValue;
 
   const values = asRecord(localization[collectionName]);
-  const exactValue = nonEmptyString(values?.[locale])
-    ?? nonEmptyString(values?.[locale.startsWith("zh") ? "zh" : "en"]);
+  const exactValue =
+    nonEmptyString(values?.[locale]) ?? nonEmptyString(values?.[locale.startsWith("zh") ? "zh" : "en"]);
   if (exactValue) return exactValue;
 
   const defaultLocale = nonEmptyString(localization.defaultLocale);
@@ -91,9 +89,7 @@ export function artDisplayLocale(language?: string | null): ArtDisplayLocale {
 export function artPublisherIconSource(icon: string | null | undefined): string | null {
   const normalized = icon?.trim();
   if (!normalized) return null;
-  return /^(?:https:\/\/|data:image\/(?:png|jpe?g|webp|gif);base64,)/iu.test(normalized)
-    ? normalized
-    : null;
+  return /^(?:https:\/\/|data:image\/(?:png|jpe?g|webp|gif);base64,)/iu.test(normalized) ? normalized : null;
 }
 
 export function artPackageIdentity(tool: LoomToolDefinition): string | null {
@@ -115,31 +111,23 @@ export function artDisplayIdentity(
   const art = asRecord(metadata?.art);
   const artPackage = asRecord(metadata?.artPackage);
   const localization = asRecord(metadata?.localization);
-  const publisherId = nonEmptyString(publisher?.id)
-    ?? nonEmptyString(authoring?.owner)
-    ?? "local.user";
-  const publisherName = nonEmptyString(publisher?.name)
-    ?? nonEmptyString(authoring?.owner)
-    ?? (locale === "zh-CN" ? "本地用户" : "Local user");
-  const publisherIcon = nonEmptyString(publisher?.icon)
-    ?? nonEmptyString(metadata?.publisherIcon);
-  const localizedName = localizedMetadataValue(localization, "names", "name", locale)
-    ?? tool.name
-    ?? tool.id;
-  const localizedDescription = localizedMetadataValue(
-    localization,
-    "descriptions",
-    "description",
-    locale,
-  ) ?? tool.description ?? "";
-  const englishName = nonEmptyString(art?.englishName)
-    ?? tool.id;
-  const resolvedGlobalId = [
-    nonEmptyString(art?.globalId),
-    nonEmptyString(artPackage?.globalId),
-    nonEmptyString(metadata?.globalId),
-    nonEmptyString(globalId),
-  ].find((candidate): candidate is string => Boolean(candidate && /^NA\d{11}$/u.test(candidate))) ?? null;
+  const publisherId = nonEmptyString(publisher?.id) ?? nonEmptyString(authoring?.owner) ?? "local.user";
+  const publisherName =
+    nonEmptyString(publisher?.name) ??
+    nonEmptyString(authoring?.owner) ??
+    (locale === "zh-CN" ? "本地用户" : "Local user");
+  const publisherIcon = nonEmptyString(publisher?.icon) ?? nonEmptyString(metadata?.publisherIcon);
+  const localizedName = localizedMetadataValue(localization, "names", "name", locale) ?? tool.name ?? tool.id;
+  const localizedDescription =
+    localizedMetadataValue(localization, "descriptions", "description", locale) ?? tool.description ?? "";
+  const englishName = nonEmptyString(art?.englishName) ?? tool.id;
+  const resolvedGlobalId =
+    [
+      nonEmptyString(art?.globalId),
+      nonEmptyString(artPackage?.globalId),
+      nonEmptyString(metadata?.globalId),
+      nonEmptyString(globalId),
+    ].find((candidate): candidate is string => Boolean(candidate && /^NA\d{11}$/u.test(candidate))) ?? null;
 
   return {
     locale,
@@ -147,9 +135,9 @@ export function artDisplayIdentity(
       id: publisherId,
       name: publisherName,
       icon: publisherIcon,
-      initials: artPublisherInitials(publisherIcon && !artPublisherIconSource(publisherIcon)
-        ? publisherIcon
-        : publisherName),
+      initials: artPublisherInitials(
+        publisherIcon && !artPublisherIconSource(publisherIcon) ? publisherIcon : publisherName,
+      ),
     },
     englishName,
     globalId: resolvedGlobalId,
@@ -162,6 +150,18 @@ export function frameworkIdentity(framework: LoomFramework): string {
   return framework.qualifiedId || framework.id;
 }
 
+export function toggleArtFrameworkFilter(
+  current: ReadonlySet<string> | null,
+  frameworkIds: readonly string[],
+  frameworkId: string,
+): Set<string> | null {
+  const next = current === null ? new Set(frameworkIds) : new Set(current);
+  if (next.has(frameworkId)) next.delete(frameworkId);
+  else next.add(frameworkId);
+  // A selected framework can temporarily disappear from the catalog; equal counts do not prove equal sets.
+  return next.size === frameworkIds.length && frameworkIds.every((id) => next.has(id)) ? null : next;
+}
+
 export function officialFrameworkDisplayName(reference: string | null | undefined): string | null {
   const normalized = reference?.trim();
   if (!normalized) return null;
@@ -170,12 +170,15 @@ export function officialFrameworkDisplayName(reference: string | null | undefine
     : normalized.includes("/")
       ? null
       : normalized;
-  return id ? officialFrameworkDisplayNames[id] ?? null : null;
+  return id ? (officialFrameworkDisplayNames[id] ?? null) : null;
 }
 
 export function frameworkFilterLabel(framework: LoomFramework): string {
   const officialName = officialFrameworkDisplayName(frameworkIdentity(framework));
-  const fallbackName = framework.name.trim().replace(/\s*框架\s*$/u, "").trim();
+  const fallbackName = framework.name
+    .trim()
+    .replace(/\s*框架\s*$/u, "")
+    .trim();
   return officialName ?? (fallbackName || framework.id);
 }
 
@@ -183,24 +186,17 @@ export function artFrameworkReference(tool: LoomToolDefinition): string | null {
   const metadata = asRecord(tool.metadata);
   const dependencies = asRecord(metadata?.dependencies);
   const authoring = asRecord(metadata?.authoring);
-  const metadataReference = nonEmptyString(dependencies?.framework)
-    ?? nonEmptyString(authoring?.frameworkId);
+  const metadataReference = nonEmptyString(dependencies?.framework) ?? nonEmptyString(authoring?.frameworkId);
   if (metadataReference) return metadataReference;
 
   const executionType = nonEmptyString(tool.execution?.type);
   if (executionType === "framework_art") {
     return nonEmptyString(tool.execution?.framework);
   }
-  return executionType && officialFrameworkExecutionTypes.has(executionType)
-    ? executionType
-    : null;
+  return executionType && officialFrameworkExecutionTypes.has(executionType) ? executionType : null;
 }
 
-function frameworkMatchesReference(
-  framework: LoomFramework,
-  reference: string,
-  frameworks: LoomFramework[],
-): boolean {
+function frameworkMatchesReference(framework: LoomFramework, reference: string, frameworks: LoomFramework[]): boolean {
   if (reference === frameworkIdentity(framework)) return true;
   if (reference !== framework.id) return false;
   return frameworks.filter((candidate) => candidate.id === reference).length === 1;
@@ -214,14 +210,13 @@ export function filterToolsByFrameworks(
   if (selectedFrameworkIds === null) return tools;
   if (selectedFrameworkIds.size === 0) return [];
 
-  const selectedFrameworks = frameworks.filter((framework) => (
-    selectedFrameworkIds.has(frameworkIdentity(framework))
-  ));
+  const selectedFrameworks = frameworks.filter((framework) => selectedFrameworkIds.has(frameworkIdentity(framework)));
   return tools.filter((tool) => {
     const reference = artFrameworkReference(tool);
-    return reference !== null && selectedFrameworks.some((framework) => (
-      frameworkMatchesReference(framework, reference, frameworks)
-    ));
+    return (
+      reference !== null &&
+      selectedFrameworks.some((framework) => frameworkMatchesReference(framework, reference, frameworks))
+    );
   });
 }
 
@@ -239,37 +234,30 @@ export function filterArtStoreEntries(
   officialOnly: boolean,
 ): ArtStoreEntry[] {
   const query = searchText.trim().toLocaleLowerCase();
-  const selectedFrameworks = selectedFrameworkIds === null
-    ? null
-    : frameworks.filter((framework) => selectedFrameworkIds.has(frameworkIdentity(framework)));
+  const selectedFrameworks =
+    selectedFrameworkIds === null
+      ? null
+      : frameworks.filter((framework) => selectedFrameworkIds.has(frameworkIdentity(framework)));
 
   return entries.filter((entry) => {
     if (officialOnly && entry.official !== true) return false;
     if (selectedFrameworks !== null) {
       const reference = nonEmptyString(entry.framework);
-      if (!reference || !selectedFrameworks.some((framework) => (
-        frameworkMatchesReference(framework, reference, frameworks)
-      ))) {
+      if (
+        !reference ||
+        !selectedFrameworks.some((framework) => frameworkMatchesReference(framework, reference, frameworks))
+      ) {
         return false;
       }
     }
     if (!query) return true;
-    return [
-      entry.id,
-      entry.qualifiedId,
-      entry.globalId,
-      entry.name,
-      entry.description,
-      entry.framework,
-    ].some((value) => value?.toLocaleLowerCase().includes(query));
+    return [entry.id, entry.qualifiedId, entry.globalId, entry.name, entry.description, entry.framework].some((value) =>
+      value?.toLocaleLowerCase().includes(query),
+    );
   });
 }
 
-export function nextArtWorkspaceIndex(
-  key: string,
-  currentIndex: number,
-  workspaceCount: number,
-): number | null {
+export function nextArtWorkspaceIndex(key: string, currentIndex: number, workspaceCount: number): number | null {
   if (workspaceCount <= 0) return null;
   if (key === "ArrowRight") return (currentIndex + 1) % workspaceCount;
   if (key === "ArrowLeft") return (currentIndex - 1 + workspaceCount) % workspaceCount;

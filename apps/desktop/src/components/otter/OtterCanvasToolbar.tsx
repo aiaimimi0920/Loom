@@ -1,10 +1,8 @@
 // Workflow selection, persistence actions, and viewport controls for the canvas.
 
-import {
-  scaleToSliderValue,
-  sliderValueToScale,
-  type CanvasWorkflowSummary,
-} from "../../services/otterCanvas.ts";
+import { Button, Field, Notice, Range, Select } from "@neuro/ui";
+import { useLayoutEffect, useRef } from "react";
+import { scaleToSliderValue, sliderValueToScale, type CanvasWorkflowSummary } from "../../services/otterCanvas.ts";
 import { LIVE_WORKFLOW_ID, type StatusMessage } from "./otterCanvasThumbnailModel.ts";
 import { MAX_SCALE, MIN_SCALE } from "./useOtterCanvasViewport.ts";
 
@@ -45,80 +43,88 @@ export function OtterCanvasToolbar({
   onScaleChange,
   onToggleMinimap,
 }: OtterCanvasToolbarProps) {
+  const workflowSelect = useRef<HTMLSelectElement>(null);
+  const focusAfterDelete = useRef(false);
+  useLayoutEffect(() => {
+    if (workflowBusy || !focusAfterDelete.current) return;
+    focusAfterDelete.current = false;
+    if (isLive) workflowSelect.current?.focus();
+  }, [isLive, workflowBusy]);
   return (
     <div className="otter-canvas-toolbar">
-      <label className="otter-canvas-workflow-select">
-        <span className="otter-canvas-workflow-select__label">工作流</span>
-        <select value={selectedWorkflow} onChange={(event) => onWorkflowChange(event.target.value)}>
-          <option value={LIVE_WORKFLOW_ID}>桌面同步</option>
-          {workflows.map((workflow) => (
-            <option key={workflow.id} value={workflow.id}>
-              {workflow.name}（{workflow.nodeCount} 节点）
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="otter-canvas-workflow-select">
+        <Field label="工作流">
+          <Select
+            ref={workflowSelect}
+            value={selectedWorkflow}
+            onChange={(event) => {
+              focusAfterDelete.current = false;
+              onWorkflowChange(event.target.value);
+            }}
+          >
+            <option value={LIVE_WORKFLOW_ID}>桌面同步</option>
+            {workflows.map((workflow) => (
+              <option key={workflow.id} value={workflow.id}>
+                {workflow.name}（{workflow.nodeCount} 节点）
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
       {!isLive ? (
         <div className="otter-canvas-workflow-actions">
-          <button className="ghost-button" type="button" onClick={onRename} disabled={workflowBusy}>
+          <Button variant="quiet" onClick={onRename} disabled={workflowBusy}>
             重命名
-          </button>
-          <button
-            className="ghost-button otter-canvas-workflow-delete"
-            type="button"
-            onClick={onDelete}
+          </Button>
+          <Button
+            variant="danger"
+            onClick={() => {
+              focusAfterDelete.current = true;
+              onDelete();
+            }}
             disabled={workflowBusy}
           >
             删除
-          </button>
+          </Button>
         </div>
       ) : null}
       {hasNodes ? (
         <div className="otter-canvas-toolbar__controls">
           {isLive ? (
-            <button
-              className="signal-button otter-canvas-save-workflow"
-              type="button"
+            <Button
+              variant="primary"
+              className="otter-canvas-save-workflow"
+              loading={saving}
               onClick={onSave}
               disabled={saving || !canSave}
             >
-              {saving ? "保存中" : "保存为工作流"}
-            </button>
+              保存为工作流
+            </Button>
           ) : null}
-          <label className="otter-canvas-zoom">
-            <span className="otter-canvas-zoom__label">缩放</span>
-            <input
-              className="otter-canvas-zoom__slider"
-              type="range"
-              min={0}
-              max={1000}
-              step={1}
-              value={scaleToSliderValue(scale, MIN_SCALE, MAX_SCALE)}
-              onChange={(event) => onScaleChange(
-                sliderValueToScale(Number(event.target.value), MIN_SCALE, MAX_SCALE),
-              )}
-              aria-label="画布缩放"
-              aria-valuetext={`${Math.round(scale * 100)}%`}
-            />
+          <div className="otter-canvas-zoom">
+            <Field label="缩放">
+              <Range
+                className="otter-canvas-zoom__slider"
+                min={0}
+                max={1000}
+                step={1}
+                value={scaleToSliderValue(scale, MIN_SCALE, MAX_SCALE)}
+                onChange={(event) =>
+                  onScaleChange(sliderValueToScale(Number(event.target.value), MIN_SCALE, MAX_SCALE))
+                }
+                aria-label="画布缩放"
+                aria-valuetext={`${Math.round(scale * 100)}%`}
+              />
+            </Field>
             <span className="otter-canvas-zoom__value">{Math.round(scale * 100)}%</span>
-          </label>
-          <button
-            className="ghost-button otter-canvas-minimap-toggle"
-            type="button"
-            onClick={onToggleMinimap}
-            aria-pressed={showMinimap}
-          >
-            {showMinimap ? "隐藏缩略图" : "显示缩略图"}
-          </button>
-          {isLive && saveMessage ? (
-            <span
-              className={saveMessage.ok ? "success-text" : "error-text"}
-              role={saveMessage.ok ? "status" : "alert"}
-            >
-              {saveMessage.text}
-            </span>
-          ) : null}
+          </div>
+          <Button onClick={onToggleMinimap} aria-pressed={showMinimap}>
+            缩略图
+          </Button>
         </div>
+      ) : null}
+      {isLive && hasNodes && saveMessage ? (
+        <Notice tone={saveMessage.ok ? "success" : "danger"}>{saveMessage.text}</Notice>
       ) : null}
     </div>
   );

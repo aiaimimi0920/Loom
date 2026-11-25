@@ -7,6 +7,9 @@ Implementation, configuration and executable tests remain the source of truth.
 
 - [Product, desktop, daemon and CLI](../README.md): startup, configuration,
   installation, Otter synchronization, request concurrency and run persistence.
+- [Otter display language](../README.md#otter-display-language): select an
+  approved receiver, inspect its reported language, and confirm the exact request
+  without an offline queue or a separate Loom-side language override.
 - [Architecture](ARCHITECTURE.md): runtime ownership, package boundaries,
   durable events, memory and workflow contracts.
 - [Development manual](DEVELOPMENT.md) and [contribution guide](../CONTRIBUTING.md):

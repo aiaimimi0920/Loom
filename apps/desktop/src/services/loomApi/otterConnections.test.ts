@@ -30,3 +30,24 @@ test("connection list surfaces authentication errors instead of fabricating an e
   context.mock.method(globalThis, "fetch", async () => new Response("denied", { status: 401 }));
   await assert.rejects(loadOtterConnections("http://localhost:8765"));
 });
+
+test("LAN approval is a current policy and preserves the explicit password update boundary", async (context) => {
+  context.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
+    assert.equal(new URL(url).pathname, "/v1/otter/connections/policy");
+    assert.deepEqual(JSON.parse(String(options.body)), {
+      name: "Loom",
+      discoverable: false,
+      endpoint: null,
+      approval: "lan",
+      password: "fixture-password",
+    });
+    return Response.json({});
+  });
+  await saveOtterConnectionPolicy("http://localhost:8765", {
+    name: "Loom",
+    discoverable: false,
+    endpoint: null,
+    approval: "lan",
+    password: "fixture-password",
+  });
+});

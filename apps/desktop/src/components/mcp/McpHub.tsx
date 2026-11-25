@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { TabsRoot } from "@neuro/ui";
 
 import { normalizeHttpsExternalUrl } from "../../services/externalUrl";
 import {
@@ -171,7 +172,6 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
       return;
     }
 
-    setEditor(null);
     try {
       await refresh();
     } catch (error) {
@@ -200,6 +200,8 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
       serverOperationRef.current = false;
       setBusyServerId(null);
       setBusyMarketplaceId(null);
+      // Return focus only after the opening action is enabled again.
+      setEditor(null);
     }
   };
 
@@ -258,16 +260,19 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     if (serverOperationRef.current) return;
     serverOperationRef.current = true;
     setBusyServerId(server.id);
+    let updated = false;
     try {
       await updateMcpServerCredentials(baseUrl, server.id, values, clear);
+      updated = true;
       notify("info", `${server.name} 的凭据已更新。`);
-      setCredentialServer(null);
       await refresh();
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "无法保存 MCP 凭据。");
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
+      // A successful mutation still closes if its follow-up refresh fails.
+      if (updated) setCredentialServer(null);
     }
   };
 
@@ -301,74 +306,75 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   }, [marketPage, marketTotalPages]);
 
   return (
-    <section className="art-hub mcp-hub" aria-label="MCP">
-      <McpHubToolbar
-        activeWorkspace={activeWorkspace}
-        operationBusy={operationBusy}
-        serviceSearchText={serviceSearchText}
-        storeSearchText={storeSearchText}
-        marketCategory={marketCategory}
-        onWorkspaceChange={setActiveWorkspace}
-        onServiceSearchChange={setServiceSearchText}
-        onStoreSearchChange={setStoreSearchText}
-        onMarketCategoryChange={(category) => {
-          setMarketCategory(category);
-          setMarketPage(1);
-        }}
-        onInstallPackageFile={installPackageFile}
-        onOpenEditor={setEditor}
-      />
-      <McpServicesPanel
-        hidden={activeWorkspace !== "services"}
-        servers={filteredServers}
-        testSnapshots={testSnapshots}
-        busyServerId={busyServerId}
-        operationBusy={operationBusy}
-        onEdit={(server) => setEditor({ mode: "edit", server })}
-        onCredentials={setCredentialServer}
-        onTest={(server) => void testServer(server)}
-        onToggle={(server) => void toggleServer(server)}
-        onRemove={(server) => void removeServer(server)}
-      />
-      <McpStorePanel
-        hidden={activeWorkspace !== "store"}
-        marketServers={pagedMarketServers}
-        installedServers={servers}
-        testSnapshots={testSnapshots}
-        busyServerId={busyServerId}
-        busyMarketplaceId={busyMarketplaceId}
-        operationBusy={operationBusy}
-        filteredCount={filteredMarketServers.length}
-        totalPages={marketTotalPages}
-        currentPage={resolvedMarketPage}
-        paginationItems={paginationItems}
-        onPageChange={setMarketPage}
-        onOpenSource={(marketItem) => void openMarketplaceSource(marketItem)}
-        onConfigure={(marketItem, server) => setEditor({ mode: "install", server, marketItem })}
-        onInstall={(marketItem) => void installMarketplaceServer(marketItem)}
-        onTest={(server) => void testServer(server)}
-      />
-      <McpServerDialog
-        editor={editor}
-        busy={editorBusy}
-        onClose={closeEditor}
-        onSave={async (server) => {
-          setEditorBusy(true);
-          try {
-            await persistServer(server, editor?.mode === "install" || editor?.mode === "link");
-          } finally {
-            setEditorBusy(false);
-          }
-        }}
-      />
-      <McpCredentialDialog
-        server={credentialServer}
-        busy={credentialServer ? busyServerId === credentialServer.id : false}
-        onClose={closeCredentialDialog}
-        onSave={async (values, clear) => {
-          if (credentialServer) await saveCredentials(credentialServer, values, clear);
-        }}
-      />
-    </section>
+    <TabsRoot asChild value={activeWorkspace} onValueChange={value => setActiveWorkspace(value as McpWorkspaceId)}>
+      <section className="art-hub mcp-hub" aria-label="MCP">
+        <McpHubToolbar
+          activeWorkspace={activeWorkspace}
+          operationBusy={operationBusy}
+          serviceSearchText={serviceSearchText}
+          storeSearchText={storeSearchText}
+          marketCategory={marketCategory}
+          onServiceSearchChange={setServiceSearchText}
+          onStoreSearchChange={setStoreSearchText}
+          onMarketCategoryChange={(category) => {
+            setMarketCategory(category);
+            setMarketPage(1);
+          }}
+          onInstallPackageFile={installPackageFile}
+          onOpenEditor={setEditor}
+        />
+        <McpServicesPanel
+          hidden={activeWorkspace !== "services"}
+          servers={filteredServers}
+          testSnapshots={testSnapshots}
+          busyServerId={busyServerId}
+          operationBusy={operationBusy}
+          onEdit={(server) => setEditor({ mode: "edit", server })}
+          onCredentials={setCredentialServer}
+          onTest={(server) => void testServer(server)}
+          onToggle={(server) => void toggleServer(server)}
+          onRemove={(server) => void removeServer(server)}
+        />
+        <McpStorePanel
+          hidden={activeWorkspace !== "store"}
+          marketServers={pagedMarketServers}
+          installedServers={servers}
+          testSnapshots={testSnapshots}
+          busyServerId={busyServerId}
+          busyMarketplaceId={busyMarketplaceId}
+          operationBusy={operationBusy}
+          filteredCount={filteredMarketServers.length}
+          totalPages={marketTotalPages}
+          currentPage={resolvedMarketPage}
+          paginationItems={paginationItems}
+          onPageChange={setMarketPage}
+          onOpenSource={(marketItem) => void openMarketplaceSource(marketItem)}
+          onConfigure={(marketItem, server) => setEditor({ mode: "install", server, marketItem })}
+          onInstall={(marketItem) => void installMarketplaceServer(marketItem)}
+          onTest={(server) => void testServer(server)}
+        />
+        <McpServerDialog
+          editor={editor}
+          busy={editorBusy}
+          onClose={closeEditor}
+          onSave={async (server) => {
+            setEditorBusy(true);
+            try {
+              await persistServer(server, editor?.mode === "install" || editor?.mode === "link");
+            } finally {
+              setEditorBusy(false);
+            }
+          }}
+        />
+        <McpCredentialDialog
+          server={credentialServer}
+          busy={credentialServer ? busyServerId === credentialServer.id : false}
+          onClose={closeCredentialDialog}
+          onSave={async (values, clear) => {
+            if (credentialServer) await saveCredentials(credentialServer, values, clear);
+          }}
+        />
+      </section>
+    </TabsRoot>
   );
 }

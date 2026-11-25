@@ -60,6 +60,32 @@ fn otter_bridge_liveness_completed_work_renews_idle_budget() {
 }
 
 #[test]
+fn otter_bridge_pending_extension_defers_one_text_and_answers_ping() {
+    use tungstenite::Message;
+
+    let (complete_tx, complete_rx) = mpsc::channel();
+    let (mut client, worker) = otter_liveness_socket(move |mut socket| {
+        let mut deferred = None;
+        let response = wait_otter_extension_command(
+            &mut socket,
+            &AtomicBool::new(false),
+            &mut deferred,
+            move |_| {
+                complete_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                "result"
+            },
+        );
+        assert_eq!(response, Some("result"));
+        assert_eq!(deferred.unwrap().into_text().unwrap(), "follow-up");
+    });
+    client.send(Message::Text("follow-up".into())).unwrap();
+    client.send(Message::Ping(vec![7])).unwrap();
+    assert_eq!(client.read().unwrap(), Message::Pong(vec![7]));
+    complete_tx.send(()).unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
 fn otter_bridge_liveness_read_deadline_yields_under_fragment_trickle() {
     use tungstenite::protocol::frame::{
         coding::{Data, OpCode},

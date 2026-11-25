@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button, CopyButton, Input, Notice, Stack } from "@neuro/ui";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { accountError, accountRequest, type AccountView } from "../../services/accountLogin";
 
@@ -58,31 +59,34 @@ export function AccountSettingsPanel({ baseUrl }: { baseUrl: string }) {
   }
 
   return (
-    <section className="settings-general-panel" aria-label="Loom 账号">
+    <section className="settings-general-panel settings-account-panel" aria-label="Loom 账号">
       <header className="settings-general-panel__header"><strong>账号与设备</strong></header>
       {view.status === "signed_out" && <>
-        <p>在 Loom 登录后，为本机建立统一的账号与设备身份。</p>
-        <label className="settings-network-row"><span>账号服务地址</span><input className="studio-input" aria-label="账号服务地址" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder="https://你的平台地址" disabled={busy} /></label>
-        <label className="settings-network-row"><span>设备名称</span><input className="studio-input" aria-label="设备名称" value={deviceName} maxLength={80} onChange={(event) => setDeviceName(event.target.value)} disabled={busy} /></label>
-        <button className="primary-button" disabled={busy || !origin.trim() || !deviceName.trim()} onClick={() => void perform("start", { origin, deviceName })}>登录账号</button>
-        {view.remoteRevoked === false && <p role="status">已退出并清除本机凭据；账号服务暂不可达，中心设备记录尚未删除。</p>}
+        <label className="settings-network-row"><span>账号服务地址</span><Input aria-label="账号服务地址" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder="https://你的平台地址" disabled={busy} /></label>
+        <label className="settings-network-row"><span>设备名称</span><Input aria-label="设备名称" value={deviceName} maxLength={80} onChange={(event) => setDeviceName(event.target.value)} disabled={busy} /></label>
+        <Stack horizontal><Button compact variant="primary" disabled={busy || !origin.trim() || !deviceName.trim()} onClick={() => void perform("start", { origin, deviceName })}>登录账号</Button></Stack>
+        {view.remoteRevoked === false && <Notice tone="warning">已退出并清除本机凭据；账号服务暂不可达，中心设备记录尚未删除。</Notice>}
       </>}
       {view.status === "pending" && <>
         <p>请在浏览器完成登录，并核对校验码：<code>{view.fingerprint}</code></p>
         <p>账号服务：{view.origin}</p>
-        <button className="primary-button" onClick={() => void openAuthorization()}>在浏览器中继续</button>
-        <button className="ghost-button" onClick={() => void navigator.clipboard.writeText(view.authorizationUrl).catch(() => setError("无法复制登录地址。"))}>复制登录地址</button>
-        <button className="ghost-button" disabled={busy} onClick={() => void perform("logout")}>取消登录</button>
+        <Stack horizontal>
+          <Button compact variant="primary" onClick={() => void openAuthorization()}>在浏览器中继续</Button>
+          <CopyButton compact label="复制登录地址" errorLabel="无法复制登录地址。" onCopy={() => navigator.clipboard.writeText(view.authorizationUrl)}>复制登录地址</CopyButton>
+          <Button compact disabled={busy} onClick={() => void perform("logout")}>取消登录</Button>
+        </Stack>
       </>}
       {view.status === "signed_in" && <>
         <p>已登录：{view.session.username || view.session.accountId}</p>
         <p>设备：{view.session.deviceName}</p>
         <p>账号服务：{view.origin}</p>
-        <button className="ghost-button" disabled={busy} onClick={() => void perform("refresh")}>检查登录状态</button>
-        <button className="ghost-button" disabled={busy} onClick={() => void perform("logout")}>退出登录</button>
+        <Stack horizontal>
+          <Button compact disabled={busy} onClick={() => void perform("refresh")}>检查登录状态</Button>
+          <Button compact disabled={busy} onClick={() => void perform("logout")}>退出登录</Button>
+        </Stack>
       </>}
-      {busy && <p role="status">正在处理账号请求...</p>}
-      {error && <p role="alert">{error}</p>}
+      {busy && <Notice>正在处理账号请求...</Notice>}
+      {error && <Notice tone="danger">{error}</Notice>}
     </section>
   );
 }

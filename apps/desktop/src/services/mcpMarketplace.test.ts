@@ -288,7 +288,10 @@ test("matches installed Registry services by stable id instead of display name",
 });
 
 test("presents MCP as service and store workspaces with real install actions", () => {
-  assert.match(hubSource, /role="tablist" aria-label="MCP 工作区"/);
+  assert.match(hubSource, /<TabsRoot asChild value=\{activeWorkspace\}/);
+  assert.match(hubSource, /<TabList label="MCP 工作区"/);
+  assert.match(hubSource, /<TabPanel\s+value="services"\s+forceMount/);
+  assert.match(hubSource, /<TabPanel\s+value="store"\s+forceMount/);
   assert.match(hubSource, /id: "services", label: "服务"/);
   assert.match(hubSource, /id: "store", label: "商店"/);
   assert.doesNotMatch(hubSource, /fetchMcpRegistry\(baseUrl/);
@@ -301,7 +304,7 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(hubSource, /mode: "link", server: createRemoteMcpDraft\(\)/);
   assert.match(hubSource, /transport: "streamable-http"/);
   assert.match(hubSource, /editor\?\.mode === "install" \|\| editor\?\.mode === "link"/);
-  assert.match(hubSource, /aria-busy=\{busyMarketplaceId === marketItem\.id\}/);
+  assert.match(hubSource, /loading=\{busyMarketplaceId === marketItem\.id\}/);
   assert.doesNotMatch(hubSource, /图片搜索手工测试流|MCP 包兼容|安装命令预览/);
   assert.match(hubSource, /远程 · Streamable HTTP/);
   assert.match(hubSource, /findInstalledMcpServer\(installedServers, marketItem\)/);
@@ -323,17 +326,22 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(hubSource, /configuredSnapshot\?\.status === "success"/);
   assert.match(hubSource, /"已连接"/);
   assert.doesNotMatch(hubSource, /加载更多|mcp-hub__load-more/);
-  assert.match(styleSource, /\.mcp-hub__tabs\s*\{[\s\S]*?grid-template-columns: repeat\(2/);
+  assert.doesNotMatch(hubSource, /mcp-hub__tab(?:s|--active)|role="tab"/);
   assert.doesNotMatch(hubSource, /mcp-hub__notice/);
   assert.match(styleSource, /\.mcp-card-grid\s*\{[\s\S]*?repeat\(auto-fill, minmax\(min\(100%, 240px\), 1fr\)\)/);
-  assert.match(styleSource, /\.mcp-service-card\.art-registry-card--enabled\s*\{[\s\S]*?var\(--loom-theme-panel\)/);
-  assert.match(styleSource, /\.mcp-store-card \.art-store-card__description\s*\{[\s\S]*?var\(--loom-theme-text\)/);
+  assert.match(hubSource, /<Panel[\s\S]*?className="mcp-card mcp-service-card"/);
+  assert.match(hubSource, /data-state=\{enabled \? "enabled" : "disabled"\}/);
+  assert.match(hubSource, /<Panel\s+className="mcp-card mcp-store-card"/);
+  assert.doesNotMatch(hubSource, /glass-card|art-registry-card|art-store-card|mcp-service-card__test-dot/);
+  assert.match(styleSource, /\.mcp-card\s*\{[\s\S]*?min-height: 210px;[\s\S]*?grid-template-rows: auto 1fr auto;/);
   assert.match(styleSource, /\.mcp-hub__toolbar\s*\{[\s\S]*?flex-wrap: wrap;[\s\S]*?overflow-x: clip;/);
-  assert.match(styleSource, /\.mcp-store-card \.art-store-card__description\s*\{[\s\S]*?min-height: 3em;[\s\S]*?-webkit-line-clamp: 2;/);
-  assert.match(styleSource, /\.mcp-store-card__actions \.mcp-store-card__install\s*\{[\s\S]*?min-width: 56px;/);
+  assert.match(styleSource, /\.mcp-card__description\s*\{[\s\S]*?min-height: 3em;[\s\S]*?-webkit-line-clamp: 2;/);
   assert.match(styleSource, /\.mcp-hub__pagination\s*\{[\s\S]*?justify-content: space-between;/);
-  assert.match(styleSource, /\.mcp-hub :is\(button, input, select, textarea\):focus-visible[\s\S]*?var\(--loom-theme-accent-text\)/);
-  assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.mcp-busy-indicator/);
+  // Focus, loading geometry and reduced motion are owned by the consumed package.
+  const controls = readFileSync(new URL(import.meta.resolve("@neuro/ui/styles.css")), "utf8");
+  assert.match(controls, /\.neuro-root :where\(button,[^\n]*\):focus-visible \{ outline: 2px solid var\(--n-signal\)/);
+  assert.match(controls, /prefers-reduced-motion/);
+  assert.match(controls, /\.n-loading \.n-button-label\s*\{[^}]*opacity: 0/);
 });
 
 test("renders MCP packages as independently managed services", () => {
@@ -346,5 +354,6 @@ test("renders MCP packages as independently managed services", () => {
   assert.match(hubSource, /await deleteMcpServer\(baseUrl, server\.id\)/);
   assert.match(hubSource, /被 \{server\.usageCount\} 个 Art 使用/);
   assert.match(hubSource, /凭据由 Loom CredentialStore 加密保存/);
-  assert.match(credentialDialogSource, /if \(!focusInsideDialog\)[\s\S]*?\(event\.shiftKey \? last : first\)\.focus\(\)/);
+  assert.match(credentialDialogSource, /<Dialog\s+open\s+title="配置 MCP 凭据"[\s\S]*?busy=\{busy\}\s+initialFocusRef=\{firstInputRef\}/);
+  assert.doesNotMatch(credentialDialogSource, /createPortal|document\.body\.style\.overflow|addEventListener\("keydown"/);
 });

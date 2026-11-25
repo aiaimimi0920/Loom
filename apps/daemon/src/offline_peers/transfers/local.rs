@@ -30,6 +30,9 @@ impl OfflinePeers {
         if operation == "create" {
             return self.create_transfer(&actor, parse_transfer(&request.body)?, registry);
         }
+        if operation == "import" {
+            return self.import_shared(&actor, parse_transfer(&request.body)?, registry);
+        }
         let body: Value = parse_transfer(&request.body)?;
         if operation == "inbox" {
             let state = self
@@ -208,6 +211,10 @@ impl OfflinePeers {
 }
 
 pub(super) fn remote_call(record: &Record, action: &str, operation: &str, input: Value) -> Value {
+    if record.shared_source && action == "receiver" {
+        return json!({"action":"share", "body":{"envelope":record.envelope, "targetId":record.target_id,
+            "targetEpoch":record.target_epoch,"sourceEpoch":record.source_epoch,"operation":operation,"input":input}});
+    }
     json!({"action": action, "body": {"projectionId": record.envelope.projection_id,
         "sourceEpoch": record.source_epoch, "targetId": record.target_id, "targetEpoch": record.target_epoch,
         "operation": operation, "input": input}})

@@ -11,14 +11,40 @@ fn managed_devices_response(
     let mut store = device_registry
         .lock()
         .map_err(|_| anyhow::anyhow!("device registry is unavailable"))?;
-    store.expire_pending_pairings(unix_time_millis())?;
+    let now = unix_time_millis();
+    store.expire_pending_pairings(now)?;
     let mut devices = Vec::new();
     let mut pending = Vec::new();
     for device in store.devices.values().cloned() {
-        if device.approval == "pending" {
-            pending.push(device);
+        // 在线是近期经过认证的活动，不是持久化的“曾连接”标记或尚未过期的凭据。
+        let activity = store
+            .sessions
+            .values()
+            .filter(|session| {
+                session.device_id == device.id
+                    && session.session_epoch == device.session_epoch
+                    && session.expires_at_ms > now
+                    && !session.revoked.load(Ordering::SeqCst)
+            })
+            .map(|session| session.last_activity_at_ms)
+            .max();
+        let online = device.is_local
+            || (device.enabled
+                && device.approval == "approved"
+                && device.public_key.is_some()
+                && activity.is_some_and(|at| now.saturating_sub(at) < 30_000));
+        let mut entry = serde_json::to_value(&device)?;
+        entry["online"] = json!(online);
+        entry["lastSeenAt"] = json!(activity.or(device.last_seen_at));
+        entry["locale"] = if device.enabled && device.approval == "approved" {
+            serde_json::to_value(store.locales.view(&device.id, device.session_epoch, now))?
         } else {
-            devices.push(device);
+            serde_json::Value::Null
+        };
+        if device.approval == "pending" {
+            pending.push(entry);
+        } else {
+            devices.push(entry);
         }
     }
     Ok((
