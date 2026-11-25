@@ -4,12 +4,12 @@ Loom 的 React 表现层使用独立 `NeuroDesign` 仓库中的 `@neuro/ui`，�
 
 ## 本地依赖与构建
 
-设计系统位于 `C:\Users\Public\nas_home\NeuroDesign`，应用 `apps/desktop/package.json` 使用 `file:../../../../../../NeuroDesign/packages/react/neuro-ui`。新机器及 CI 应同时检出设计系统，保持相对目录关系，先安装并构建库，再安装应用依赖。
+设计系统位于 `C:\Users\Public\nas_home\NeuroDesign`，Loom 位于 `C:\Users\Public\Project\Loom`，应用 `apps/desktop/package.json` 使用 `file:../../../../nas_home/NeuroDesign/packages/react/neuro-ui`。新机器及 CI 应同时检出设计系统，保持相对目录关系，先安装并构建库，再安装应用依赖。
 
 在设计系统安装开发依赖后，首次接入或检出路径变化时，先在 Loom 的 `apps/desktop` 执行：
 
 ```powershell
-npx --yes npm@11 install --install-links --ignore-scripts --prefer-offline --no-audit --no-fund @neuro/ui@file:../../../../../../NeuroDesign/packages/react/neuro-ui
+npx --yes npm@11 install --install-links --ignore-scripts --prefer-offline --no-audit --no-fund @neuro/ui@file:../../../../nas_home/NeuroDesign/packages/react/neuro-ui
 ```
 
 核对 manifest、lockfile 的根依赖与本地包 `resolved` 均为新路径，且外部包锁定版本未变化。`.npmrc` 保持 `install-links=true`；仅路径改变时元数据可能不变，不能只靠 `ui:sync` 更新安装地址。随后日常同步执行：
@@ -26,7 +26,7 @@ npm test
 
 The four desktop UI jobs (`ci.yml/windows`, `build-windows.yml/build`,
 `release-tag.yml/release`, and `compile-windows.yml/compile`) check out Loom at
-`AI/GameEditor/Neuro/Loom` and public `aiaimimi0920/NeuroDesign` at `NeuroDesign`,
+`Project/Loom` and public `aiaimimi0920/NeuroDesign` at `nas_home/NeuroDesign`,
 pinned to `02420e8d129cf952c6bee3cda96ab7ebc95c2d67`. Both checkouts disable
 credential persistence. The application manifest and lockfile remain unchanged.
 

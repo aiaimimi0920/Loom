@@ -21,12 +21,12 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: AI/GameEditor/Neuro/Loom
+        working-directory: Project/Loom
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          path: AI/GameEditor/Neuro/Loom
+          path: Project/Loom
           persist-credentials: false
 
       - name: Checkout Neuro UI source
@@ -34,7 +34,7 @@ jobs:
         with:
           repository: aiaimimi0920/NeuroDesign
           ref: 02420e8d129cf952c6bee3cda96ab7ebc95c2d67
-          path: NeuroDesign
+          path: nas_home/NeuroDesign
           persist-credentials: false
 
       - name: Setup Node.js
@@ -52,29 +52,29 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
-            AI/GameEditor/Neuro/Loom -> target
-            AI/GameEditor/Neuro/Loom/apps/desktop/src-tauri -> target
+            Project/Loom -> target
+            Project/Loom/apps/desktop/src-tauri -> target
 
       - name: Check compilation workflow contracts
         run: node --test scripts/tests/neuro-ui-ci-layout.test.cjs scripts/tests/windows-compilation.test.cjs
 
       - name: Install Neuro UI dependencies
-        working-directory: NeuroDesign
+        working-directory: nas_home/NeuroDesign
         run: npm ci --no-audit --no-fund
 
       - name: Build Neuro UI library
-        working-directory: NeuroDesign
+        working-directory: nas_home/NeuroDesign
         run: node scripts/build.mjs --library --theme neuro
 
       - name: Install desktop dependencies
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm ci --no-audit --no-fund
 
       - name: Compile daemon and command line executables
         run: cargo build --locked --release -p loom-daemon -p loom-cli -p loom-plugin-cli
 
       - name: Compile desktop executable without bundling
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm run tauri build -- --no-bundle -- --locked
 
       - name: Record exact-commit compilation evidence
@@ -112,5 +112,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: loom-windows-compilation-${{ github.sha }}
-          path: AI/GameEditor/Neuro/Loom/artifacts/compilation.json
+          path: Project/Loom/artifacts/compilation.json
           if-no-files-found: error

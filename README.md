@@ -826,7 +826,7 @@ release boundary remains available through the explicit `-OutputRoot` option:
 
 .\scripts\build-release.ps1 `
   -VersionId parent-release `
-  -OutputRoot C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom
+  -OutputRoot C:\Users\Public\Project\Release\Loom
 ```
 
 Each candidate contains the desktop payload under one visible entry:

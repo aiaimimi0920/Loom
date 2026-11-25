@@ -20,14 +20,14 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: AI/GameEditor/Neuro/Loom
+        working-directory: Project/Loom
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           # The effective-line ratchet verifies its recorded source commit and tree.
           fetch-depth: 0
-          path: AI/GameEditor/Neuro/Loom
+          path: Project/Loom
           persist-credentials: false
 
       - name: Checkout Neuro UI source
@@ -35,7 +35,7 @@ jobs:
         with:
           repository: aiaimimi0920/NeuroDesign
           ref: 02420e8d129cf952c6bee3cda96ab7ebc95c2d67
-          path: NeuroDesign
+          path: nas_home/NeuroDesign
           persist-credentials: false
 
       - name: Setup Node.js
@@ -66,7 +66,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: loom-effective-code-lines
-          path: AI/GameEditor/Neuro/Loom/artifacts/effective-code-lines.json
+          path: Project/Loom/artifacts/effective-code-lines.json
           if-no-files-found: error
 
       - name: Setup Rust
@@ -78,9 +78,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
-            AI/GameEditor/Neuro/Loom -> target
-            AI/GameEditor/Neuro/Loom/apps/desktop/src-tauri -> target
-            AI/GameEditor/Neuro/Loom/framework-packages/runtime-host -> target
+            Project/Loom -> target
+            Project/Loom/apps/desktop/src-tauri -> target
+            Project/Loom/framework-packages/runtime-host -> target
 
       - name: Validate standalone layout before generated output
         shell: powershell
@@ -110,15 +110,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Neuro UI dependencies
-        working-directory: NeuroDesign
+        working-directory: nas_home/NeuroDesign
         run: npm ci --no-audit --no-fund
 
       - name: Build Neuro UI library
-        working-directory: NeuroDesign
+        working-directory: nas_home/NeuroDesign
         run: node scripts/build.mjs --library --theme neuro
 
       - name: Install desktop dependencies
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm ci --no-audit --no-fund
 
       - name: Format Rust workspace
@@ -139,15 +139,15 @@ jobs:
             -CommandArguments @("test", "--locked", "--workspace", "--", "--test-threads=1")
 
       - name: Typecheck desktop frontend
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm run typecheck
 
       - name: Test desktop frontend services
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm test
 
       - name: Build desktop frontend
-        working-directory: AI/GameEditor/Neuro/Loom/apps/desktop
+        working-directory: Project/Loom/apps/desktop
         run: npm run build
 
       - name: Check Tauri wrapper
@@ -189,7 +189,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: quality-windows-${{ github.run_id }}
-          path: AI/GameEditor/Neuro/Loom/artifacts/quality
+          path: Project/Loom/artifacts/quality
           if-no-files-found: error
 
   linux:

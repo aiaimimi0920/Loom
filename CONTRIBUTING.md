@@ -120,7 +120,7 @@ checkout can provide its required destination explicitly:
 .\scripts\build-release.ps1 -VersionId local-check
 .\scripts\build-release.ps1 `
   -VersionId parent-check `
-  -OutputRoot C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom
+  -OutputRoot C:\Users\Public\Project\Release\Loom
 ```
 
 The Windows desktop candidate has exactly one user-facing executable at its

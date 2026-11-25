@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "ui:sync": "node ../../../../../../NeuroDesign/scripts/sync-consumer.mjs --package @neuro/ui",
+    "ui:sync": "node ../../../../nas_home/NeuroDesign/scripts/sync-consumer.mjs --package @neuro/ui",
     "dev": "rsbuild dev --port 1423",
     "test": "node --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "build": "rsbuild build",
@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@neuro/ui": "file:../../../../../../NeuroDesign/packages/react/neuro-ui",
+    "@neuro/ui": "file:../../../../nas_home/NeuroDesign/packages/react/neuro-ui",
     "@tauri-apps/api": "2.12.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

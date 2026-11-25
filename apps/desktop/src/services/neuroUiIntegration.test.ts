@@ -5,8 +5,8 @@ import test from "node:test";
 
 test("consumes the independent local UI package without a second React instance", () => {
   const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(manifest.dependencies["@neuro/ui"], "file:../../../../../../NeuroDesign/packages/react/neuro-ui");
-  assert.equal(manifest.scripts["ui:sync"], "node ../../../../../../NeuroDesign/scripts/sync-consumer.mjs --package @neuro/ui");
+  assert.equal(manifest.dependencies["@neuro/ui"], "file:../../../../nas_home/NeuroDesign/packages/react/neuro-ui");
+  assert.equal(manifest.scripts["ui:sync"], "node ../../../../nas_home/NeuroDesign/scripts/sync-consumer.mjs --package @neuro/ui");
   const lock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8"));
   assert.equal(lock.packages[""].dependencies["@neuro/ui"], manifest.dependencies["@neuro/ui"]);
   assert.equal(lock.packages["node_modules/@neuro/ui"].resolved, manifest.dependencies["@neuro/ui"]);

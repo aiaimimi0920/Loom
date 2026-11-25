@@ -309,7 +309,7 @@ fn daemon_path_mismatch_warning_reports_old_running_daemon() {
         &desktop_exe,
         &serde_json::json!({
             "status": "ready",
-            "executablePath": r"C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Loom\older\runtime\loom-daemon.exe"
+            "executablePath": r"C:\Users\Public\Project\Release\Loom\older\runtime\loom-daemon.exe"
         }),
     )
     .expect("mismatch warning");

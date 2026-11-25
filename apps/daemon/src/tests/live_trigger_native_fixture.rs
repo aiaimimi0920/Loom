@@ -3,8 +3,20 @@ fn live_trigger_executable(name: &str) -> Vec<u8> {
     let path = PathBuf::from(std::env::var_os(name).unwrap());
     let expected = std::env::var(format!("{name}_SHA256")).unwrap();
     let canonical = fs::canonicalize(&path).unwrap();
-    let base = fs::canonicalize("C:/Users/Public/nas_home/AI/GameEditor/linshi").unwrap();
-    assert!(path.is_absolute() && canonical != base && canonical.starts_with(base));
+    let repo_tmp = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    let allowed = [
+        repo_tmp.as_path(),
+        std::path::Path::new("C:/Users/Public/BuildStaging"),
+        std::path::Path::new("C:/Users/Public/Project/Release"),
+        std::path::Path::new("C:/Users/Public/nas_home/AI/GameEditor/linshi"),
+    ];
+    assert!(
+        path.is_absolute()
+            && allowed
+                .iter()
+                .filter_map(|candidate| fs::canonicalize(candidate).ok())
+                .any(|base| canonical != base && canonical.starts_with(&base))
+    );
     assert!(fs::metadata(&canonical).unwrap().len() <= 64 * 1024 * 1024);
     let bytes = fs::read(canonical).unwrap();
     assert_eq!(

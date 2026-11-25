@@ -20,23 +20,29 @@ if ($actualHash -ne $policy.librarySha256 -or $actualHash -ne $receipt.librarySh
     $receipt.bridgeSha256 -ne (Get-FileHash -LiteralPath (Join-Path $repo 'native/libaria2/bridge.cpp')).Hash.ToLowerInvariant()) {
     throw 'LIBARIA2_BUILD_BINDING_MISMATCH'
 }
-$ready = Join-Path 'C:/Users/Public/nas_home/AI/GameEditor/linshi' ('loom-libaria2-ready-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $ready | Out-Null
-foreach ($name in @('loom_aria2.dll', 'COPYING', 'build-receipt.json')) {
-    Copy-Item -LiteralPath (Join-Path $BuildRoot $name) -Destination (Join-Path $ready $name)
-}
-Copy-Item -LiteralPath $policyPath -Destination (Join-Path $ready 'libaria2-runtime.json')
-if (Test-Path -LiteralPath $Destination) {
-    foreach ($file in Get-ChildItem -LiteralPath $ready -File) {
-        $target = Join-Path $Destination $file.Name
-        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
-            (Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint -or
-            (Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) {
-            throw 'LIBARIA2_EXISTING_RUNTIME_CHANGED'
-        }
+$ready = Join-Path $repo ('.tmp/loom-libaria2-ready-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $ready | Out-Null
+try {
+    foreach ($name in @('loom_aria2.dll', 'COPYING', 'build-receipt.json')) {
+        Copy-Item -LiteralPath (Join-Path $BuildRoot $name) -Destination (Join-Path $ready $name)
     }
-} else {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
-    Move-Item -LiteralPath $ready -Destination $Destination
+    Copy-Item -LiteralPath $policyPath -Destination (Join-Path $ready 'libaria2-runtime.json')
+    if (Test-Path -LiteralPath $Destination) {
+        foreach ($file in Get-ChildItem -LiteralPath $ready -File) {
+            $target = Join-Path $Destination $file.Name
+            if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
+                (Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint -or
+                (Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) {
+                throw 'LIBARIA2_EXISTING_RUNTIME_CHANGED'
+            }
+        }
+    } else {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+        Move-Item -LiteralPath $ready -Destination $Destination
+    }
+} finally {
+    if (Test-Path -LiteralPath $ready) {
+        Remove-Item -LiteralPath $ready -Recurse -Force
+    }
 }
 Write-Output "Pinned libaria2 staged: $Destination"

@@ -17,8 +17,8 @@ function validateCompilation(workflow) {
   assert.match(workflow, /formalReleaseApproved = \$false/);
   assert.doesNotMatch(workflow, /continue-on-error|build-release\.ps1|action-gh-release|attest-|contents: write/);
   const uploads = [...workflow.matchAll(/^          path: (.+)$/gm)]
-    .map((match) => match[1]).filter((value) => !['NeuroDesign', 'AI/GameEditor/Neuro/Loom'].includes(value));
-  assert.deepEqual(uploads, ['AI/GameEditor/Neuro/Loom/artifacts/compilation.json']);
+    .map((match) => match[1]).filter((value) => !['nas_home/NeuroDesign', 'Project/Loom'].includes(value));
+  assert.deepEqual(uploads, ['Project/Loom/artifacts/compilation.json']);
   for (const executable of ['loom-daemon.exe', 'loom.exe', 'loom-plugin.exe', 'loom-desktop.exe']) {
     assert.ok(workflow.includes(`/release/${executable}"`), `missing output: ${executable}`);
   }
@@ -32,7 +32,7 @@ test('compilation cannot be relabeled as package approval or publish executables
   for (const mutated of [
     source.replace('formalReleaseApproved = $false', 'formalReleaseApproved = $true'),
     source.replace('--no-bundle -- --locked', '--no-bundle'),
-    source.replace('path: AI/GameEditor/Neuro/Loom/artifacts/compilation.json', 'path: AI/GameEditor/Neuro/Loom/target/release/*.exe'),
+    source.replace('path: Project/Loom/artifacts/compilation.json', 'path: Project/Loom/target/release/*.exe'),
   ]) {
     assert.notEqual(mutated, source);
     assert.throws(() => validateCompilation(mutated));

@@ -7,13 +7,19 @@ mod visible_product {
         use std::os::windows::fs::OpenOptionsExt;
         let executable = PathBuf::from(std::env::var_os("OTTER_TILE_PRODUCT_TEST_EXE").unwrap());
         let canonical = executable.canonicalize().unwrap();
+        let repo_tmp = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        let allowed = [
+            repo_tmp.as_path(),
+            Path::new("C:/Users/Public/BuildStaging"),
+            Path::new("C:/Users/Public/Project/Release"),
+            Path::new("C:/Users/Public/nas_home/AI/GameEditor/linshi"),
+        ];
         assert!(
             executable.is_absolute()
-                && canonical.starts_with(
-                    Path::new("C:/Users/Public/nas_home/AI/GameEditor/linshi")
-                        .canonicalize()
-                        .unwrap()
-                )
+                && allowed
+                    .iter()
+                    .filter_map(|candidate| candidate.canonicalize().ok())
+                    .any(|base| canonical != base && canonical.starts_with(&base))
         );
         let mut locked = fs::OpenOptions::new()
             .read(true)

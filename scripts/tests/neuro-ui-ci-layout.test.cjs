@@ -4,8 +4,8 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.resolve(__dirname, '../..');
-const loom = 'AI/GameEditor/Neuro/Loom';
-const design = 'NeuroDesign';
+const loom = 'Project/Loom';
+const design = 'nas_home/NeuroDesign';
 const revision = '02420e8d129cf952c6bee3cda96ab7ebc95c2d67';
 const workflows = [
   ['ci.yml', 'windows'],
@@ -154,13 +154,13 @@ test('non-UI jobs retain their independent root checkout', () => {
   const ci = read('.github/workflows/ci.yml');
   for (const name of ['linux', 'plugin-security', 'plugin-sdk-clean-host']) {
     const job = jobBody(ci, name);
-    assert.doesNotMatch(job, /NeuroDesign|working-directory: AI\/GameEditor\/Neuro\/Loom/);
+    assert.doesNotMatch(job, /NeuroDesign|working-directory: Project\/Loom/);
     const checkout = steps(job).find((entry) => /uses: actions\/checkout@/.test(entry.body));
     assert.ok(checkout, `missing root checkout: ${name}`);
     assert.doesNotMatch(checkout.body, /^          path:/m);
   }
   const release = jobBody(read('.github/workflows/release-tag.yml'), 'dependency-security');
   assert.match(release, /uses: \.\/\.github\/workflows\/dependency-security\.yml/);
-  assert.doesNotMatch(release, /NeuroDesign|AI\/GameEditor/);
+  assert.doesNotMatch(release, /NeuroDesign|Project\/Loom/);
   assert.equal(read('apps/desktop/.npmrc').trim(), 'install-links=true');
 });
