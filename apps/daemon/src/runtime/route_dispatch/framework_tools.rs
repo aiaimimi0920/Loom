@@ -113,6 +113,8 @@ fn route_framework_tools(
             tool_registry,
             workflow_store,
             framework_registry,
+            hook_bridge,
+            device_registry,
             run_store,
             control_plane_root,
         ),

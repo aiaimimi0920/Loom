@@ -37,6 +37,17 @@ pub enum WorkflowRuntimeError {
     InvalidWorkflow { workflow_id: String, reason: String },
     #[error("workflow `{workflow_id}` exceeded its resource budget: {reason}")]
     ResourceLimit { workflow_id: String, reason: String },
+    #[error("workflow `{workflow_id}` node `{node_id}` requires a connected Otter terminal")]
+    TerminalUnavailable {
+        workflow_id: String,
+        node_id: String,
+    },
+    #[error("workflow `{workflow_id}` terminal relay node `{node_id}` failed: {message}")]
+    TerminalRelayFailed {
+        workflow_id: String,
+        node_id: String,
+        message: String,
+    },
     #[error("workflow execution exceeded its caller-owned timeout")]
     Timeout,
     #[error("workflow execution was cancelled")]

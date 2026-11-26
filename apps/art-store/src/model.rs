@@ -1,5 +1,47 @@
 // Public wire models and stable domain errors for the local Art Store.
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorePackageKind {
+    #[default]
+    Art,
+    Capability,
+    McpServer,
+}
+
+impl StorePackageKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Art => "art",
+            Self::Capability => "capability",
+            Self::McpServer => "mcp_server",
+        }
+    }
+
+    pub fn parse_segment(value: &str) -> Option<Self> {
+        match value.trim() {
+            "art" | "arts" => Some(Self::Art),
+            "capability" | "capabilities" => Some(Self::Capability),
+            "mcp_server" | "mcp-server" | "mcp-servers" => Some(Self::McpServer),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformArtifactSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +54,8 @@ pub struct CatalogVersion {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
     pub id: String,
+    #[serde(default)]
+    pub kind: StorePackageKind,
     pub qualified_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_id: Option<String>,
@@ -20,6 +64,10 @@ pub struct CatalogEntry {
     pub framework: String,
     pub latest_version: String,
     pub versions: Vec<CatalogVersion>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platforms: BTreeMap<String, PlatformArtifactSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
     pub official: bool,
 }
 
@@ -27,6 +75,7 @@ pub struct CatalogEntry {
 #[serde(rename_all = "camelCase")]
 pub struct PublishedArt {
     pub art_id: String,
+    pub kind: StorePackageKind,
     pub global_id: String,
 }
 

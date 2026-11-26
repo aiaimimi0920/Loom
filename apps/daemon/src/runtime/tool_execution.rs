@@ -73,6 +73,7 @@ fn record_otter_art_run(
     run_id
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_registered_tool(
     tool_id: &str,
     body: &str,
@@ -80,6 +81,8 @@ fn execute_registered_tool(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     framework_registry: &FrameworkRegistry,
+    hook_bridge: &SharedOtterBridgeRuntime,
+    device_registry: &SharedDeviceRegistryStore,
     run_store: &SharedRunStore,
     control_plane_root: &Path,
 ) -> Result<(u16, String)> {
@@ -170,12 +173,18 @@ fn execute_registered_tool(
             .insert_run(run.clone(), vec![started_event])
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     }
-    let result = match execute_tool_with_workflows(
+    let mut relay =
+        terminal_relay::DaemonOtterWorkflowRelay::for_http(hook_bridge, device_registry);
+    let result = match execute_tool_with_workflows_and_relay(
         &tool,
         &servers,
         workflow_store,
         tool_registry,
         request.arguments,
+        None,
+        None,
+        Some(&mut relay),
+        |_| {},
     ) {
         Ok(result) => result,
         Err(error) => {

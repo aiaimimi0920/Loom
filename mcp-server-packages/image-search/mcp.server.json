@@ -11,7 +11,13 @@
   "transport": "stdio",
   "entry": {
     "command": "runtime/image-search-mcp.ps1",
-    "args": []
+    "args": [],
+    "platforms": {
+      "linux": {
+        "command": "runtime/image-search-mcp.mjs",
+        "args": []
+      }
+    }
   },
   "tools": ["brave_image_search"],
   "credentials": [

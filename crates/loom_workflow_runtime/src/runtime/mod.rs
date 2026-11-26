@@ -11,7 +11,8 @@ use loom_tool_registry::{
     WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
-use serde::Deserialize;
+use semver::{Version, VersionReq};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use thiserror::Error;
 
@@ -26,12 +27,14 @@ mod model;
 mod node;
 mod orchestrator;
 mod output;
+mod placement;
 mod preview;
 mod validation;
 
 pub use api::*;
 pub use error::*;
 pub use model::*;
+pub use placement::*;
 
 use bindings::*;
 use budget::*;
@@ -44,5 +47,7 @@ use output::*;
 use preview::*;
 use validation::*;
 
+#[cfg(test)]
+mod hybrid_relay_tests;
 #[cfg(test)]
 mod tests;

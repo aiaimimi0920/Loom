@@ -124,3 +124,33 @@ where
         &mut execution,
     )
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_tool_with_workflows_and_relay<F>(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    workflow_store: &WorkflowStore,
+    tool_registry: &ToolRegistry,
+    arguments: JsonValue,
+    timeout: Option<Duration>,
+    cancellation: Option<&AtomicBool>,
+    terminal_relay: Option<&mut dyn WorkflowTerminalRelay>,
+    mut preview_callback: F,
+) -> WorkflowRuntimeResult<serde_json::Value>
+where
+    F: FnMut(JsonValue),
+{
+    let mut execution = ExecutionContext::with_relay(terminal_relay);
+    let deadline = timeout.map(|duration| Instant::now() + duration.max(Duration::from_millis(1)));
+    execute_tool_with_workflows_internal(
+        tool,
+        mcp_servers,
+        workflow_store,
+        tool_registry,
+        arguments,
+        &mut preview_callback,
+        deadline,
+        cancellation,
+        &mut execution,
+    )
+}

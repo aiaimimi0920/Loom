@@ -8,7 +8,7 @@ pub(super) struct StoredWorkflow {
     pub(super) nodes: Vec<StoredWorkflowNode>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub(super) struct StoredWorkflowNode {
     pub(super) id: String,
     pub(super) uses: String,
@@ -16,6 +16,10 @@ pub(super) struct StoredWorkflowNode {
     pub(super) needs: Vec<String>,
     #[serde(rename = "with", default)]
     pub(super) params: BTreeMap<String, serde_yaml::Value>,
+    #[serde(default)]
+    pub(super) placement: Option<ExecutionPlacement>,
+    #[serde(default, rename = "deviceId")]
+    pub(super) device_id: Option<String>,
     #[serde(default)]
     pub(super) meta: Option<StoredWorkflowNodeMeta>,
 }
@@ -26,6 +30,10 @@ pub(super) struct StoredWorkflowNodeMeta {
     pub(super) src: Option<String>,
     #[serde(default, rename = "previewSrc")]
     pub(super) preview_src: Option<String>,
+    #[serde(default)]
+    pub(super) placement: Option<ExecutionPlacement>,
+    #[serde(default, rename = "deviceId")]
+    pub(super) device_id: Option<String>,
 }
 
 pub(super) fn load_stored_workflow(

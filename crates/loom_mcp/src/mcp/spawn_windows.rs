@@ -3,12 +3,86 @@
 use super::*;
 
 pub(super) fn spawn_command_spec(config: &McpServerConfig) -> SpawnCommandSpec {
+    if let Some(spec) = resolve_cross_platform_script_spawn_command(config) {
+        return spec;
+    }
+
     #[cfg(windows)]
     if let Some(spec) = resolve_windows_spawn_command(config) {
         return spec;
     }
 
+    #[cfg(not(windows))]
+    if Path::new(&config.command)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("ps1"))
+    {
+        let mut args = vec![
+            "-NoProfile".to_owned(),
+            "-File".to_owned(),
+            config.command.clone(),
+        ];
+        args.extend(config.args.iter().cloned());
+        return SpawnCommandSpec::direct("pwsh", args);
+    }
+
     SpawnCommandSpec::direct(config.command.clone(), config.args.clone())
+}
+
+pub(super) fn resolve_cross_platform_script_spawn_command(
+    config: &McpServerConfig,
+) -> Option<SpawnCommandSpec> {
+    let command = Path::new(&config.command);
+    let extension = command.extension()?.to_str()?;
+    if extension.eq_ignore_ascii_case("js")
+        || extension.eq_ignore_ascii_case("mjs")
+        || extension.eq_ignore_ascii_case("cjs")
+    {
+        let node_program = resolve_bundled_or_system_node(command);
+        let mut args = Vec::with_capacity(config.args.len() + 1);
+        args.push(command.display().to_string());
+        args.extend(config.args.iter().cloned());
+        return Some(SpawnCommandSpec::direct(node_program, args));
+    }
+    if extension.eq_ignore_ascii_case("py") {
+        let python_program = std::env::var("LOOM_PYTHON_EXECUTABLE")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    "python".to_owned()
+                } else {
+                    "python3".to_owned()
+                }
+            });
+        let mut args = Vec::with_capacity(config.args.len() + 1);
+        args.push(command.display().to_string());
+        args.extend(config.args.iter().cloned());
+        return Some(SpawnCommandSpec::direct(python_program, args));
+    }
+    None
+}
+
+fn resolve_bundled_or_system_node(script_path: &Path) -> String {
+    if let Some(parent) = script_path.parent() {
+        let candidates = [
+            parent.join("node").join("node.exe"),
+            parent.join("node").join("bin").join("node"),
+            parent.join("node").join("node"),
+        ];
+        for candidate in candidates {
+            if candidate.is_file() {
+                return candidate.display().to_string();
+            }
+        }
+    }
+    if cfg!(windows) {
+        "node.exe".to_owned()
+    } else {
+        "node".to_owned()
+    }
 }
 
 #[cfg(windows)]

@@ -1,15 +1,29 @@
-//! Tool dispatch plus shared deadline and cancellation checks.
+//! Tool dispatch plus shared deadline, cancellation, and terminal relay context.
 
 use super::*;
 
 const MAX_WORKFLOW_NESTING: usize = 32;
 
 #[derive(Default)]
-pub(super) struct ExecutionContext {
+pub(super) struct ExecutionContext<'a> {
     workflow_stack: Vec<String>,
+    pub(super) terminal_relay: Option<&'a mut dyn WorkflowTerminalRelay>,
+    pub(super) placement_trace: Vec<WorkflowPlacementStep>,
 }
 
-impl ExecutionContext {
+impl<'a> ExecutionContext<'a> {
+    pub(super) fn with_relay(relay: Option<&'a mut dyn WorkflowTerminalRelay>) -> Self {
+        Self {
+            workflow_stack: Vec::new(),
+            terminal_relay: relay,
+            placement_trace: Vec::new(),
+        }
+    }
+
+    pub(super) fn is_root_workflow(&self) -> bool {
+        self.workflow_stack.len() == 1
+    }
+
     fn enter(&mut self, workflow_id: &str) -> WorkflowRuntimeResult<()> {
         if self.workflow_stack.len() >= MAX_WORKFLOW_NESTING {
             return Err(WorkflowRuntimeError::InvalidWorkflow {
@@ -46,7 +60,7 @@ pub(super) fn execute_tool_with_workflows_internal(
     preview_callback: &mut dyn FnMut(JsonValue),
     deadline: Option<Instant>,
     cancellation: Option<&AtomicBool>,
-    execution: &mut ExecutionContext,
+    execution: &mut ExecutionContext<'_>,
 ) -> WorkflowRuntimeResult<serde_json::Value> {
     check_cancelled(cancellation)?;
     let arguments = prepare_tool_arguments(tool, arguments)?;
@@ -56,6 +70,7 @@ pub(super) fn execute_tool_with_workflows_internal(
             workflow_bindings,
         } => {
             execution.enter(workflow_id)?;
+            let is_root = execution.is_root_workflow();
             let result = execute_workflow_tool(
                 tool,
                 workflow_id,
@@ -70,7 +85,13 @@ pub(super) fn execute_tool_with_workflows_internal(
                 execution,
             );
             execution.leave(workflow_id);
-            result
+            result.map(|output| {
+                if is_root {
+                    attach_placement_trace(output, &execution.placement_trace)
+                } else {
+                    output
+                }
+            })
         }
         _ => {
             let result = match (remaining_timeout(deadline)?, cancellation) {

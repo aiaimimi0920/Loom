@@ -3,14 +3,14 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::catalog::build_catalog;
+use crate::catalog::build_unified_catalog;
 use crate::filesystem::ensure_write_parent;
 use crate::indexes::assign_global_art_id;
 use crate::manifest::{catalog_entry_from_manifest, read_manifest_bytes};
 use crate::model::{PublishedArt, StoreError};
 use crate::persistence::{lock_store, write_bytes_atomic};
 use crate::signature::verify_published_package_signature;
-use crate::storage::{art_version_zip_path, art_zip_sha256_sidecar, read_art_zip_version};
+use crate::storage::{art_zip_sha256_sidecar, package_version_zip_path, read_package_zip_version};
 use crate::validation::is_safe_art_id;
 
 pub fn store_verified_published_zip(
@@ -45,9 +45,9 @@ pub fn store_published_zip(
         }
     }
     let _lock = lock_store(root)?;
-    if let Some(existing) = build_catalog(root)?
+    if let Some(existing) = build_unified_catalog(root)?
         .into_iter()
-        .find(|existing| existing.id == entry.id)
+        .find(|existing| existing.kind == entry.kind && existing.id == entry.id)
     {
         if existing.qualified_id != entry.qualified_id {
             return Err(StoreError::IdentityConflict {
@@ -58,11 +58,11 @@ pub fn store_published_zip(
         }
     }
     let version = entry.latest_version.clone();
-    let path = art_version_zip_path(root, &entry.id, &version)?;
-    let parent = path.parent().expect("versioned Art package parent");
+    let path = package_version_zip_path(root, entry.kind, &entry.id, &version)?;
+    let parent = path.parent().expect("versioned package parent");
     std::fs::create_dir_all(parent)?;
     ensure_write_parent(root, parent)?;
-    if let Some(existing) = read_art_zip_version(root, &entry.id, &version)? {
+    if let Some(existing) = read_package_zip_version(root, entry.kind, &entry.id, &version)? {
         if Sha256::digest(&existing) != Sha256::digest(zip_bytes) {
             return Err(StoreError::VersionConflict {
                 id: entry.id,
@@ -78,6 +78,7 @@ pub fn store_published_zip(
     let global_id = assign_global_art_id(root, &entry.qualified_id)?;
     Ok(PublishedArt {
         art_id: entry.id,
+        kind: entry.kind,
         global_id,
     })
 }

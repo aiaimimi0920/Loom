@@ -1,4 +1,5 @@
-// Catalog scanning, version merging and platform metadata enrichment.
+// Catalog scanning, version merging, and multi-kind/multi-platform metadata enrichment.
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -7,21 +8,45 @@ use crate::archive::MAX_PUBLISHED_ZIP_BYTES;
 use crate::filesystem::{is_reparse_or_symlink, read_optional_regular_file};
 use crate::indexes::enrich_catalog;
 use crate::manifest::{catalog_entry_from_manifest, read_manifest_bytes};
-use crate::model::{CatalogEntry, StoreError};
-use crate::storage::ARTS_DIR;
+use crate::model::{CatalogEntry, StoreError, StorePackageKind};
+use crate::storage::{ARTS_DIR, PACKAGES_DIR};
 
 pub fn build_catalog(root: &Path) -> Result<Vec<CatalogEntry>, StoreError> {
-    let arts_dir = root.join(ARTS_DIR);
-    let mut entries = std::collections::BTreeMap::<String, CatalogEntry>::new();
-    let arts_metadata = match std::fs::symlink_metadata(&arts_dir) {
+    Ok(build_unified_catalog(root)?
+        .into_iter()
+        .filter(|entry| entry.kind == StorePackageKind::Art)
+        .collect())
+}
+
+pub fn build_unified_catalog(root: &Path) -> Result<Vec<CatalogEntry>, StoreError> {
+    let mut entries_by_kind_id = BTreeMap::<(StorePackageKind, String), CatalogEntry>::new();
+    scan_kind_directory(root, &root.join(ARTS_DIR), &mut entries_by_kind_id)?;
+    for kind in [StorePackageKind::Capability, StorePackageKind::McpServer] {
+        let kind_dir = root.join(PACKAGES_DIR).join(kind.as_str());
+        scan_kind_directory(root, &kind_dir, &mut entries_by_kind_id)?;
+    }
+    let mut enrich_map = entries_by_kind_id
+        .into_iter()
+        .map(|((kind, id), entry)| (format!("{}:{id}", kind.as_str()), entry))
+        .collect::<BTreeMap<_, _>>();
+    enrich_catalog(root, &mut enrich_map)?;
+    Ok(enrich_map.into_values().collect())
+}
+
+fn scan_kind_directory(
+    store_root: &Path,
+    kind_dir: &Path,
+    entries: &mut BTreeMap<(StorePackageKind, String), CatalogEntry>,
+) -> Result<(), StoreError> {
+    let metadata = match std::fs::symlink_metadata(kind_dir) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if !arts_metadata.file_type().is_dir() || is_reparse_or_symlink(&arts_metadata) {
-        return Ok(Vec::new());
+    if !metadata.file_type().is_dir() || is_reparse_or_symlink(&metadata) {
+        return Ok(());
     }
-    for dir_entry in std::fs::read_dir(&arts_dir)? {
+    for dir_entry in std::fs::read_dir(kind_dir)? {
         let dir_entry = dir_entry?;
         let path = dir_entry.path();
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -37,25 +62,21 @@ pub fn build_catalog(root: &Path) -> Result<Vec<CatalogEntry>, StoreError> {
                         .and_then(|extension| extension.to_str())
                         == Some("zip")
                 {
-                    merge_catalog_zip(&mut entries, &version_path)?;
+                    merge_catalog_zip(store_root, entries, &version_path)?;
                 }
             }
         }
     }
-    enrich_catalog(root, &mut entries)?;
-    Ok(entries.into_values().collect())
+    Ok(())
 }
 
 fn merge_catalog_zip(
-    entries: &mut std::collections::BTreeMap<String, CatalogEntry>,
+    store_root: &Path,
+    entries: &mut BTreeMap<(StorePackageKind, String), CatalogEntry>,
     path: &Path,
 ) -> Result<(), StoreError> {
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or(StoreError::UnsafeStoredPath)?;
-    let Ok(Some(bytes)) = read_optional_regular_file(root, path, MAX_PUBLISHED_ZIP_BYTES) else {
+    let Ok(Some(bytes)) = read_optional_regular_file(store_root, path, MAX_PUBLISHED_ZIP_BYTES)
+    else {
         return Ok(());
     };
     let Ok(manifest) = read_manifest_bytes(&bytes) else {
@@ -70,7 +91,7 @@ fn merge_catalog_zip(
     incoming.versions[0].sha256 = format!("{:x}", Sha256::digest(&bytes));
     let version = incoming.versions[0].clone();
     let entry = entries
-        .entry(incoming.id.clone())
+        .entry((incoming.kind, incoming.id.clone()))
         .or_insert_with(|| incoming.clone());
     if entry.qualified_id != incoming.qualified_id {
         return Err(StoreError::IdentityConflict {
@@ -106,6 +127,8 @@ fn merge_catalog_zip(
             entry.name = incoming.name;
             entry.description = incoming.description;
             entry.framework = incoming.framework;
+            entry.platforms = incoming.platforms;
+            entry.binary = incoming.binary;
         }
     }
     Ok(())

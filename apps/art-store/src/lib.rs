@@ -17,12 +17,12 @@ mod storage;
 mod validation;
 
 pub use archive::MAX_PUBLISHED_ZIP_BYTES;
-pub use catalog::build_catalog;
+pub use catalog::{build_catalog, build_unified_catalog};
 pub use indexes::{GLOBAL_ART_IDS_FILE, OFFICIAL_ART_CERTIFICATIONS_FILE};
 pub use manifest::{catalog_entry_from_manifest, read_manifest_bytes};
 pub use model::{
-    CatalogEntry, CatalogVersion, PublishedArt, PublisherDirectoryEntry, PublisherKeyStatus,
-    PublisherPublicKey, PublisherRotationRequest, StoreError,
+    CatalogEntry, CatalogVersion, PlatformArtifactSummary, PublishedArt, PublisherDirectoryEntry,
+    PublisherKeyStatus, PublisherPublicKey, PublisherRotationRequest, StoreError, StorePackageKind,
 };
 pub use publish::{store_published_zip, store_verified_published_zip};
 pub use publisher::{
@@ -30,9 +30,10 @@ pub use publisher::{
     register_publisher_with_id, rotate_publisher_key, PUBLISHER_DIRECTORY_FILE,
 };
 pub use storage::{
-    art_version_zip_path, binary_path, framework_package_path, read_art_zip_version,
-    read_art_zip_version_sha256, read_binary, read_framework_package, ARTS_DIR, BINARIES_DIR,
-    FRAMEWORKS_DIR,
+    art_version_zip_path, binary_path, framework_package_path, package_version_zip_path,
+    read_art_zip_version, read_art_zip_version_sha256, read_binary, read_framework_package,
+    read_package_zip_version, read_package_zip_version_sha256, ARTS_DIR, BINARIES_DIR,
+    FRAMEWORKS_DIR, PACKAGES_DIR,
 };
 pub use validation::{is_safe_art_id, is_safe_resource_name};
 

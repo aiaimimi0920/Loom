@@ -86,8 +86,7 @@ use loom_tool_registry::{
     ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
 };
 use loom_workflow_runtime::{
-    execute_tool_with_workflows, execute_tool_with_workflows_and_preview_timeout_and_cancellation,
-    workflow_node_tool_ids, WorkflowRuntimeError,
+    execute_tool_with_workflows_and_relay, workflow_node_tool_ids, WorkflowRuntimeError,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use rand_core::{OsRng, RngCore};
@@ -100,6 +99,7 @@ mod account_login;
 mod asset_library;
 mod connected_users;
 mod local_art;
+mod terminal_relay;
 /// 仅在整个 daemon 进程正常退出时关闭进程级原生下载引擎。
 pub fn shutdown_download_engine() {
     asset_library::shutdown_download_engine();
@@ -151,6 +151,7 @@ include!("runtime/capability_runtime_state.rs");
 include!("runtime/capability_dispatch_registry.rs");
 include!("runtime/daemon_lifecycle.rs");
 include!("runtime/connection_dispatch.rs");
+include!("runtime/request_concurrency.rs");
 include!("runtime/connection_read_admission.rs");
 include!("runtime/http_routing.rs");
 include!("runtime/capability_plugin_api.rs");
@@ -223,6 +224,7 @@ include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
 include!("runtime/management_ui_routes.rs");
 include!("runtime/ai_gateway_routes.rs");
+include!("runtime/unified_store_routes.rs");
 include!("runtime/asset_library_install.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
@@ -344,4 +346,5 @@ mod tests {
     include!("tests/suite/part_40.rs");
     include!("tests/suite/part_41.rs");
     include!("tests/management_ui_edition.rs");
+    include!("tests/hybrid_workflow_relay.rs");
 }

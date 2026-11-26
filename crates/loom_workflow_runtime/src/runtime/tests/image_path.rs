@@ -21,7 +21,7 @@ fn workflow_runtime_resolves_local_path_image_bindings() {
         uses: "__sticker__".to_owned(),
         needs: vec![],
         params: BTreeMap::new(),
-        meta: None,
+        ..StoredWorkflowNode::default()
     };
     let bindings = WorkflowExecutionBindings {
         inputs: vec![WorkflowInputBinding {

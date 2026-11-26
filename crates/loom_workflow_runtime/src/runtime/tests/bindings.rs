@@ -22,7 +22,7 @@ fn workflow_runtime_preserves_named_secondary_image_references() {
                 ),
             ),
         ]),
-        meta: None,
+        ..StoredWorkflowNode::default()
     };
     let results = HashMap::from([
         (
@@ -58,7 +58,7 @@ fn workflow_param_binding_overrides_baked_value_from_nested_params() {
         uses: "color-transfer".to_owned(),
         needs: vec![],
         params: BTreeMap::from([("strength".to_owned(), serde_yaml::Value::Number(20.into()))]),
-        meta: None,
+        ..StoredWorkflowNode::default()
     };
     let bindings = WorkflowExecutionBindings {
         inputs: vec![WorkflowInputBinding {
@@ -93,7 +93,7 @@ fn workflow_param_binding_keeps_baked_value_when_argument_is_missing() {
         uses: "color-transfer".to_owned(),
         needs: vec![],
         params: BTreeMap::from([("strength".to_owned(), serde_yaml::Value::Number(20.into()))]),
-        meta: None,
+        ..StoredWorkflowNode::default()
     };
     let bindings = WorkflowExecutionBindings {
         inputs: vec![WorkflowInputBinding {
@@ -167,7 +167,7 @@ fn workflow_runtime_rejects_missing_explicit_image_binding() {
         uses: "__sticker__".to_owned(),
         needs: vec![],
         params: BTreeMap::new(),
-        meta: None,
+        ..StoredWorkflowNode::default()
     };
     let bindings = WorkflowExecutionBindings {
         inputs: vec![WorkflowInputBinding {
@@ -196,14 +196,13 @@ fn workflow_runtime_rejects_missing_explicit_image_binding() {
         None,
         &mut ExecutionContext::default(),
     )
-    .expect_err("missing input_2 must not reuse the root input");
+    .expect_err("missing bound image should fail");
 
     assert!(matches!(
         error,
-        WorkflowRuntimeError::MissingImageInput {
-            workflow_id,
-            node_id
-        } if workflow_id == "missing-binding-flow" && node_id == "reference-source"
+        WorkflowRuntimeError::MissingImageInput { workflow_id, node_id }
+            if workflow_id == "missing-binding-flow" && node_id == "reference-source"
     ));
-    fs::remove_dir_all(root).expect("cleanup missing binding root");
+
+    let _ = fs::remove_dir_all(root);
 }

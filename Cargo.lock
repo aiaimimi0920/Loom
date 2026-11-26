@@ -2726,6 +2726,7 @@ dependencies = [
  "loom_tool_registry",
  "loom_workflow_store",
  "noyalib-serde-yaml",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

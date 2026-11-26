@@ -13,7 +13,7 @@ pub(super) fn execute_workflow_tool(
     preview_callback: &mut dyn FnMut(JsonValue),
     deadline: Option<Instant>,
     cancellation: Option<&AtomicBool>,
-    execution: &mut ExecutionContext,
+    execution: &mut ExecutionContext<'_>,
 ) -> WorkflowRuntimeResult<JsonValue> {
     check_cancelled(cancellation)?;
     let workflow = load_stored_workflow(workflow_store, workflow_id)?;

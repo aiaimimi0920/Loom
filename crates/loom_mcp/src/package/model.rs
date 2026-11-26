@@ -78,6 +78,14 @@ pub struct McpPackageSecurity {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct McpPackagePlatformEntry {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpPackageEntry {
     #[serde(default)]
     pub command: String,
@@ -85,6 +93,10 @@ pub struct McpPackageEntry {
     pub args: Vec<String>,
     #[serde(default)]
     pub url: String,
+    /// Optional per-platform stdio entry overrides (`windows-x64`, `windows`, `linux-x64`,
+    /// `linux-arm64`, `linux`, `universal`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platforms: BTreeMap<String, McpPackagePlatformEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

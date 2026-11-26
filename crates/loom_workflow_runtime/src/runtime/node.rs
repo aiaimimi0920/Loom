@@ -1,4 +1,4 @@
-//! Per-node argument resolution, image/native adapters, and recursive child execution.
+//! Per-node argument resolution, dynamic placement, terminal relay, and recursive child execution.
 
 use super::*;
 
@@ -16,7 +16,7 @@ pub(super) fn execute_workflow_node(
     tool_registry: &ToolRegistry,
     deadline: Option<Instant>,
     cancellation: Option<&AtomicBool>,
-    execution: &mut ExecutionContext,
+    execution: &mut ExecutionContext<'_>,
 ) -> WorkflowRuntimeResult<JsonValue> {
     check_cancelled(cancellation)?;
     let (mut child_args, mut child_input) = resolve_node_params(node, results);
@@ -47,9 +47,6 @@ pub(super) fn execute_workflow_node(
         child_input = extract_root_input(&JsonValue::Object(child_args.clone()));
     }
     if child_input.is_none() {
-        // Otter canvas edges are serialized as `needs`. When the node has no
-        // explicit input binding, keep the visual pipeline semantics by
-        // forwarding the first upstream image along that edge.
         child_input = node
             .needs
             .iter()
@@ -75,6 +72,14 @@ pub(super) fn execute_workflow_node(
             workflow_id: workflow_id.to_owned(),
             node_id: node.id.clone(),
         })?;
+        execution.placement_trace.push(WorkflowPlacementStep {
+            workflow_id: workflow_id.to_owned(),
+            node_id: node.id.clone(),
+            uses: node.uses.clone(),
+            target: ExecutionPlacement::LoomCentral,
+            device_id: None,
+            reason: "builtin_sticker_adapter".to_owned(),
+        });
         return Ok(image_content_response(&input, "image/png"));
     }
 
@@ -83,6 +88,14 @@ pub(super) fn execute_workflow_node(
             workflow_id: workflow_id.to_owned(),
             node_id: node.id.clone(),
         })?;
+        execution.placement_trace.push(WorkflowPlacementStep {
+            workflow_id: workflow_id.to_owned(),
+            node_id: node.id.clone(),
+            uses: node.uses.clone(),
+            target: ExecutionPlacement::LoomCentral,
+            device_id: None,
+            reason: "builtin_native_image".to_owned(),
+        });
         let params = child_args.into_iter().collect::<HashMap<_, _>>();
         let result = loom_native_image::process_art_controlled(
             &node.uses,
@@ -112,11 +125,63 @@ pub(super) fn execute_workflow_node(
         return Ok(image_content_response(&output, "image/png"));
     }
 
-    let child_tool = resolve_workflow_child_tool(parent_tool, &node.uses, tool_registry)?
-        .ok_or_else(|| WorkflowRuntimeError::ChildToolNotFound {
-            workflow_id: workflow_id.to_owned(),
-            tool_id: node.uses.clone(),
-        })?;
+    let resolved_child = resolve_workflow_child_tool(parent_tool, &node.uses, tool_registry)?;
+    let placement = resolve_node_placement(
+        node,
+        resolved_child.as_ref(),
+        execution.terminal_relay.as_deref(),
+    );
+
+    if placement.target == ExecutionPlacement::OtterTerminal {
+        let timeout = remaining_timeout(deadline)?;
+        let Some(relay) = execution.terminal_relay.as_deref_mut() else {
+            return Err(WorkflowRuntimeError::TerminalUnavailable {
+                workflow_id: workflow_id.to_owned(),
+                node_id: node.id.clone(),
+            });
+        };
+        if !relay.has_connected_terminal(placement.device_id.as_deref()) {
+            if placement.explicit_terminal {
+                return Err(WorkflowRuntimeError::TerminalUnavailable {
+                    workflow_id: workflow_id.to_owned(),
+                    node_id: node.id.clone(),
+                });
+            }
+        } else {
+            execution.placement_trace.push(WorkflowPlacementStep {
+                workflow_id: workflow_id.to_owned(),
+                node_id: node.id.clone(),
+                uses: node.uses.clone(),
+                target: ExecutionPlacement::OtterTerminal,
+                device_id: placement.device_id.clone(),
+                reason: placement.reason,
+            });
+            return relay.execute_on_terminal(TerminalNodeRelayRequest {
+                workflow_id,
+                node_id: &node.id,
+                uses: &node.uses,
+                device_id: placement.device_id.as_deref(),
+                tool: resolved_child.as_ref(),
+                arguments: JsonValue::Object(child_args),
+                timeout,
+                cancellation,
+            });
+        }
+    }
+
+    let child_tool = resolved_child.ok_or_else(|| WorkflowRuntimeError::ChildToolNotFound {
+        workflow_id: workflow_id.to_owned(),
+        tool_id: node.uses.clone(),
+    })?;
+
+    execution.placement_trace.push(WorkflowPlacementStep {
+        workflow_id: workflow_id.to_owned(),
+        node_id: node.id.clone(),
+        uses: child_tool.qualified_id(),
+        target: ExecutionPlacement::LoomCentral,
+        device_id: None,
+        reason: placement.reason,
+    });
 
     execute_tool_with_workflows_internal(
         &child_tool,

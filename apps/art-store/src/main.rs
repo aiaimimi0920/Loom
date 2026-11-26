@@ -24,10 +24,11 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{Context, Result};
+#[cfg(test)]
+use loom_art_store::StorePackageKind;
 use loom_art_store::{
-    build_catalog, read_art_zip_version, read_art_zip_version_sha256, read_binary,
-    read_framework_package, read_publisher, register_publisher_with_id, rotate_publisher_key,
-    store_verified_published_zip, PublisherRotationRequest, StoreError, MAX_PUBLISHED_ZIP_BYTES,
+    read_art_zip_version, read_art_zip_version_sha256, read_binary, read_framework_package,
+    read_publisher, StoreError, MAX_PUBLISHED_ZIP_BYTES,
 };
 
 const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
@@ -299,13 +300,15 @@ impl Response {
     }
 }
 
+mod routes_unified;
+
 fn route(request: &Request, root: &std::path::Path) -> Response {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => Response::json(200, serde_json::json!({ "ok": true })),
-        ("GET", "/catalog") => match build_catalog(root) {
-            Ok(arts) => Response::json(200, serde_json::json!({ "arts": arts })),
-            Err(error) => store_error_response(error),
-        },
+        ("GET", "/catalog") => routes_unified::handle_catalog(root),
+        ("GET", path) if path.starts_with("/packages/") => {
+            routes_unified::handle_package_download(root, &path["/packages/".len()..])
+        }
         ("POST", "/publishers/register") if request.peer_is_loopback => {
             handle_publisher_register(request, root)
         }
@@ -400,71 +403,7 @@ fn route(request: &Request, root: &std::path::Path) -> Response {
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RegisterPublisherRequest {
-    #[serde(default)]
-    user_id: Option<String>,
-    key_id: String,
-    public_key: String,
-}
-
-fn handle_publisher_register(request: &Request, root: &std::path::Path) -> Response {
-    let input = match serde_json::from_slice::<RegisterPublisherRequest>(&request.body) {
-        Ok(input) => input,
-        Err(error) => {
-            eprintln!("art store: invalid publisher registration JSON: {error}");
-            return Response::json(
-                400,
-                serde_json::json!({ "error": "invalid publisher registration request" }),
-            );
-        }
-    };
-    match register_publisher_with_id(
-        root,
-        input.user_id.as_deref(),
-        &input.key_id,
-        &input.public_key,
-    ) {
-        Ok(publisher) => Response::json(200, serde_json::json!({ "publisher": publisher })),
-        Err(error) => store_error_response(error),
-    }
-}
-
-fn handle_publisher_rotate(request: &Request, root: &std::path::Path, user_id: &str) -> Response {
-    let input = match serde_json::from_slice::<PublisherRotationRequest>(&request.body) {
-        Ok(input) => input,
-        Err(error) => {
-            eprintln!("art store: invalid publisher rotation JSON: {error}");
-            return Response::json(
-                400,
-                serde_json::json!({ "error": "invalid publisher rotation request" }),
-            );
-        }
-    };
-    match rotate_publisher_key(root, user_id, &input) {
-        Ok(publisher) => Response::json(200, serde_json::json!({ "publisher": publisher })),
-        Err(error) => store_error_response(error),
-    }
-}
-
-fn handle_publish(request: &Request, root: &std::path::Path) -> Response {
-    if request.body.is_empty() {
-        return Response::json(400, serde_json::json!({ "error": "empty publish body" }));
-    }
-    let declared = request.header("X-Art-Id");
-    match store_verified_published_zip(root, declared, &request.body) {
-        Ok(published) => Response::json(
-            200,
-            serde_json::json!({
-                "artId": published.art_id,
-                "globalId": published.global_id,
-                "published": true
-            }),
-        ),
-        Err(error) => store_error_response(error),
-    }
-}
+use routes_unified::{handle_publish, handle_publisher_register, handle_publisher_rotate};
 
 fn store_error_response(error: StoreError) -> Response {
     let (status, message) = match &error {

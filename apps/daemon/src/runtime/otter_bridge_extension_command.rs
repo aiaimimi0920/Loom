@@ -130,6 +130,9 @@ fn wait_otter_art_execute<'a>(
                     }
                 }
                 Ok(Message::Text(next_text)) => {
+                    if terminal_relay::try_handle_websocket_relay_result(&next_text) {
+                        continue;
+                    }
                     match serde_json::from_str::<OtterRequest>(&next_text) {
                         Ok(OtterRequest::ArtCancel(cancel_req)) => {
                             let reply = cancel_otter_art_request(&cancel_req, shared_images);

@@ -11,7 +11,13 @@
   "transport": "stdio",
   "entry": {
     "command": "runtime/stock-api-mcp.ps1",
-    "args": []
+    "args": [],
+    "platforms": {
+      "linux": {
+        "command": "runtime/stock-api-entry.js",
+        "args": []
+      }
+    }
   },
   "tools": ["get_stock", "get_stocks", "get_klines", "get_market_series", "get_order_book", "search_stocks", "inspect_stock"],
   "credentials": [

@@ -114,6 +114,50 @@ pub(super) fn validate_manifest(
             if !staging_root.join(&command).is_file() {
                 return Err(McpPackageError::MissingEntry(command.display().to_string()));
             }
+            for (platform_key, platform_entry) in &manifest.entry.platforms {
+                if !matches!(
+                    platform_key.as_str(),
+                    "windows"
+                        | "windows-x64"
+                        | "windows-arm64"
+                        | "linux"
+                        | "linux-x64"
+                        | "linux-arm64"
+                        | "macos"
+                        | "macos-x64"
+                        | "macos-arm64"
+                        | "universal"
+                ) {
+                    return Err(McpPackageError::InvalidManifest(format!(
+                        "unsupported entry.platforms key `{platform_key}`"
+                    )));
+                }
+                let platform_cmd = safe_relative_path(&platform_entry.command)?;
+                if names_a_batch_file(&platform_cmd) {
+                    return Err(McpPackageError::InvalidManifest(format!(
+                        "entry.platforms.{platform_key}.command `{}` is a batch file",
+                        platform_cmd.display()
+                    )));
+                }
+                if !staging_root.join(&platform_cmd).is_file() {
+                    return Err(McpPackageError::MissingEntry(
+                        platform_cmd.display().to_string(),
+                    ));
+                }
+                if platform_entry.args.len() > MAX_MCP_ARGUMENTS {
+                    return Err(McpPackageError::InvalidManifest(format!(
+                        "entry.platforms.{platform_key}.args exceeds {MAX_MCP_ARGUMENTS}"
+                    )));
+                }
+                for (index, argument) in platform_entry.args.iter().enumerate() {
+                    validate_manifest_text(
+                        &format!("entry.platforms.{platform_key}.args[{index}]"),
+                        argument,
+                        MAX_MCP_ARGUMENT_BYTES,
+                        false,
+                    )?;
+                }
+            }
         }
         McpTransport::StreamableHttp if manifest.entry.url.trim().is_empty() => {
             return Err(McpPackageError::InvalidManifest(

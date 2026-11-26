@@ -177,6 +177,26 @@ fn route(
     ) {
         return response;
     }
+    if let Some(response) = terminal_relay::route(
+        request,
+        route_path,
+        authenticated_device_id.as_deref(),
+        admin_authenticated,
+    ) {
+        return response;
+    }
+    if admin_authenticated {
+        if let Some(response) = route_unified_store(
+            request,
+            route_path,
+            tool_registry,
+            capability_runtime,
+            mcp_servers,
+            control_plane_root,
+        ) {
+            return response;
+        }
+    }
     if let Some(response) = otter_locale::handle(
         request,
         route_path,

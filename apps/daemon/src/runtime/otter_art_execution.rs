@@ -420,14 +420,23 @@ fn execute_otter_art_request(
         serde_json::to_value(&request.disabled_parameters).unwrap_or_else(|_| json!([])),
     );
     let arguments = Value::Object(arguments);
-    let result = execute_tool_with_workflows_and_preview_timeout_and_cancellation(
+    let shared_emit = std::cell::RefCell::new(emit_intermediate);
+    let mut relay_emit = |msg: String| {
+        (shared_emit.borrow_mut())(msg);
+    };
+    let mut relay = terminal_relay::DaemonOtterWorkflowRelay::for_otter_ws(
+        request.device_id.clone(),
+        &mut relay_emit,
+    );
+    let result = execute_tool_with_workflows_and_relay(
         &tool,
         &servers,
         workflow_store,
         tool_registry,
         arguments,
-        timeout,
-        cancellation,
+        Some(timeout),
+        Some(cancellation),
+        Some(&mut relay),
         |preview| {
             if !otter_art_request_is_current(
                 &request.request_id,
@@ -468,7 +477,7 @@ fn execute_otter_art_request(
                 port_id: otter_art_primary_output_id(&tool),
                 value,
             };
-            emit_intermediate(otter_protocol_event_json(
+            (shared_emit.borrow_mut())(otter_protocol_event_json(
                 loom_protocol::HOOK_EVENT_ART_PREVIEW,
                 &commit,
             ));

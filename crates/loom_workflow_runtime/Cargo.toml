@@ -14,6 +14,7 @@ loom_native_image.workspace = true
 loom_tool_registry.workspace = true
 loom_workflow_store.workspace = true
 libc.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

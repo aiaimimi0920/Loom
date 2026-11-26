@@ -109,6 +109,8 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
             "/v1/otter/connections/activate"
                 | "/v1/otter/connections/disconnect"
                 | "/v1/otter/locale-report"
+                | "/v1/otter/relay/register"
+                | "/v1/otter/relay/results"
         )
     {
         return true;
@@ -123,6 +125,7 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
     }
     if method == "GET" {
         return path == "/v1/otter/connection-info"
+            || path == "/v1/otter/relay/pending"
             || path == "/v1/capabilities"
             || path == "/v1/ai/status"
             || path == "/v1/ai/models"

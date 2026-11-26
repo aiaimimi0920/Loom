@@ -1,21 +1,27 @@
-// Validated Art, binary and framework package paths plus byte reads.
+// Validated Art, Capability, MCP Server, binary and framework package paths plus byte reads.
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::archive::MAX_PUBLISHED_ZIP_BYTES;
 use crate::filesystem::read_optional_regular_file;
-use crate::model::StoreError;
+use crate::model::{StoreError, StorePackageKind};
 use crate::validation::{is_safe_art_id, is_safe_resource_name};
 
 pub const ARTS_DIR: &str = "arts";
+pub const PACKAGES_DIR: &str = "packages";
 pub const BINARIES_DIR: &str = "binaries";
 /// Framework packages are stored as `<root>/frameworks/<id>.zip`.
 pub const FRAMEWORKS_DIR: &str = "frameworks";
 const MAX_DIGEST_SIDECAR_BYTES: u64 = 4096;
 const MAX_STORED_RESOURCE_BYTES: u64 = 256 * 1024 * 1024;
 
-pub fn art_version_zip_path(root: &Path, id: &str, version: &str) -> Result<PathBuf, StoreError> {
+pub fn package_version_zip_path(
+    root: &Path,
+    kind: StorePackageKind,
+    id: &str,
+    version: &str,
+) -> Result<PathBuf, StoreError> {
     if !is_safe_art_id(id) {
         return Err(StoreError::InvalidArtId(id.to_owned()));
     }
@@ -25,7 +31,44 @@ pub fn art_version_zip_path(root: &Path, id: &str, version: &str) -> Result<Path
             version: version.to_owned(),
         });
     }
-    Ok(root.join(ARTS_DIR).join(id).join(format!("{version}.zip")))
+    match kind {
+        StorePackageKind::Art => Ok(root.join(ARTS_DIR).join(id).join(format!("{version}.zip"))),
+        StorePackageKind::Capability | StorePackageKind::McpServer => Ok(root
+            .join(PACKAGES_DIR)
+            .join(kind.as_str())
+            .join(id)
+            .join(format!("{version}.zip"))),
+    }
+}
+
+pub fn art_version_zip_path(root: &Path, id: &str, version: &str) -> Result<PathBuf, StoreError> {
+    package_version_zip_path(root, StorePackageKind::Art, id, version)
+}
+
+pub fn read_package_zip_version(
+    root: &Path,
+    kind: StorePackageKind,
+    id: &str,
+    version: &str,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    read_optional_regular_file(
+        root,
+        &package_version_zip_path(root, kind, id, version)?,
+        MAX_PUBLISHED_ZIP_BYTES,
+    )
+}
+
+pub fn read_package_zip_version_sha256(
+    root: &Path,
+    kind: StorePackageKind,
+    id: &str,
+    version: &str,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    read_optional_regular_file(
+        root,
+        &package_version_zip_path(root, kind, id, version)?.with_extension("zip.sha256"),
+        MAX_DIGEST_SIDECAR_BYTES,
+    )
 }
 
 pub fn read_art_zip_version(
@@ -33,11 +76,7 @@ pub fn read_art_zip_version(
     id: &str,
     version: &str,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    read_optional_regular_file(
-        root,
-        &art_version_zip_path(root, id, version)?,
-        MAX_PUBLISHED_ZIP_BYTES,
-    )
+    read_package_zip_version(root, StorePackageKind::Art, id, version)
 }
 
 pub fn read_art_zip_version_sha256(
@@ -45,11 +84,7 @@ pub fn read_art_zip_version_sha256(
     id: &str,
     version: &str,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    read_optional_regular_file(
-        root,
-        &art_version_zip_path(root, id, version)?.with_extension("zip.sha256"),
-        MAX_DIGEST_SIDECAR_BYTES,
-    )
+    read_package_zip_version_sha256(root, StorePackageKind::Art, id, version)
 }
 
 pub(crate) fn art_zip_sha256_sidecar(id: &str, zip_bytes: &[u8]) -> String {
