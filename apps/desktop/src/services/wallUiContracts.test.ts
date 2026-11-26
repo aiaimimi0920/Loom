@@ -99,7 +99,9 @@ test("wall confirmations cannot issue an old action after daemon or online conte
 
 test("removed or closed wall editors return focus only after the committed update", () => {
   assert.match(main, /useLayoutEffect\(\(\) => \{\s*if \(busy \|\| !focusAfterClose\.current\) return/);
-  assert.match(main, /if \(!draft && online\) createButton\.current\?\.focus\(\)/);
+  assert.match(main, /if \(!draft && online\)/);
+  assert.match(main, /!createButton\.current\.disabled\) createButton\.current\.focus\(\)/);
+  assert.match(main, /else wallSelector\.current\?\.focus\(\)/);
   assert.match(main, /ref=\{createButton\}/);
   assert.doesNotMatch(main, /setTimeout|addEventListener|keydown|keyCode/);
 });

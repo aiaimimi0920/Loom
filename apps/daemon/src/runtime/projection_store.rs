@@ -14,7 +14,7 @@ struct ProjectionRecord {
     updated_at_ms: u64,
     #[serde(default)]
     delivery: Option<ProjectionDelivery>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_receiver: Option<ProjectionRemoteReceiver>,
 }
 

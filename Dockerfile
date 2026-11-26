@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --locked --release --no-default-features --features runtime-defaults -p loom-daemon && \
     cargo build --locked --release -p loom-cli; \
   else \
+    LOOM_REQUIRE_PREBUILT_WEB_UI=1 LOOM_EMBEDDED_UI_DIST_DIR=/app/apps/desktop/dist/web \
     cargo build --locked --release --no-default-features --features "runtime-defaults,management-ui" -p loom-daemon && \
     cargo build --locked --release -p loom-cli; \
   fi
@@ -26,7 +27,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libssl3 perl-base bubblewrap \
+  && apt-get install -y --no-install-recommends ca-certificates libssl3 perl-base bubblewrap nodejs \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

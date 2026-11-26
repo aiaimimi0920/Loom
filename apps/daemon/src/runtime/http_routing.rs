@@ -229,10 +229,18 @@ fn enforce_request_security_with_policy(
         ));
     }
     if request_requires_json_content_type(&request.method) {
+        let ui_login = request.method == "POST" && request.path == "/ui/";
         if request.header_count("content-type") != 1
-            || !request
-                .header("content-type")
-                .is_some_and(content_type_is_json)
+            || !request.header("content-type").is_some_and(|value| {
+                if ui_login {
+                    value.split(';').next().is_some_and(|kind| {
+                        kind.trim()
+                            .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+                    })
+                } else {
+                    content_type_is_json(value)
+                }
+            })
         {
             return Err(request_security_error(
                 415,
@@ -417,12 +425,11 @@ fn handle_request_job(job: RequestJob, runtime: &DaemonRuntime) {
 }
 
 fn record_shutdown_observed(runtime: &DaemonRuntime) {
+    runtime.shutting_down.store(true, Ordering::Release);
     #[cfg(test)]
     if let Some(observer) = runtime.shutdown_observer.as_ref() {
         observer.record();
     }
-    #[cfg(not(test))]
-    let _ = runtime;
 }
 
 fn record_connection_accepted(runtime: &DaemonRuntime) {

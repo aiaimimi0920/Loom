@@ -81,6 +81,18 @@ fn extract_single_binary(value: &serde_json::Value) -> Option<String> {
 }
 
 pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry, StoreError> {
+    catalog_entry_with_kind(manifest_bytes, None)
+}
+
+pub(crate) fn catalog_entry_from_zip(zip_bytes: &[u8]) -> Result<CatalogEntry, StoreError> {
+    let (kind, bytes) = read_package_manifest(zip_bytes)?;
+    catalog_entry_with_kind(&bytes, Some(kind))
+}
+
+fn catalog_entry_with_kind(
+    manifest_bytes: &[u8],
+    declared: Option<StorePackageKind>,
+) -> Result<CatalogEntry, StoreError> {
     let value: serde_json::Value = serde_json::from_slice(manifest_bytes)?;
     let id = value
         .get("id")
@@ -108,13 +120,14 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
     let is_capability = explicit_kind == Some(StorePackageKind::Capability)
         || (value.get("capabilities").is_some() && value.get("execution").is_none());
 
-    let kind = if is_mcp_server || explicit_kind == Some(StorePackageKind::McpServer) {
+    let inferred = if is_mcp_server || explicit_kind == Some(StorePackageKind::McpServer) {
         StorePackageKind::McpServer
     } else if is_capability {
         StorePackageKind::Capability
     } else {
         StorePackageKind::Art
     };
+    let kind = declared.unwrap_or(inferred);
 
     let framework = match kind {
         StorePackageKind::McpServer => "mcp".to_owned(),
@@ -134,14 +147,13 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
             .ok_or_else(|| StoreError::MissingFramework(id.clone()))?,
     };
 
-    let version = value
-        .get("metadata")
-        .and_then(|metadata| metadata.get("packageSecurity"))
-        .and_then(|security| security.get("version"))
-        .or_else(|| value.get("version"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned();
+    let version = (match kind {
+        StorePackageKind::Art => value.pointer("/metadata/packageSecurity/version"),
+        _ => value.get("version"),
+    })
+    .and_then(|v| v.as_str())
+    .unwrap_or_default()
+    .to_owned();
     if semver::Version::parse(&version).is_err() {
         return Err(StoreError::InvalidVersion {
             id: id.clone(),
@@ -149,22 +161,14 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
         });
     }
 
-    let publisher = value
-        .get("metadata")
-        .and_then(|metadata| metadata.get("packageSecurity"))
-        .and_then(|security| security.get("publisher"))
-        .and_then(|p| p.get("id"))
-        .or_else(|| {
-            value
-                .get("packageSecurity")
-                .and_then(|s| s.get("publisher"))
-                .and_then(|p| p.get("id"))
-        })
-        .or_else(|| value.get("publisher").and_then(|p| p.get("id")))
-        .and_then(|p| p.as_str())
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| StoreError::MissingPublisher(id.clone()))?;
+    let publisher = (match kind {
+        StorePackageKind::Art => value.pointer("/metadata/packageSecurity/publisher/id"),
+        _ => value.pointer("/publisher/id"),
+    })
+    .and_then(|p| p.as_str())
+    .map(str::trim)
+    .filter(|p| !p.is_empty())
+    .ok_or_else(|| StoreError::MissingPublisher(id.clone()))?;
 
     let platforms = extract_platform_matrix(&value);
     let binary = extract_single_binary(&value);
@@ -189,12 +193,29 @@ pub fn catalog_entry_from_manifest(manifest_bytes: &[u8]) -> Result<CatalogEntry
 }
 
 pub fn read_manifest_bytes(zip_bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
+    read_package_manifest(zip_bytes).map(|(_, bytes)| bytes)
+}
+
+pub(crate) fn read_package_manifest(
+    zip_bytes: &[u8],
+) -> Result<(StorePackageKind, Vec<u8>), StoreError> {
     let mut archive = open_bounded_archive(zip_bytes)?;
-    for candidate in [MANIFEST_NAME, CAPABILITY_MANIFEST_NAME, MCP_MANIFEST_NAME] {
+    let mut selected = None;
+    for (candidate, kind) in [
+        (MANIFEST_NAME, StorePackageKind::Art),
+        (CAPABILITY_MANIFEST_NAME, StorePackageKind::Capability),
+        (MCP_MANIFEST_NAME, StorePackageKind::McpServer),
+    ] {
         if let Ok(mut file) = archive.by_name(candidate) {
+            if selected.is_some() {
+                return Err(StoreError::InvalidPublisherSignatureMetadata);
+            }
             let size = file.size();
-            return read_entry_bounded(&mut file, candidate, size, MAX_MANIFEST_BYTES);
+            selected = Some((
+                kind,
+                read_entry_bounded(&mut file, candidate, size, MAX_MANIFEST_BYTES)?,
+            ));
         }
     }
-    Err(StoreError::MissingManifest)
+    selected.ok_or(StoreError::MissingManifest)
 }

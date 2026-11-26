@@ -150,7 +150,7 @@ fn parse_json_string(input: &str) -> Result<(String, &str)> {
                     _ => bail!("unsupported JSON escape in broker envelope"),
                 }
             }
-            c if c.is_control() => bail!("unescaped control character in broker envelope"),
+            c if c <= '\u{001f}' => bail!("unescaped control character in broker envelope"),
             c => {
                 let decoded =
                     char::from_u32(u32::from(c)).context("invalid scalar in broker envelope")?;
@@ -201,5 +201,19 @@ mod tests {
         );
         assert!(decode_broker_response(br#"{"text":"a","extra":1}"#).is_err());
         assert!(decode_broker_response(br#"{"unknown":"a"}"#).is_err());
+    }
+
+    #[test]
+    fn json_control_range_matches_escaped_unicode() {
+        for code in 0x7f..=0x9f {
+            let ch = char::from_u32(code).unwrap();
+            let raw = format!("{{\"text\":\"{ch}\"}}");
+            let escaped = format!("{{\"text\":\"\\u{code:04x}\"}}");
+            assert_eq!(
+                decode_broker_response(raw.as_bytes()).unwrap(),
+                decode_broker_response(escaped.as_bytes()).unwrap()
+            );
+        }
+        assert!(decode_broker_response(b"{\"text\":\"\x1f\"}").is_err());
     }
 }

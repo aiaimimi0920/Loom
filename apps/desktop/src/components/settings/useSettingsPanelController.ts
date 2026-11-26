@@ -38,12 +38,15 @@ import {
 } from "./SettingsPanels";
 import { useSettingsCacheControls } from "./useSettingsCacheControls";
 import { useSettingsShortcutEditors } from "./useSettingsShortcutEditors";
+import { hydrateSettings } from "./settingsHydration";
 import { isDesktopTauriShell } from "../../services/loomRuntimeTarget";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapshot }) {
-  const [draft, setDraft] = useState<LoomSettings>(DEFAULT_LOOM_SETTINGS);
+  const [draft, setDraftState] = useState<LoomSettings>(DEFAULT_LOOM_SETTINGS);
+  const draftRef = useRef(draft);
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const [shortcuts, setShortcuts] = useState<LoomShortcutConfig[]>(Object.values(DEFAULT_LOOM_SETTINGS.shortcuts));
   const [appPaths, setAppPaths] = useState<LoomAppPaths | null>(null);
   const [appDiagnostics, setAppDiagnostics] = useState<Record<SettingsAppId, ApplicationDiagnosticsInfo>>(
@@ -68,21 +71,42 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   const [activeSettingsApp, setActiveSettingsApp] = useState<SettingsAppId>("loom");
   const [openSettingsSection, setOpenSettingsSection] = useState<SettingsSectionId | null>(null);
   const settingsHydratedRef = useRef(false);
-  const suppressNextSettingsSaveRef = useRef(false);
   const settingsSaveTimerRef = useRef<number | null>(null);
-  const settingsSaveActiveRef = useRef(false);
+  const settingsSavePromiseRef = useRef<Promise<void> | null>(null);
+  const settingsSaveErrorRef = useRef<unknown>(null);
+  const [connectionSwitching, setConnectionSwitching] = useState(false);
+  const connectionSwitchingRef = useRef(false);
+  const settingsGenerationRef = useRef(0);
+  const [generalSettingsReady, setGeneralSettingsReady] = useState(false);
+  const setDraft: typeof setDraftState = (update) => {
+    if (!settingsHydratedRef.current || connectionSwitchingRef.current) return;
+    const next = typeof update === "function" ? update(draftRef.current) : update;
+    if (JSON.stringify(next.general) !== JSON.stringify(draftRef.current.general)) {
+      setGeneralSettingsReady(true);
+    }
+    draftRef.current = next;
+    pendingSettingsRef.current = next;
+    setDraftState(next);
+    if (settingsSaveTimerRef.current !== null) window.clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = window.setTimeout(() => {
+      settingsSaveTimerRef.current = null;
+      void flushSettingsQueue();
+    }, 360);
+  };
   const pendingSettingsRef = useRef<LoomSettings | null>(null);
   const lastSavedSettingsRef = useRef<LoomSettings>(DEFAULT_LOOM_SETTINGS);
   const settingsBaseUrlRef = useRef(snapshot.baseUrl);
   const shortcutsRef = useRef(shortcuts);
   const { checkApplicationUpdate, openApplicationLog, openRepository } = useApplicationLinks(appDiagnostics);
 
-  const flushSettingsQueue = useCallback(async () => {
-    if (settingsSaveActiveRef.current) return;
-    settingsSaveActiveRef.current = true;
+  const flushSettingsQueue = useCallback((): Promise<void> => {
+    if (settingsSavePromiseRef.current) return settingsSavePromiseRef.current;
+    const promise = (async () => {
+    settingsSaveErrorRef.current = null;
     while (pendingSettingsRef.current) {
       const nextSettings = pendingSettingsRef.current;
       const baseUrl = settingsBaseUrlRef.current;
+      const generation = settingsGenerationRef.current;
       pendingSettingsRef.current = null;
       try {
         const loomGeneralChanged =
@@ -92,9 +116,8 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         const otterCacheChanged =
           JSON.stringify(nextSettings.hook_cache) !== JSON.stringify(lastSavedSettingsRef.current.hook_cache);
         const saved = await saveLoomSettings(baseUrl, nextSettings);
-        if (settingsBaseUrlRef.current === baseUrl) {
-          lastSavedSettingsRef.current = saved;
-        }
+        if (settingsGenerationRef.current !== generation) continue;
+        lastSavedSettingsRef.current = saved;
         if (isDesktopTauriShell() && loomGeneralChanged) {
           try {
             await invoke("apply_loom_general_settings", {
@@ -134,33 +157,39 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
           }
         }
       } catch (error) {
-        if (settingsBaseUrlRef.current === baseUrl) {
+        if (settingsGenerationRef.current === generation) {
+          settingsSaveErrorRef.current = error;
           pendingSettingsRef.current = null;
           if (settingsMountedRef.current) {
-            suppressNextSettingsSaveRef.current = true;
             const rollback = lastSavedSettingsRef.current;
             const rollbackShortcuts = Object.values(rollback.shortcuts);
             shortcutsRef.current = rollbackShortcuts;
-            setDraft(rollback);
+            draftRef.current = rollback;
+            setDraftState(rollback);
             setShortcuts(rollbackShortcuts);
           }
           pushAppToast({
             level: "error",
             text: error instanceof Error ? error.message : uiText("settings.toast.autosaveFailed"),
           });
+          break;
         }
-        break;
       }
     }
-    settingsSaveActiveRef.current = false;
+    })().finally(() => { settingsSavePromiseRef.current = null; });
+    settingsSavePromiseRef.current = promise;
+    return promise;
   }, []);
 
   useEffect(() => {
-    applyLoomGeneralSettings(draft.general);
-  }, [draft.general.language, draft.general.minimize_to_tray, draft.general.theme]);
+    if (generalSettingsReady) applyLoomGeneralSettings(draft.general);
+  }, [draft.general.language, draft.general.minimize_to_tray, draft.general.theme, generalSettingsReady]);
 
   useEffect(() => {
     let cancelled = false;
+    ++settingsGenerationRef.current;
+    setSettingsLoading(true);
+    setGeneralSettingsReady(false);
     settingsBaseUrlRef.current = snapshot.baseUrl;
     settingsHydratedRef.current = false;
     pendingSettingsRef.current = null;
@@ -178,57 +207,29 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         if (cancelled) return;
         const nextShortcuts = loadedShortcuts.length ? loadedShortcuts : Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
         const hydratedSettings = {
-          ...loadedSettings,
-          general: {
-            ...DEFAULT_LOOM_SETTINGS.general,
-            ...loadedSettings.general,
-          },
-          hook_general: {
-            ...DEFAULT_LOOM_SETTINGS.hook_general,
-            ...loadedSettings.hook_general,
-          },
-          system: {
-            ...DEFAULT_LOOM_SETTINGS.system,
-            ...loadedSettings.system,
-          },
-          network: {
-            loom: {
-              ...DEFAULT_LOOM_SETTINGS.network.loom,
-              ...loadedSettings.network?.loom,
-            },
-            hook: {
-              ...DEFAULT_LOOM_SETTINGS.network.hook,
-              ...loadedSettings.network?.hook,
-            },
-          },
-          mcp: {
-            ...DEFAULT_LOOM_SETTINGS.mcp,
-            ...loadedSettings.mcp,
-          },
-          art_store: {
-            ...DEFAULT_LOOM_SETTINGS.art_store,
-            ...loadedSettings.art_store,
-          },
+          ...hydrateSettings(loadedSettings, nextShortcuts),
           loom_cache: loomCacheSettingsForUi(loadedSettings.loom_cache),
           hook_cache: otterCacheSettingsForUi(loadedSettings.hook_cache),
-          shortcuts: Object.fromEntries(nextShortcuts.map((shortcut) => [shortcut.id, shortcut])),
         };
         lastSavedSettingsRef.current = hydratedSettings;
         shortcutsRef.current = nextShortcuts;
-        suppressNextSettingsSaveRef.current = true;
-        setDraft(hydratedSettings);
+        draftRef.current = hydratedSettings;
+        setDraftState(hydratedSettings);
         setShortcuts(nextShortcuts);
         setAppPaths(loadedPaths);
         settingsHydratedRef.current = true;
+        setSettingsLoading(false);
+        setGeneralSettingsReady(true);
       } catch (error) {
         if (cancelled) return;
         const fallbackShortcuts = Object.values(DEFAULT_LOOM_SETTINGS.shortcuts);
         lastSavedSettingsRef.current = DEFAULT_LOOM_SETTINGS;
         shortcutsRef.current = fallbackShortcuts;
-        suppressNextSettingsSaveRef.current = true;
-        setDraft(DEFAULT_LOOM_SETTINGS);
+        draftRef.current = DEFAULT_LOOM_SETTINGS;
+        setDraftState(DEFAULT_LOOM_SETTINGS);
         setShortcuts(fallbackShortcuts);
         settingsHydratedRef.current = true;
+        setSettingsLoading(false);
         pushAppToast({
           level: "error",
           text: error instanceof Error ? uiFormat("settings.toast.usingDefaultsWithError", { error: error.message }) : uiText("settings.toast.usingDefaults"),
@@ -240,6 +241,19 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
       cancelled = true;
     };
   }, [snapshot.baseUrl]);
+
+  const prepareConnectionSwitch = async () => {
+    connectionSwitchingRef.current = true;
+    setConnectionSwitching(true);
+    setShortcutEditor(null);
+    setQuickBindingEditor(null);
+    if (settingsSaveTimerRef.current !== null) {
+      window.clearTimeout(settingsSaveTimerRef.current);
+      settingsSaveTimerRef.current = null;
+    }
+    await flushSettingsQueue();
+    if (settingsSaveErrorRef.current) throw settingsSaveErrorRef.current;
+  };
 
   useEffect(() => {
     if (!isDesktopTauriShell()) return;
@@ -295,28 +309,6 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   }, [activeSettingsApp, openSettingsSection, snapshot.baseUrl]);
 
   useEffect(() => {
-    if (!settingsHydratedRef.current) return;
-    if (suppressNextSettingsSaveRef.current) {
-      suppressNextSettingsSaveRef.current = false;
-      return;
-    }
-    pendingSettingsRef.current = draft;
-    if (settingsSaveTimerRef.current !== null) {
-      window.clearTimeout(settingsSaveTimerRef.current);
-    }
-    settingsSaveTimerRef.current = window.setTimeout(() => {
-      settingsSaveTimerRef.current = null;
-      void flushSettingsQueue();
-    }, 360);
-    return () => {
-      if (settingsSaveTimerRef.current !== null) {
-        window.clearTimeout(settingsSaveTimerRef.current);
-        settingsSaveTimerRef.current = null;
-      }
-    };
-  }, [draft, flushSettingsQueue]);
-
-  useEffect(() => {
     settingsMountedRef.current = true;
     return () => {
       settingsMountedRef.current = false;
@@ -328,6 +320,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   }, [flushSettingsQueue]);
 
   const updateShortcutDraft = (id: string, label: string, keys: string) => {
+    if (!settingsHydratedRef.current || connectionSwitchingRef.current) return;
     const existing = shortcutsRef.current.find((shortcut) => shortcut.id === id);
     const updated: LoomShortcutConfig = {
       id,
@@ -442,11 +435,19 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   };
 
   const selectSettingsApp = (app: SettingsAppId) => {
+    if (connectionSwitchingRef.current) return;
     setActiveSettingsApp(app);
     setOpenSettingsSection(null);
   };
 
   return {
+    settingsLoading,
+    connectionSwitching,
+    prepareConnectionSwitch,
+    finishConnectionSwitch: () => {
+      connectionSwitchingRef.current = false;
+      setConnectionSwitching(false);
+    },
     activeSettingsApp,
     appDiagnostics,
     appPaths,

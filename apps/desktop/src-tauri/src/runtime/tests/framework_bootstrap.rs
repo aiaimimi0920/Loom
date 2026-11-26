@@ -73,6 +73,7 @@ fn packaged_art_bootstrap_upgrades_changed_framework_version_after_art_catalog_a
     .expect("write previously applied Art catalog marker");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind upgrade fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read upgrade fixture address");
     let (request_tx, request_rx) = mpsc::channel();
     let server = thread::spawn(move || {
@@ -143,6 +144,7 @@ fn packaged_framework_install_falls_back_for_an_old_daemon() {
     .expect("write framework checksum");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind old daemon fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read old daemon address");
     let (request_tx, request_rx) = mpsc::channel();
     let server = thread::spawn(move || {
@@ -193,9 +195,11 @@ fn packaged_framework_install_falls_back_for_an_old_daemon() {
 
 #[test]
 fn packaged_framework_install_does_not_mask_other_daemon_errors() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let root = unique_temp_dir("framework-daemon-error");
     let desktop_exe = root.join("Loom.exe");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind daemon error fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read daemon error address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept failed install request");

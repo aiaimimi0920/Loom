@@ -4,7 +4,7 @@ This release unifies authenticated Otter bridge connectivity, live projection, o
 
 ### Highlights
 
-- **Authenticated Otter Bridge & Multi-Device Hub**: strengthens native TLS 1.3 bridge identity verification, connection lifecycles, two-level host/app-session device hierarchy, multi-device Otter workflow sync, and three-tier NAccount Cloud Relay support. Upgrade alongside the matching Otter release.
+- **Authenticated Otter Bridge & Multi-Device Hub**: strengthens native TLS 1.3 bridge identity verification, connection lifecycles, two-level host/app-session device hierarchy, multi-device Otter workflow sync, and reserved NAccount Cloud Relay configuration (cloud transport is not implemented). Upgrade alongside the matching Otter release.
 - **Three Build Editions & Embedded Web Console**: supports `desktop` (Windows `Loom.exe` + sidecar daemon), `web` (`loom-daemon` with embedded `/ui/` management console + `loom` CLI), and `api` (headless `loom-daemon` + `loom` CLI) across Windows and Linux Docker deployments.
 - **Outbound & Inbound MCP Ecosystem**: exposes Loom capabilities to external AI clients over `POST /mcp` and `loom mcp-stdio` guarded by fine-grained Scoped Share Tokens, alongside cross-platform packaged MCP server runtimes.
 - **Live Projection & Hybrid Workflow Execution**: refines H.264/JPEG/raw BGRA media continuity and fallback rules, plus dynamic cross-end workflow step relay between server compute and paired terminals.

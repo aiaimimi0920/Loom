@@ -23,12 +23,16 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
   const [activationDelayMs, setActivationDelayMs] = useState(0);
   const { state, draft, inventory, busy, error, loading } = catalog;
   const createButton = useRef<HTMLButtonElement>(null);
+  const wallSelector = useRef<HTMLSelectElement>(null);
   const focusAfterClose = useRef(false);
   // The confirmation closes before the asynchronous editor removal; restore after the actual commit.
   useLayoutEffect(() => {
     if (busy || !focusAfterClose.current) return;
     focusAfterClose.current = false;
-    if (!draft && online) createButton.current?.focus();
+    if (!draft && online) {
+      if (createButton.current && !createButton.current.disabled) createButton.current.focus();
+      else wallSelector.current?.focus();
+    }
   }, [busy, draft, online]);
   const conflict = Boolean(draft && state && draft.baseRevision !== state.revision);
   const schedulable = Boolean(
@@ -136,6 +140,7 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
             ) : state.layouts.length > 6 ? (
               <Field label={t("devices.wall.wallSelectLabel")}>
                 <Select
+                  ref={wallSelector}
                   value={draft?.persisted ? draft.layout.wallId : ""}
                   disabled={busy}
                   onChange={(event) => {

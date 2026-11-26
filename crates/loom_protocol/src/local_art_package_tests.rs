@@ -6,21 +6,28 @@ fn value() -> serde_json::Value {
 }
 #[test]
 fn package_schema_and_dto_reject_missing_extra_and_unsafe_fields() {
-    let mut schema: serde_json::Value =
+    let schema: serde_json::Value =
         serde_json::from_str(crate::schemas::LOCAL_ART_PACKAGE_V1).unwrap();
     let grant: serde_json::Value =
         serde_json::from_str(crate::schemas::LOCAL_ART_GRANT_V1).unwrap();
-    // Local `$ref`s inside `grant` depend on `binding`/`source` definitions; merge `$defs` wholesale to preserve the public schema semantics.
-    schema["$defs"]
-        .as_object_mut()
+    // Register original public IDs. Rewriting their references would hide broken URI contracts.
+    let registry = jsonschema::Registry::new()
+        .add(
+            schema["$id"].as_str().unwrap(),
+            jsonschema::Resource::from_contents(schema.clone()),
+        )
         .unwrap()
-        .extend(grant["$defs"].as_object().unwrap().clone());
-    schema["$defs"]["package"]["properties"]["grant"] = json!({"$ref":"#/$defs/grant"});
-    schema["$ref"] = json!("#/$defs/package");
-    for field in ["type", "properties", "required", "additionalProperties"] {
-        schema.as_object_mut().unwrap().remove(field);
-    }
-    let validator = jsonschema::validator_for(&schema).unwrap();
+        .add(
+            grant["$id"].as_str().unwrap(),
+            jsonschema::Resource::from_contents(grant.clone()),
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&json!({"$ref": format!("{}#/$defs/package", schema["$id"].as_str().unwrap())}))
+        .unwrap();
     assert!(validator.is_valid(&value()));
     serde_json::from_value::<Package>(value())
         .unwrap()
@@ -60,4 +67,53 @@ fn resource_contract_checks_duplicates_and_arithmetic_before_allocation() {
         })
         .collect::<Vec<_>>();
     assert!(validate_resources(&list).is_err());
+}
+
+#[test]
+fn versioned_package_schemas_resolve_original_public_ids_offline() {
+    let sources = [
+        crate::schemas::LOCAL_ART_GRANT_V1,
+        crate::schemas::LOCAL_ART_PACKAGE_V1,
+        include_str!("../../../protocol/schemas/local-art-package.v2.schema.json"),
+        include_str!("../../../protocol/schemas/local-art-package.v3.schema.json"),
+    ];
+    let mut registry = jsonschema::Registry::new();
+    for source in sources {
+        let schema: serde_json::Value = serde_json::from_str(source).unwrap();
+        let id = schema["$id"].as_str().unwrap().to_owned();
+        registry = registry
+            .add(&id, jsonschema::Resource::from_contents(schema))
+            .unwrap();
+    }
+    let registry = registry.prepare().unwrap();
+    for version in [2, 3] {
+        let validator = jsonschema::options()
+            .with_registry(&registry)
+            .build(&json!({"$ref": format!(
+                "https://neuro.example/schemas/local-art-package.v{version}.schema.json#/$defs/package"
+            )}))
+            .unwrap();
+        let mut valid = json!({
+            "protocolVersion": format!("loom.art.local.package.v{version}"),
+            "package": value(),
+            "ports": {"inputs": [], "outputs": []}
+        });
+        if version == 3 {
+            valid["visibility"] = json!({"inputs": [], "outputs": []});
+        }
+        assert!(validator.is_valid(&valid), "v{version} valid package");
+        for field in ["ports", "visibility"] {
+            if version == 2 && field == "visibility" {
+                continue;
+            }
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(!validator.is_valid(&invalid), "v{version} requires {field}");
+        }
+        valid["package"]["grant"] = json!({});
+        assert!(
+            !validator.is_valid(&valid),
+            "v{version} must validate nested grant"
+        );
+    }
 }

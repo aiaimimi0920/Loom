@@ -375,8 +375,8 @@ export default function App() {
       <header className="app-titlebar">
         <div
           className="app-titlebar__drag-region"
-          data-tauri-drag-region
-          onDoubleClick={() => void runWindowCommand("toggle-maximize")}
+          data-tauri-drag-region={isDesktopTauriShell() || undefined}
+          onDoubleClick={isDesktopTauriShell() ? () => void runWindowCommand("toggle-maximize") : undefined}
         >
           {activeSection === "settings" ? (
             <IconButton
@@ -402,7 +402,7 @@ export default function App() {
           >
             <ShellIcon kind="refresh" />
           </IconButton>
-          <IconButton
+          {isDesktopTauriShell() ? <><IconButton
             className="loom-window-control"
             variant="quiet"
             label={t("shell.window.minimize")}
@@ -428,7 +428,7 @@ export default function App() {
             onClick={() => void runWindowCommand("close")}
           >
             <ShellIcon kind="close" />
-          </IconButton>
+          </IconButton></> : null}
         </div>
       </header>
 

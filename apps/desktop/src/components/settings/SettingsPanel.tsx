@@ -31,7 +31,8 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
         <LoomSettingsSections baseUrl={snapshot.baseUrl} controller={controller} />
       </TabPanel>
       <TabPanel className="settings-app-panel" value="hook">
-        <div className="settings-accordion">
+        <fieldset className="settings-accordion" disabled={controller.connectionSwitching || controller.settingsLoading}
+          style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
           <SettingsAccordionSection id="general" label={t("settings.sections.general")} open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
             <OtterLanguageSettings baseUrl={snapshot.baseUrl} online={snapshot.connectionState === "online"}
               active={activeSettingsApp === "hook" && openSettingsSection === "general"} />
@@ -52,7 +53,7 @@ export function SettingsPanel({ snapshot }: { snapshot: LoomSnapshot }) {
               onLogLevelChange={logLevel => setDraft(current => ({ ...current, system: { ...current.system, hook_log_level: logLevel } }))}
               onCheckUpdate={() => checkApplicationUpdate("hook")} onOpenLog={target => void openApplicationLog("hook", target)} onOpenRepository={url => void openRepository(url)} />
           </SettingsAccordionSection>
-        </div>
+        </fieldset>
       </TabPanel>
       <ShortcutEditDialog controller={controller} />
       <QuickBindingDialog controller={controller} />

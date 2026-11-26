@@ -77,6 +77,11 @@ mod visible_product {
         assert_eq!(actual["occlusionChecked"], true);
         let expected: Vec<Vec<u8>> = serde_json::from_value(rgb).unwrap();
         let received: Vec<Vec<u8>> = serde_json::from_value(actual["actualRgb"].clone()).unwrap();
+        assert_eq!(received.len(), expected.len(), "sample count");
+        assert!(
+            received.iter().all(|rgb| rgb.len() == 3),
+            "RGB channel count"
+        );
         assert!(received
             .iter()
             .flatten()

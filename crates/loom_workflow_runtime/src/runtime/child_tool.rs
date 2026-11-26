@@ -32,7 +32,13 @@ fn configured_child_version_range(
                     .or_else(|| ranges.get(&locked.id))
             })
         });
-        if let Some(raw_str) = raw_range.and_then(JsonValue::as_str) {
+        if let Some(raw) = raw_range {
+            let raw_str = raw
+                .as_str()
+                .ok_or_else(|| ToolRegistryError::InvalidToolDefinition {
+                    id: child_id.to_owned(),
+                    reason: "artVersionRanges requirement must be a SemVer string".to_owned(),
+                })?;
             let parsed = VersionReq::parse(raw_str.trim()).map_err(|error| {
                 ToolRegistryError::InvalidToolDefinition {
                     id: child_id.to_owned(),
@@ -157,7 +163,7 @@ pub(super) fn resolve_workflow_child_tool(
             return Ok(Some(rebound));
         }
         if let Some(locked_tool) = locked_candidate {
-            if tool_semver(&locked_tool).is_none_or(|ver| version_req.matches(&ver)) {
+            if tool_semver(&locked_tool).is_some_and(|ver| version_req.matches(&ver)) {
                 return Ok(Some(locked_tool));
             }
             return Ok(None);

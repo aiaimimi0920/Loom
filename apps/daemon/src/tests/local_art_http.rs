@@ -1,6 +1,6 @@
 // Real HTTP, signed device authentication, immutable install and independent grant verification.
 mod local_art_http {
-    use super::wall_http::{admin, device, pair, public};
+    use super::wall_http::{admin, device, issue_session, pair, pair_with_key, public};
     use super::*;
     include!("local_art_describe_http.rs");
     include!("local_art_service_fixture.rs");
@@ -35,6 +35,7 @@ mod local_art_http {
         port: u16,
         server: ConcurrencyTestFixture,
         device: String,
+        key: ed25519_dalek::SigningKey,
         token: String,
         request: Value,
         issuer: Value,
@@ -199,7 +200,8 @@ mod local_art_http {
             let (tx, rx) = mpsc::channel();
             let server =
                 ConcurrencyTestFixture::new(tx, thread::spawn(move || daemon.serve_until(rx)));
-            let (device, token) = pair(port, "Local Art client");
+            let key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+            let (device, token) = pair_with_key(port, "Local Art client", &key);
             let request = json!({"binding":{"origin":format!("http://127.0.0.1:{port}"),"requestId":"request:1","deviceId":device,
                 "workspaceId":"workspace:1","instanceId":"instance:1","generation":1,"artId":"publisher.test/local-counter",
                 "artVersion":"1.0.0","packageDigest":digest,"sdkVersion":"otter.art.v1"},"permissions":if service{json!(["local_state","preview","loom_service"])}else{json!(["local_state","preview"])},"services":services});
@@ -208,6 +210,7 @@ mod local_art_http {
                 port,
                 server,
                 device,
+                key,
                 token,
                 request,
                 issuer,
@@ -231,8 +234,12 @@ mod local_art_http {
         }
         fn prepare(&self, mut request: Value) -> (u16, Value) {
             let object = request.as_object_mut().unwrap();
-            object.entry("protocolVersion").or_insert_with(|| loom_protocol::local_art::package::visibility::PREPARE.into());
-            object.entry("knownSourceDigest").or_insert_with(|| "0".repeat(64).into());
+            object
+                .entry("protocolVersion")
+                .or_insert_with(|| loom_protocol::local_art::package::visibility::PREPARE.into());
+            object
+                .entry("knownSourceDigest")
+                .or_insert_with(|| "0".repeat(64).into());
             device(
                 self.port,
                 &self.token,

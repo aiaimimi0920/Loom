@@ -95,6 +95,7 @@ fn native_daemon_client_discovers_persisted_bearer_token_and_settings_exchange_u
     std::env::remove_var("LOOM_DAEMON_TOKEN");
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind daemon auth fixture");
+    let origin = TestDaemonOrigin::bind_with_root(&listener, &root);
     let address = listener.local_addr().expect("daemon auth fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept daemon auth request");
@@ -107,11 +108,17 @@ fn native_daemon_client_discovers_persisted_bearer_token_and_settings_exchange_u
         .expect("authenticated daemon request");
     assert_eq!(response["status"], "ready");
     server.join().expect("join daemon auth fixture");
+    let base_url = format!("http://127.0.0.1:{}", address.port());
     assert_eq!(
-        settings_links("http://127.0.0.1:8765").tea,
-        "http://127.0.0.1:8765/settings/tea?token=desktop-secret"
+        settings_links(&base_url).tea,
+        format!("{base_url}/settings/tea?token=desktop-secret")
+    );
+    assert_eq!(
+        settings_links("http://127.0.0.1:1").tea,
+        "http://127.0.0.1:1/settings/tea"
     );
 
+    drop(origin);
     restore_env("LOOM_CONTROL_PLANE_ROOT", previous_root);
     restore_env("LOOM_DAEMON_TOKEN", previous_token);
     let _ = fs::remove_dir_all(root);
@@ -130,6 +137,72 @@ fn runtime_config_accepts_an_isolated_otter_bridge_port() {
     assert_eq!(config.hook_bridge_url, "ws://127.0.0.1:43127");
     restore_env("LOOM_HOOK_BRIDGE_URL", previous_bridge_url);
     restore_env("LOOM_HOOK_BRIDGE_PORT", previous_bridge_port);
+}
+
+#[test]
+fn profile_save_waits_for_daemon_start_and_remote_bridge_wins() {
+    let _env = ENV_LOCK.lock().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let _origin = TestDaemonOrigin::bind(&listener);
+    let start_guard = DAEMON_START_LOCK.lock().unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let saver = thread::spawn(move || {
+        entered_tx.send(()).unwrap();
+        done_tx
+            .send(save_loom_connection_profile_blocking(
+                loom_local_data::LoomConnectionUpdate {
+                    mode: loom_local_data::ConnectionMode::Remote,
+                    remote_url: Some("http://192.168.99.1:8765".into()),
+                    otter_bridge_url: Some("ws://192.168.99.1:8787".into()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    assert!(!is_remote_connection_mode());
+    drop(start_guard);
+    let status = done_rx
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    saver.join().unwrap();
+    assert_eq!(status.active_url, "http://192.168.99.1:8765");
+    assert!(active_loom_daemon_url().is_none());
+    let mut bridge = ACTIVE_OTTER_BRIDGE_URL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap();
+    let previous = bridge.replace("ws://127.0.0.1:1".into());
+    drop(bridge);
+    assert_eq!(configured_otter_bridge_url(), "ws://192.168.99.1:8787");
+    *ACTIVE_OTTER_BRIDGE_URL.get().unwrap().lock().unwrap() = previous;
+    assert!(!start_loom_daemon_blocking().unwrap().started);
+}
+
+#[test]
+fn repeated_local_save_preserves_isolated_daemon_endpoint() {
+    let _env = ENV_LOCK.lock().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let _origin = TestDaemonOrigin::bind(&listener);
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    *ACTIVE_DAEMON_URL.get().unwrap().lock().unwrap() = Some(endpoint.clone());
+    std::env::set_var("LOOM_DAEMON_URL", "http://127.0.0.1:1");
+    let server = thread::spawn(move || {
+        for expected in ["GET /health ", "GET /status "] {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(read_test_http_request(&mut stream).starts_with(expected));
+            write_test_json_response(&mut stream, "200 OK", "{}");
+        }
+    });
+    let status =
+        save_loom_connection_profile_blocking(loom_local_data::LoomConnectionUpdate::default())
+            .unwrap();
+    assert_eq!(status.active_url, endpoint);
+    assert_eq!(active_loom_daemon_url().as_deref(), Some(endpoint.as_str()));
+    server.join().unwrap();
 }
 
 #[cfg(target_os = "windows")]

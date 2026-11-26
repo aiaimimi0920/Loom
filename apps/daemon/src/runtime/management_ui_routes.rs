@@ -40,14 +40,17 @@ const MANAGEMENT_UI_LOGIN_HTML: &str = concat!(
     "button:hover{background:#1d4ed8}",
     "</style></head><body><main class=\"card\">",
     "<h1>Loom Web Management Console</h1>",
-    "<p>Enter the server <code>daemon-token</code> to establish a secure session (HttpOnly cookie; token is not kept in the URL bar).</p>",
-    "<form method=\"get\" action=\"/ui/\">",
+    "<p>Enter the server <code>daemon-token</code> to establish an HttpOnly session. Use HTTPS or a trusted loopback tunnel; plaintext LAN HTTP is not encrypted.</p>",
+    "<form method=\"post\" action=\"/ui/\">",
     "<input type=\"password\" name=\"token\" placeholder=\"Paste daemon-token\" autocomplete=\"current-password\" required>",
     "<button type=\"submit\">Open Console</button>",
     "</form></main></body></html>"
 );
 
-fn route_management_ui(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> Option<RouteResponse> {
+fn route_management_ui(
+    runtime: &DaemonRuntime,
+    request: &ParsedHttpRequest,
+) -> Option<RouteResponse> {
     let route_path = request
         .path
         .split('?')
@@ -56,11 +59,13 @@ fn route_management_ui(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> 
     if route_path != "/ui" && !route_path.starts_with("/ui/") {
         return None;
     }
-    if !matches!(request.method.as_str(), "GET" | "HEAD") {
+    if !matches!(request.method.as_str(), "GET" | "HEAD")
+        && !(request.method == "POST" && route_path == "/ui/")
+    {
         let (status, body) = request_security_error(
             405,
             "method_not_allowed",
-            "management UI only accepts GET or HEAD requests",
+            "management UI accepts GET/HEAD assets or POST /ui/ login",
         );
         return Some(RouteResponse::Text { status, body });
     }
@@ -84,7 +89,17 @@ fn route_management_ui(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> 
             );
             return Some(RouteResponse::Text { status, body });
         }
-        if request.query_parameter("token").as_deref() == Some(runtime.auth_token.as_str()) {
+        let login_token = if request.method == "POST" && request.body.len() <= 16 * 1024 {
+            request.body.split('&').find_map(|pair| {
+                let (name, value) = pair.split_once('=')?;
+                (name == "token")
+                    .then(|| percent_decode_component(value))
+                    .flatten()
+            })
+        } else {
+            None
+        };
+        if login_token.as_deref() == Some(runtime.auth_token.as_str()) {
             return Some(RouteResponse::TextWithHeaders {
                 status: 303,
                 headers: vec![
@@ -101,6 +116,11 @@ fn route_management_ui(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> 
                 ],
                 body: String::new(),
             });
+        }
+        if request.method == "POST" {
+            let (status, body) =
+                request_security_error(401, "unauthorized", "invalid management UI credential");
+            return Some(RouteResponse::Text { status, body });
         }
         if route_path == "/ui" {
             return Some(RouteResponse::TextWithHeaders {

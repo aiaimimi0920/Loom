@@ -60,12 +60,16 @@ fn mcp_registry_gets_a_timeout_longer_than_the_daemon_outbound_fetch() {
 }
 
 #[test]
-fn daemon_commands_prefer_the_active_owned_daemon_over_a_stale_frontend_url() {
+fn daemon_commands_never_retarget_explicit_frontend_requests() {
     assert_eq!(
         resolve_command_base_url_with_active(
             DEFAULT_LOOM_DAEMON_URL.to_owned(),
             Some("http://127.0.0.1:49321/".to_owned()),
         ),
+        DEFAULT_LOOM_DAEMON_URL
+    );
+    assert_eq!(
+        resolve_command_base_url_with_active(String::new(), Some("http://127.0.0.1:49321/".into())),
         "http://127.0.0.1:49321"
     );
     assert_eq!(
@@ -325,7 +329,9 @@ fn offline_snapshot_preserves_settings_links() {
 
 #[test]
 fn optional_daemon_module_failure_keeps_snapshot_online() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind snapshot fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read snapshot fixture address");
@@ -403,7 +409,9 @@ fn optional_daemon_module_failure_keeps_snapshot_online() {
 
 #[test]
 fn daemon_http_error_preserves_structured_message() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind error fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read error fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept error request");
@@ -433,7 +441,9 @@ fn daemon_http_error_preserves_structured_message() {
 
 #[test]
 fn daemon_http_client_accepts_successful_non_200_status() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind success fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read success fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept success request");

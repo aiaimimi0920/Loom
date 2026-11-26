@@ -39,7 +39,8 @@ test("native window commands and the settings return still belong to Loom", () =
   for (const command of ["minimize", "toggle-maximize", "close"]) {
     assert.match(app, new RegExp(`onClick=\\{\\(\\) => void runWindowCommand\\("${command}"\\)\\}`));
   }
-  assert.match(app, /data-tauri-drag-region\s+onDoubleClick=\{\(\) => void runWindowCommand\("toggle-maximize"\)\}/);
+  assert.match(app, /data-tauri-drag-region=\{isDesktopTauriShell\(\) \|\| undefined\}/);
+  assert.match(app, /onDoubleClick=\{isDesktopTauriShell\(\) \? \(\) => void runWindowCommand\("toggle-maximize"\) : undefined\}/);
   assert.match(
     app,
     /label=\{t\("shell\.titlebar\.backToMcp"\)\}[\s\S]*?onDoubleClick=\{\(event\) => event.stopPropagation\(\)\}[\s\S]*?onClick=\{\(\) => setActiveSection\("mcp"\)\}/,

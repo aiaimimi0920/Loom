@@ -269,10 +269,20 @@ pub(super) fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<S
 }
 
 pub(super) fn daemon_auth_token() -> Result<Option<String>, String> {
-    if is_remote_connection_mode() {
-        if let Some(remote_token) = connection_store().load_remote_token()? {
-            return Ok(Some(remote_token));
-        }
+    daemon_auth_token_for(&configured_loom_daemon_url())
+}
+
+pub(super) fn daemon_auth_token_for(base_url: &str) -> Result<Option<String>, String> {
+    let profile = connection_store().load_profile()?;
+    if profile.mode == loom_local_data::ConnectionMode::Remote {
+        return connection_store().load_remote_token_for(base_url);
+    }
+    // Never attach the local administrator bearer to an arbitrary remote destination.
+    let target = loom_local_data::parse_loom_endpoint_url(base_url, false)?;
+    let configured =
+        loom_local_data::parse_loom_endpoint_url(&configured_local_daemon_url(), false)?;
+    if target.origin() != configured.origin() {
+        return Err("Loom connection changed; reload before sending this request.".to_owned());
     }
     if let Some(value) = std::env::var_os("LOOM_DAEMON_TOKEN").filter(|value| !value.is_empty()) {
         return normalize_daemon_auth_token(&value.to_string_lossy(), "LOOM_DAEMON_TOKEN")
@@ -293,7 +303,17 @@ pub(super) fn daemon_auth_token() -> Result<Option<String>, String> {
 }
 
 pub(super) fn settings_url_with_daemon_token(url: &str) -> String {
-    let Ok(Some(token)) = daemon_auth_token() else {
+    if is_remote_connection_mode() {
+        return url.to_owned();
+    }
+    let Some((origin, _)) = url
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return url.to_owned();
+    };
+    let Ok(Some(token)) = daemon_auth_token_for(&format!("http://{origin}")) else {
         return url.to_owned();
     };
     format!("{url}?token={}", percent_encode_path_segment(&token))

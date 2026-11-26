@@ -53,7 +53,10 @@ export function useArtCreationSubmission({
     const modeInfo = artModeById(draft.mode);
     const selectedWorkflow = workflows.find((workflow) => workflow.id === draft.workflowId);
     const derivedName = draft.name.trim() || selectedWorkflow?.name || modeInfo.title;
-    const repositoryName = normalizeToolId(draft.repositoryName || `${draft.mode}-${derivedName}`);
+    const identityName = draft.name.trim() || selectedWorkflow?.name;
+    const repositoryName = normalizeToolId(
+      draft.repositoryName || (identityName ? `${draft.mode}-${identityName}` : draft.mode),
+    );
     const description = draft.description.trim() || modeInfo.subtitle;
     const workflowBindings = workflowBindingsFromDraft(draft);
     if (selectedFramework?.authoringSchema) {

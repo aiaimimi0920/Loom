@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::catalog::build_unified_catalog;
 use crate::filesystem::ensure_write_parent;
 use crate::indexes::assign_global_art_id;
-use crate::manifest::{catalog_entry_from_manifest, read_manifest_bytes};
+use crate::manifest::catalog_entry_from_zip;
 use crate::model::{PublishedArt, StoreError};
 use crate::persistence::{lock_store, write_bytes_atomic};
 use crate::signature::verify_published_package_signature;
@@ -27,8 +27,7 @@ pub fn store_published_zip(
     declared_id: Option<&str>,
     zip_bytes: &[u8],
 ) -> Result<PublishedArt, StoreError> {
-    let manifest = read_manifest_bytes(zip_bytes)?;
-    let entry = catalog_entry_from_manifest(&manifest)?;
+    let entry = catalog_entry_from_zip(zip_bytes)?;
     if entry.id.is_empty() {
         return Err(StoreError::MissingManifest);
     }

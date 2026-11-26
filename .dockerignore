@@ -11,6 +11,12 @@ tmp/
 *.log
 
 apps/desktop/
+!apps/desktop/
+apps/desktop/*
+!apps/desktop/dist/
+apps/desktop/dist/*
+!apps/desktop/dist/web/
+!apps/desktop/dist/web/**
 docs/
 output/
 release/

@@ -40,12 +40,11 @@ pub struct Image {
 }
 impl Image {
     pub fn validate(&self) -> Result<(), Error> {
-        let pixels = u64::from(self.width) * u64::from(self.height) * 4;
         if self.width == 0
             || self.height == 0
             || self.width > 4096
             || self.height > 4096
-            || pixels > MAX_PIXELS as u64
+            || u64::from(self.width) * u64::from(self.height) * 4 > MAX_PIXELS as u64
             || self.png.len() > 4 * MAX_PNG.div_ceil(3)
             || self.digest.len() != 64
             || !self
@@ -100,6 +99,9 @@ mod tests {
         };
         assert!(image.validate().is_ok());
         image.width = 8193;
+        assert_eq!(image.validate(), Err(Error::Limit));
+        image.width = u32::MAX;
+        image.height = u32::MAX;
         assert_eq!(image.validate(), Err(Error::Limit));
         image.width = 4096;
         image.height = 4096;

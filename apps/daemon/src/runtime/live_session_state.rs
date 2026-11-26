@@ -131,6 +131,8 @@ impl Default for LiveRelayStatus {
 struct LiveSessionStore {
     state: Mutex<BTreeMap<String, LiveSessionRecord>>,
     changed: Condvar,
+    #[cfg(test)]
+    waiting_event_polls: AtomicUsize,
     media_cancelled: Arc<AtomicBool>,
     media_connections: Arc<AtomicUsize>,
     media_workers: Mutex<Vec<JoinHandle<()>>>,
@@ -142,6 +144,8 @@ impl LiveSessionStore {
         Self {
             state: Mutex::new(BTreeMap::new()),
             changed: Condvar::new(),
+            #[cfg(test)]
+            waiting_event_polls: AtomicUsize::new(0),
             media_cancelled: Arc::new(AtomicBool::new(false)),
             media_connections: Arc::new(AtomicUsize::new(0)),
             media_workers: Mutex::new(Vec::new()),

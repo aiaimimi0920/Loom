@@ -268,5 +268,68 @@ fn semver_child_art_rebinding_upgrades_compatible_minor_and_ignores_major_breaki
             .expect("locked child returned");
     assert_eq!(fallback.description, "locked v1.0.0");
 
+    let metadata = parent_with_range.metadata.as_mut().unwrap();
+    metadata["artPackage"]["lockedArts"]["neuro.official/upscale"]["metadata"]["packageSecurity"]
+        ["version"] = json!("not-semver");
+    assert!(
+        resolve_workflow_child_tool(&parent_with_range, "neuro.official/upscale", &registry)
+            .unwrap()
+            .is_none()
+    );
+    parent_with_range.metadata.as_mut().unwrap()["dependencies"]["artVersionRanges"]
+        ["neuro.official/upscale"] = json!(12);
+    assert!(
+        resolve_workflow_child_tool(&parent_with_range, "neuro.official/upscale", &registry)
+            .is_err()
+    );
+
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_terminal_builtin_nodes_do_not_execute_centrally() {
+    let (root, registry, store) = temp_workflow_env("builtin-terminal");
+    for (uses, placement) in [
+        ("__sticker__", "    placement: otter_terminal\n"),
+        (
+            "core.image.blur",
+            "    meta:\n      placement: otter_terminal\n",
+        ),
+    ] {
+        store
+            .save_workflow(
+                "builtin",
+                &format!("nodes:\n  - id: remote\n    uses: {uses}\n{placement}"),
+            )
+            .unwrap();
+        let tool = ToolDefinition::new(
+            "parent",
+            "Parent",
+            "",
+            ToolExecution::Workflow {
+                workflow_id: "builtin".to_owned(),
+                workflow_bindings: None,
+            },
+        );
+        let mut relay = MockTerminalRelay {
+            connected: true,
+            device_id: "terminal".to_owned(),
+            calls: Vec::new(),
+        };
+        execute_tool_with_workflows_and_relay(
+            &tool,
+            &[],
+            &store,
+            &registry,
+            json!({}),
+            Some(Duration::from_secs(5)),
+            None,
+            Some(&mut relay),
+            |_| {},
+        )
+        .expect("builtin dispatched without central image processing");
+        assert_eq!(relay.calls.len(), 1);
+        assert_eq!(relay.calls[0].1, uses);
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

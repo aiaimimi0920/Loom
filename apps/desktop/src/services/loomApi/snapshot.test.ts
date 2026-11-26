@@ -74,6 +74,15 @@ test("retains only modules that failed in an otherwise online snapshot", () => {
   assert.deepEqual(retained.mcpServers, []);
 });
 
+test("never retains private data across daemon targets", () => {
+  const previous = readinessSnapshot("online");
+  previous.tools = [{ id: "private-art" } as LoomSnapshot["tools"][number]];
+  const next = readinessSnapshot("offline");
+  next.baseUrl = "http://192.168.1.20:8765";
+  assert.equal(retainAvailableSnapshotData(previous, next), next);
+  assert.deepEqual(next.tools, []);
+});
+
 test("waits through transient offline snapshots until the daemon is online", async () => {
   const states: ConnectionState[] = ["offline", "offline", "online"];
   const sleeps: number[] = [];

@@ -42,7 +42,7 @@ In addition to cloud AssetLibrary publications, Loom provides a unified multi-pl
 - `GET /v1/store/catalog` (admin-authenticated) returns:
   - `hostPlatform` (`windows-x64`, `windows-arm64`, `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`, or `universal`) and `supportedPlatforms`;
   - `installed`: unified inventories of installed `arts`, `capabilities`, and `mcpServers`;
-  - `remote`: optional catalog entries fetched from `LOOM_ART_STORE_URL` (`apps/art-store`, default `http://127.0.0.1:8790/catalog`), supporting `art`, `capability`, and `mcp_server` package kinds and platform compatibility matrices.
+  - `remote`: optional catalog entries fetched from the configured `LOOM_ART_STORE_URL` base origin (without `/catalog`; no implicit store default), supporting `art`, `capability`, and `mcp_server` package kinds and platform compatibility matrices.
 
 ## 4. Native package ZIP path compatibility
 
@@ -54,8 +54,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\Test-Nat
 
 ## 5. NAccount 3-tier Cloud Relay (`/v1/cloud-relay/*`)
 
-When signed in with NAccount, Loom supports authenticated three-tier Internet projection relay (`Otter -> Loom 1 -> NAccount Cloud Relay -> Loom 2 -> Otter`) and optional remote MCP tunneling (`apps/daemon/src/cloud_relay.rs`):
+The intended three-tier Internet relay is not implemented. `apps/daemon/src/cloud_relay.rs` exposes configuration and readiness, not a working cloud transport:
 
 - `GET /v1/cloud-relay/status`: returns relay enablement, configured `relayUrl`, projection/MCP exposure flags, and signed-in NAccount readiness.
 - `PUT /v1/cloud-relay/config` (admin-only): persists `settings/cloud-relay.json` (`enabled`, validated HTTPS/loopback `relayUrl`, `exposeMcp`, `exposeProjectionRelay`).
-- `POST /v1/cloud-relay/projection/send` & `GET /v1/cloud-relay/projection/inbox`: exchanges bounded (512 KiB max, 128-envelope ring) NAccount-scoped projection envelopes across paired Loom hubs.
+- `POST /v1/cloud-relay/projection/send` & `GET /v1/cloud-relay/projection/inbox`: after applicable authentication/configuration checks, return `501 cloud_relay_transport_unavailable`, with `relayed: false`. Nothing is sent or queued; status reports `transportAvailable: false` and `active: false`.
+- `POST /v1/cloud-relay/mcp` verifies configuration, NAccount state, and a scoped share token before dispatching in the same daemon. It does not connect to `relayUrl` and is not a cloud tunnel.

@@ -4,6 +4,39 @@ use std::net::TcpListener;
 use std::thread;
 
 #[test]
+fn implicit_credentials_are_lazy_and_loopback_only() {
+    for url in ["http://192.168.1.10:8765", "http://example.com:8765"] {
+        assert_eq!(
+            select_daemon_auth_token(url, None, || panic!("remote read local token")).unwrap(),
+            None
+        );
+        assert_eq!(
+            select_daemon_auth_token(url, Some("chosen"), || panic!("explicit read local token"))
+                .unwrap()
+                .as_deref(),
+            Some("chosen")
+        );
+    }
+    for url in [
+        "http://127.0.0.1:8765",
+        "http://[::1]:8765",
+        "http://localhost:8765",
+    ] {
+        assert_eq!(
+            select_daemon_auth_token(url, None, || Ok(Some("local".into())))
+                .unwrap()
+                .as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            select_daemon_auth_token(url, Some(""), || panic!("disabled read local token"))
+                .unwrap(),
+            None
+        );
+    }
+}
+
+#[test]
 fn help_and_version_do_not_require_a_daemon() {
     let mut help = Vec::new();
     run_cli_with_writer(["loom", "--help"], &mut help).expect("help command");

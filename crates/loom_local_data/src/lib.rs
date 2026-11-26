@@ -3,12 +3,11 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-#[cfg(test)]
-use std::net::Ipv6Addr;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+mod connection_token;
 
 const CONNECTION_FILE_NAME: &str = "connection.json";
 const REMOTE_TOKEN_FILE_NAME: &str = "connection-remote-token";
@@ -91,12 +90,17 @@ pub struct ParsedLoomEndpoint {
 
 impl ParsedLoomEndpoint {
     #[must_use]
-    pub fn origin(&self) -> String {
+    pub fn authority(&self) -> String {
         if self.host.contains(':') && !self.host.starts_with('[') {
-            format!("{}://[{}]:{}", self.scheme, self.host, self.port)
+            format!("[{}]:{}", self.host, self.port)
         } else {
-            format!("{}://{}:{}", self.scheme, self.host, self.port)
+            format!("{}:{}", self.host, self.port)
         }
+    }
+
+    #[must_use]
+    pub fn origin(&self) -> String {
+        format!("{}://{}", self.scheme, self.authority())
     }
 
     pub fn resolve_socket_addr(&self) -> Result<SocketAddr, String> {
@@ -151,6 +155,8 @@ pub fn parse_loom_endpoint_url(
         || rest.contains('?')
         || rest.contains('#')
         || rest.contains('@')
+        || rest.contains('\\')
+        || rest.chars().any(|c| c.is_control() || c.is_whitespace())
     {
         return Err("Loom server URL may contain only a host and port, without paths, query parameters, or credentials.".to_owned());
     }
@@ -160,15 +166,20 @@ pub fn parse_loom_endpoint_url(
             .find(']')
             .ok_or_else(|| "IPv6 host address is missing its closing bracket `]`.".to_owned())?;
         let host = &bracketed[..end];
+        if host.parse::<Ipv6Addr>().is_err() {
+            return Err("Brackets in a Loom server URL require an IPv6 address.".to_owned());
+        }
         let remainder = &bracketed[end + 1..];
         let port = if let Some(port) = remainder.strip_prefix(':') {
             port
-        } else if scheme == "https" && allow_remote {
+        } else if remainder.is_empty() && scheme == "https" && allow_remote {
             "443"
         } else {
             return Err("Loom server URL must include an explicit port.".to_owned());
         };
         (host, port)
+    } else if rest.contains(['[', ']']) || rest.bytes().filter(|&b| b == b':').count() > 1 {
+        return Err("Use [address]:port for IPv6 Loom server URLs.".to_owned());
     } else if let Some((host, port)) = rest.rsplit_once(':') {
         (host, port)
     } else if scheme == "https" && allow_remote {
@@ -278,26 +289,26 @@ impl LoomConnectionStore {
     }
 
     pub fn load_remote_token(&self) -> Result<Option<String>, String> {
-        let path = self.remote_token_path();
-        match read_bounded(&path, MAX_TOKEN_BYTES) {
-            Ok(Some(bytes)) => {
-                let raw = String::from_utf8(bytes).map_err(|error| {
-                    format!("Remote connection token is not valid UTF-8: {error}")
-                })?;
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    Ok(None)
-                } else {
-                    validate_token(trimmed)?;
-                    Ok(Some(trimmed.to_owned()))
-                }
-            }
-            Ok(None) => Ok(None),
-            Err(error) => Err(format!(
-                "Failed to read remote connection token `{}`: {error}",
-                path.display()
-            )),
+        let profile = self.load_profile()?;
+        match profile.remote_url {
+            Some(url) => self.read_token_for_origin(&parse_loom_endpoint_url(&url, true)?.origin()),
+            None => Ok(None),
         }
+    }
+
+    /// Bind a request's immutable destination to its credential, even during profile replacement.
+    pub fn load_remote_token_for(&self, base_url: &str) -> Result<Option<String>, String> {
+        let origin = parse_loom_endpoint_url(base_url, true)?.origin();
+        let profile = self.load_profile()?;
+        let configured = profile
+            .remote_url
+            .as_deref()
+            .map(|url| parse_loom_endpoint_url(url, true).map(|endpoint| endpoint.origin()))
+            .transpose()?;
+        if profile.mode != ConnectionMode::Remote || configured.as_deref() != Some(&origin) {
+            return Err("Loom connection changed; reload before sending this request.".to_owned());
+        }
+        self.read_token_for_origin(&origin)
     }
 
     pub fn status(&self, default_local_url: &str) -> Result<LoomConnectionStatus, String> {
@@ -325,6 +336,9 @@ impl LoomConnectionStore {
         update: LoomConnectionUpdate,
         default_local_url: &str,
     ) -> Result<LoomConnectionStatus, String> {
+        let _guard = connection_token::UPDATE_LOCK
+            .lock()
+            .map_err(|_| "Loom connection update lock is poisoned.".to_owned())?;
         let normalized_remote_url = update
             .remote_url
             .as_deref()
@@ -337,19 +351,6 @@ impl LoomConnectionStore {
                 "A valid Loom server URL is required when switching to remote server mode."
                     .to_owned(),
             );
-        }
-
-        if update.clear_remote_token {
-            let _ = fs::remove_file(self.remote_token_path());
-        } else if let Some(token) = update
-            .remote_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            validate_token(token)?;
-            write_private_atomic(&self.remote_token_path(), format!("{token}\n").as_bytes())
-                .map_err(|error| format!("Failed to save remote connection token: {error}"))?;
         }
 
         let profile = LoomConnectionProfile {
@@ -367,6 +368,14 @@ impl LoomConnectionStore {
         let mut encoded = serde_json::to_vec_pretty(&profile)
             .map_err(|error| format!("Failed to serialize Loom connection profile: {error}"))?;
         encoded.push(b'\n');
+        if encoded.len() > MAX_CONNECTION_FILE_BYTES {
+            return Err("Loom connection profile exceeds the file size limit.".to_owned());
+        }
+        self.save_bound_token(
+            profile.remote_url.as_deref(),
+            update.remote_token.as_deref(),
+            update.clear_remote_token,
+        )?;
         write_private_atomic(&self.profile_path(), &encoded)
             .map_err(|error| format!("Failed to save Loom connection profile: {error}"))?;
         self.status(default_local_url)
@@ -452,6 +461,14 @@ mod tests {
         assert!(parse_loom_endpoint_url("http://loom.example.com:8765", true).is_err());
         let tls = parse_loom_endpoint_url("https://loom.example.com:8443", true).expect("https");
         assert_eq!(tls.origin(), "https://loom.example.com:8443");
+        for invalid in [
+            "https://[::1]suffix",
+            "http://[localhost]:8765",
+            "http://::1:8765",
+            "https://bad host",
+        ] {
+            assert!(parse_loom_endpoint_url(invalid, true).is_err(), "{invalid}");
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ Loom owns the runtime contracts for:
 
 - **Package & Plugin Lifecycles**: publisher-qualified Art, Framework, Capability Plugin, and cross-platform MCP server packages under immutable versioned storage, plus a unified multi-platform store (`GET /v1/store/catalog` and AssetLibrary integration).
 - **Inbound & Outbound MCP**: consuming packaged/external MCP servers inside Arts and exposing Loom's own authorized Arts, capabilities, devices, projections, and live screen contexts to external AI clients via `POST /mcp` and `loom mcp-stdio` with Scoped Share Tokens.
-- **Otter & Companion Coordination**: `loom.hook.v1` / `loom.surface.v1` native bridge, optional LAN HTTPS listener (`8766`, disabled by default; see [LAN connection](protocol/LAN_CONNECTION.md)), two-level Host Device -> App Sessions hierarchy (`GET /v1/devices/hierarchy`), multi-device Otter workflow sync and history archive (`/v1/otter-sync/*`), intra-workflow hybrid terminal relay (`/v1/otter/relay/*`), 3-tier NAccount Cloud Relay (`/v1/cloud-relay/*`), Live Screenshot streaming, QR Projection, Tile Walls, and the Companion App Settings Hub (`/v1/configuration/companion-apps*`).
+- **Otter & Companion Coordination**: `loom.hook.v1` / `loom.surface.v1` native bridge, optional LAN HTTPS listener (`8766`, disabled by default; see [LAN connection](protocol/LAN_CONNECTION.md)), two-level Host Device -> App Sessions hierarchy (`GET /v1/devices/hierarchy`), multi-device Otter workflow sync and history archive (`/v1/otter-sync/*`), intra-workflow hybrid terminal relay (`/v1/otter/relay/*`), reserved NAccount Cloud Relay configuration (cloud transport is not implemented), Live Screenshot streaming, QR Projection, Tile Walls, and the Companion App Settings Hub (`/v1/configuration/companion-apps*`).
 - **Global AI Gateway Relay & Durable Evidence**: OpenAI-compatible `/v1/ai/*` relay and `ai.chat.v1` / `loom.runtime.probe.v1` invocation backed by atomic SQLite run/event evidence (`runs/loom-runs.sqlite3`), plus an optional IP-loopback local model adapter for `text-translation`.
 
 Loom is not a replacement for Neuro Gateway (which owns upstream hosted-provider routing, credentials, and quotas) or Otter (which owns foreground desktop capture, canvas UI, and local `otter.art.v1` execution). Loom and Otter enforce canonical-only protocols and `publisher/id` package layouts; retired legacy aliases are rejected. See [public protocols](protocol/README.md), [architecture](docs/ARCHITECTURE.md), and [Otter integration](docs/OTTER_INTEGRATION.md).
@@ -42,6 +42,8 @@ Loom supports three deployment editions from a single codebase:
 1. **Desktop (`-Edition desktop`)**: Windows `Loom.exe` Tauri workbench paired with `runtime\loom-daemon.exe` and independent Framework, MCP server, and sample Art ZIP catalogs. `Loom.exe` can auto-start its local sidecar daemon on `http://127.0.0.1:8765` (**Local mode**) or connect to a remote `loom-daemon` hub (**Remote client mode**).
 2. **Server Web (`-Edition web` / Docker default `LOOM_EDITION=web`)**: `loom-daemon` compiled with `management-ui` (`loom_embedded_ui`), serving the full browser management console at `/ui/` alongside `loom` CLI—ideal for Linux/NAS/home servers without Tauri dependencies.
 3. **Server API (`-Edition api` / Docker `LOOM_EDITION=api`)**: minimal headless `loom-daemon` (`runtime-defaults` only, `/ui/*` disabled) plus `loom` CLI.
+
+Native Remote mode currently supports HTTP only and rejects HTTPS without changing the profile. For HTTPS management, open the server's `/ui/` in a browser; the Web console always uses its own origin, not a switchable native profile. `GET /ui/` serves the login page and `POST /ui/` exchanges a form-body token for an `HttpOnly; SameSite=Strict` cookie. Plaintext LAN HTTP is not encrypted: use an authenticated TLS terminator or a trusted loopback tunnel. Container port publishing should bind host loopback unless intentionally exposed behind that protection.
 
 ### Quick start (CLI, daemon, and desktop)
 
@@ -122,12 +124,16 @@ Direct relay endpoints (`GET /v1/ai/status`, `GET /v1/ai/models`, `POST /v1/ai/c
 
 ## Container image and release packaging
 
-Build and run the server container (`LOOM_EDITION=web` by default, or `--build-arg LOOM_EDITION=api`):
+The default `web` image requires a prebuilt browser bundle. On a fresh checkout, first set up the pinned [Neuro UI dependency](docs/NEURO_UI.md), then run from the Loom repository root:
 
 ```powershell
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run build:web
 docker build -t loom:local .
-docker run --rm -p 48766:8765 loom:local
+docker run --rm -p 127.0.0.1:48766:8765 loom:local
 ```
+
+For an API-only image, use `docker build --build-arg LOOM_EDITION=api -t loom:api .`; it does not require the frontend or serve `/ui/`.
 
 Build and verify standalone Windows desktop or server release packages:
 

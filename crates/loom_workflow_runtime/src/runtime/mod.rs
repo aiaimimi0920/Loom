@@ -6,9 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use loom_tool_registry::{
-    execute_tool, execute_tool_with_timeout, execute_tool_with_timeout_and_cancellation,
-    prepare_tool_arguments, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,
-    WorkflowExecutionBindings, WorkflowInputBinding, WorkflowOutputBinding,
+    ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError, WorkflowExecutionBindings,
+    WorkflowInputBinding, WorkflowOutputBinding,
 };
 use loom_workflow_store::{WorkflowStore, WorkflowStoreError};
 use semver::{Version, VersionReq};

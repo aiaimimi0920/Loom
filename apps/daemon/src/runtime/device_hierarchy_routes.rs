@@ -35,22 +35,23 @@ fn build_devices_hierarchy_response(
             || (device.enabled
                 && device.public_key.is_some()
                 && activity.is_some_and(|at| now.saturating_sub(at) < 30_000));
-        let sync_state = otter_sync::device_sync_state(&device.id);
-        let otter_connected = device.otter_connected
-            || (device.is_local && connected_ws_clients > 0)
-            || sync_state.is_some()
-            || online;
+        let sync_state = otter_sync::device_sync_state(control_plane_root, &device.id);
+        let otter_connected = if device.is_local {
+            connected_ws_clients > 0
+        } else {
+            online && device.otter_connected
+        };
+        let current_sync = sync_state.as_ref().filter(|_| otter_connected);
         let otter_app = json!({
             "appId": "otter",
             "displayName": "Otter",
             "connected": otter_connected,
-            "executionState": sync_state
-                .as_ref()
+            "executionState": current_sync
                 .map(|s| s.execution_state.as_str())
                 .unwrap_or(if otter_connected { "idle" } else { "offline" }),
-            "activeWorkflowId": sync_state.as_ref().and_then(|s| s.workflow_id.clone()),
-            "activeWorkflowName": sync_state.as_ref().and_then(|s| s.workflow_name.clone()),
-            "nodeCount": sync_state.as_ref().map(|s| s.node_count).unwrap_or(0),
+            "activeWorkflowId": current_sync.and_then(|s| s.workflow_id.clone()),
+            "activeWorkflowName": current_sync.and_then(|s| s.workflow_name.clone()),
+            "nodeCount": current_sync.map(|s| s.node_count).unwrap_or(0),
             "updatedAtMs": sync_state.as_ref().map(|s| s.updated_at_ms).or(activity).or(device.last_seen_at),
         });
         hosts.push(json!({
@@ -67,6 +68,7 @@ fn build_devices_hierarchy_response(
         }));
     }
 
+    drop(store);
     let sync_summary = otter_sync::summary_snapshot(control_plane_root);
     Ok((
         200,

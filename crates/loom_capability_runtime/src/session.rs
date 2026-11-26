@@ -23,6 +23,16 @@ static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub(super) fn start_runtime(
     package: &CapabilityRuntimePackage,
 ) -> HostResult<(RuntimeProcess, CapabilityContributions)> {
+    start_runtime_controlled(package, None)
+}
+
+fn start_runtime_controlled(
+    package: &CapabilityRuntimePackage,
+    control: Option<&std::sync::Arc<crate::InvocationControl>>,
+) -> HostResult<(RuntimeProcess, CapabilityContributions)> {
+    if let Some(control) = control {
+        control.check()?;
+    }
     // Reverify immediately before every spawn, including lazy restarts.
     verify_runtime_package(package)?;
     let service = package
@@ -73,7 +83,7 @@ pub(super) fn start_runtime(
     }
     let mut process = RuntimeProcess::spawn(&spec)?;
     process.own_model_broker(broker);
-    let initialize = call_method(
+    let initialize = call_method_controlled(
         &mut process,
         CapabilityRuntimeMethod::Initialize,
         json!({
@@ -83,13 +93,15 @@ pub(super) fn start_runtime(
             "staticContributions": &package.manifest.contributes,
         }),
         spec.limits.timeout,
+        control,
     )?;
     let contributions = effective_contributions(&package.manifest, &initialize)?;
-    call_method(
+    call_method_controlled(
         &mut process,
         CapabilityRuntimeMethod::Activate,
         json!({}),
         spec.limits.timeout,
+        control,
     )?;
     Ok((process, contributions))
 }
@@ -97,6 +109,14 @@ pub(super) fn start_runtime(
 pub(super) fn ensure_process(
     active: &mut ActivePackage,
     limits: &RuntimeHostLimits,
+) -> HostResult<()> {
+    ensure_process_controlled(active, limits, None)
+}
+
+pub(super) fn ensure_process_controlled(
+    active: &mut ActivePackage,
+    limits: &RuntimeHostLimits,
+    control: Option<&std::sync::Arc<crate::InvocationControl>>,
 ) -> HostResult<()> {
     if active.process.is_some() {
         return Ok(());
@@ -106,10 +126,12 @@ pub(super) fn ensure_process(
             "runtime restart backoff is active".to_owned(),
         ));
     }
-    let (process, contributions) = match start_runtime(&active.package) {
+    let (process, contributions) = match start_runtime_controlled(&active.package, control) {
         Ok(started) => started,
         Err(error) => {
-            record_failure(active);
+            if !matches!(error, CapabilityHostError::Cancelled) {
+                record_failure(active);
+            }
             return Err(error);
         }
     };
@@ -134,7 +156,21 @@ pub(super) fn call_method(
     payload: Value,
     timeout: Duration,
 ) -> HostResult<CapabilityRuntimeMessage> {
-    let response = process.call(runtime_request(next_request_id(), method, payload), timeout)?;
+    call_method_controlled(process, method, payload, timeout, None)
+}
+
+fn call_method_controlled(
+    process: &mut RuntimeProcess,
+    method: CapabilityRuntimeMethod,
+    payload: Value,
+    timeout: Duration,
+    control: Option<&std::sync::Arc<crate::InvocationControl>>,
+) -> HostResult<CapabilityRuntimeMessage> {
+    let response = process.client()?.call_controlled(
+        runtime_request(next_request_id(), method, payload),
+        timeout,
+        control.cloned(),
+    )?;
     match &response {
         CapabilityRuntimeMessage::Response {
             status: CapabilityRuntimeStatus::Succeeded,

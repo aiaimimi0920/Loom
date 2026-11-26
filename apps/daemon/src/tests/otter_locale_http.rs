@@ -44,13 +44,14 @@ fn otter_locale_http_requires_device_report_and_admin_exact_target() {
     assert_eq!(status, 202, "expected 202 when queuing locale request");
     assert_eq!(accepted["locale"]["request"]["status"], "pending");
     assert_eq!(wall_http::admin(f.port, "POST", &path, Some(input)).0, 200);
-    let (_, other) = wall_http::device(
+    let (status, other) = wall_http::device(
         f.port,
         &other_token,
         "GET",
         "/v1/otter/connection-info",
         None,
     );
+    assert_eq!(status, 200, "{other}");
     assert!(other["localeRequest"].is_null());
     let (_, own) = wall_http::device(f.port, &token, "GET", "/v1/otter/connection-info", None);
     assert_eq!(own["localeRequest"]["requestId"], "locale-request-one");

@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::archive::{
     hash_entry_bounded, open_bounded_archive, read_entry_bounded, MAX_SIGNATURE_DOCUMENT_BYTES,
 };
-use crate::manifest::read_manifest_bytes;
-use crate::model::{PublisherKeyStatus, StoreError};
+use crate::manifest::read_package_manifest;
+use crate::model::{PublisherKeyStatus, StoreError, StorePackageKind};
 use crate::publisher::{is_platform_publisher_id, read_publisher};
 use crate::validation::is_safe_resource_name;
 
@@ -19,42 +19,31 @@ pub(crate) fn verify_published_package_signature(
     root: &Path,
     zip_bytes: &[u8],
 ) -> Result<(), StoreError> {
-    let manifest_bytes = read_manifest_bytes(zip_bytes)?;
+    let (kind, manifest_bytes) = read_package_manifest(zip_bytes)?;
     let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
-    let security = manifest
-        .get("metadata")
-        .and_then(|metadata| metadata.get("packageSecurity"))
-        .or_else(|| manifest.get("packageSecurity"))
-        .ok_or(StoreError::MissingPublisherSignature)?;
-    let signature: PackageSignature = security
-        .get("signature")
+    let signature_value = match kind {
+        StorePackageKind::Art => manifest.pointer("/metadata/packageSecurity/signature"),
+        StorePackageKind::McpServer => manifest.pointer("/packageSecurity/signature"),
+        StorePackageKind::Capability => manifest.get("signature"),
+    };
+    let signature: PackageSignature = signature_value
         .cloned()
         .map(serde_json::from_value)
         .transpose()?
         .ok_or(StoreError::MissingPublisherSignature)?;
-    let publisher: PublisherIdentity = security
-        .get("publisher")
+    let publisher_value = match kind {
+        StorePackageKind::Art => manifest.pointer("/metadata/packageSecurity/publisher"),
+        _ => manifest.get("publisher"),
+    };
+    let mut publisher: PublisherIdentity = publisher_value
         .cloned()
         .map(serde_json::from_value)
         .transpose()?
-        .or_else(|| {
-            let id = manifest
-                .get("publisher")
-                .and_then(|p| p.get("id"))
-                .and_then(|v| v.as_str())?
-                .to_owned();
-            Some(PublisherIdentity {
-                id,
-                name: manifest
-                    .get("publisher")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned),
-                website: None,
-                key_id: Some(signature.key_id.clone()),
-            })
-        })
         .ok_or(StoreError::MissingPublisherSignature)?;
+    if kind == StorePackageKind::McpServer && publisher.key_id.is_none() {
+        // MCP's publisher schema has no keyId; its signature selects the active key.
+        publisher.key_id = Some(signature.key_id.clone());
+    }
     if !is_platform_publisher_id(&publisher.id)
         || publisher.key_id.as_deref() != Some(signature.key_id.as_str())
         || signature.algorithm != "ed25519"

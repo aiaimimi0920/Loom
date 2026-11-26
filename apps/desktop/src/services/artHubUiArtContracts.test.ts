@@ -142,10 +142,10 @@ test("Art editor composes the standard modal and controls without redundant labe
   );
   assert.match(appSource, /loading=\{busyAction === "update"\}/);
   assert.match(appSource, /loading=\{busyAction === "save"\}/);
-  const editor = appSource.slice(
-    appSource.indexOf("// Art-specific form composition"),
-    appSource.indexOf("// Typed parameter"),
-  );
+  const start = appSource.indexOf("// Art-specific form composition");
+  const end = appSource.indexOf("// Typed parameter");
+  assert.ok(start >= 0 && end > start, "editor source boundaries must exist in order");
+  const editor = appSource.slice(start, end);
   assert.doesNotMatch(editor, /framework-dialog|studio-input|document\.addEventListener|setTimeout|role="dialog"/);
   assert.doesNotMatch(editor, /<h3>|<summary|>new</);
 });

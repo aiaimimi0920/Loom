@@ -1,6 +1,7 @@
 //! Intra-workflow cross-end terminal node relay (`Loom -> Otter Terminal -> Loom`).
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -13,10 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{
-    invalid_request, structured_error, unix_time_millis, ParsedHttpRequest,
-    SharedDeviceRegistryStore, SharedOtterBridgeRuntime,
-};
+use crate::{invalid_request, structured_error, unix_time_millis, ParsedHttpRequest};
 
 pub const HOOK_EVENT_WORKFLOW_NODE_RELAY_REQUEST: &str = "loom.hook.workflow.node_relay.request";
 pub const HOOK_METHOD_WORKFLOW_NODE_RELAY_RESULT: &str = "loom.hook.workflow.node_relay.result";
@@ -56,6 +54,8 @@ struct TerminalWorkerHeartbeat {
 }
 
 struct RelaySlot {
+    // None is a socket-owned relay, never exposed to the HTTP worker queue.
+    http_scope: Option<PathBuf>,
     descriptor: PendingTerminalRelayDescriptor,
     outcome: Option<std::result::Result<Value, String>>,
 }
@@ -63,7 +63,7 @@ struct RelaySlot {
 #[derive(Default)]
 struct RelayHubState {
     slots: BTreeMap<String, RelaySlot>,
-    worker_heartbeats: BTreeMap<String, u64>,
+    worker_heartbeats: BTreeMap<(PathBuf, String), u64>,
 }
 
 struct RelayHub {
@@ -91,7 +91,7 @@ impl Drop for PendingRelayGuard {
     }
 }
 
-pub(crate) fn record_terminal_worker_heartbeat(device_id: &str) {
+fn record_terminal_worker_heartbeat(root: &Path, device_id: &str) {
     let trimmed = device_id.trim();
     if trimmed.is_empty() {
         return;
@@ -101,28 +101,31 @@ pub(crate) fn record_terminal_worker_heartbeat(device_id: &str) {
         state
             .worker_heartbeats
             .retain(|_, seen| now.saturating_sub(*seen) <= WORKER_HEARTBEAT_TTL_MS);
-        state.worker_heartbeats.insert(trimmed.to_owned(), now);
+        state
+            .worker_heartbeats
+            .insert((root.to_path_buf(), trimmed.to_owned()), now);
     }
 }
 
-pub(crate) fn has_active_http_relay_worker(preferred_device_id: Option<&str>) -> bool {
+fn has_active_http_relay_worker(root: &Path, preferred_device_id: Option<&str>) -> bool {
     let Ok(state) = global_relay_hub().state.lock() else {
         return false;
     };
     let now = unix_time_millis();
-    match preferred_device_id {
-        Some(device_id) => state
-            .worker_heartbeats
-            .get(device_id)
-            .is_some_and(|seen| now.saturating_sub(*seen) <= WORKER_HEARTBEAT_TTL_MS),
-        None => state
-            .worker_heartbeats
-            .values()
-            .any(|seen| now.saturating_sub(*seen) <= WORKER_HEARTBEAT_TTL_MS),
-    }
+    state
+        .worker_heartbeats
+        .iter()
+        .any(|((scope, device), seen)| {
+            scope == root
+                && preferred_device_id.is_none_or(|target| target == device)
+                && now.saturating_sub(*seen) <= WORKER_HEARTBEAT_TTL_MS
+        })
 }
 
-pub(crate) fn try_handle_websocket_relay_result(raw_text: &str) -> bool {
+pub(crate) fn try_handle_websocket_relay_result(
+    raw_text: &str,
+    issued_relays: &std::collections::HashSet<String>,
+) -> bool {
     let Ok(envelope) = serde_json::from_str::<Value>(raw_text) else {
         return false;
     };
@@ -133,19 +136,31 @@ pub(crate) fn try_handle_websocket_relay_result(raw_text: &str) -> bool {
     }
     let payload = envelope.get("params").cloned().unwrap_or(envelope);
     if let Ok(submission) = serde_json::from_value::<TerminalRelayResultSubmission>(payload) {
-        let _ = complete_relay_slot(submission);
+        if issued_relays.contains(&submission.relay_id) {
+            let _ = complete_relay_slot(submission, None, None);
+        }
     }
     true
 }
 
 fn complete_relay_slot(
     submission: TerminalRelayResultSubmission,
+    http_scope: Option<&Path>,
+    device_id: Option<&str>,
 ) -> std::result::Result<(), &'static str> {
     let hub = global_relay_hub();
     let mut state = hub.state.lock().map_err(|_| "relay_hub_unavailable")?;
     let Some(slot) = state.slots.get_mut(submission.relay_id.trim()) else {
         return Err("relay_not_found");
     };
+    if slot.http_scope.as_deref() != http_scope
+        || device_id.is_some_and(|caller| slot.descriptor.device_id.as_deref() != Some(caller))
+    {
+        return Err("relay_not_found");
+    }
+    if slot.outcome.is_some() {
+        return Err("relay_already_completed");
+    }
     let failed = submission
         .status
         .as_deref()
@@ -165,20 +180,20 @@ fn complete_relay_slot(
 }
 
 pub(crate) struct DaemonOtterWorkflowRelay<'a> {
-    hook_bridge: Option<&'a SharedOtterBridgeRuntime>,
-    device_registry: Option<&'a SharedDeviceRegistryStore>,
+    http_scope: Option<&'a Path>,
+    shutting_down: Option<&'a std::sync::atomic::AtomicBool>,
     default_device: Option<String>,
     ws_emitter: Option<&'a mut dyn FnMut(String)>,
 }
 
 impl<'a> DaemonOtterWorkflowRelay<'a> {
     pub(crate) fn for_http(
-        hook_bridge: &'a SharedOtterBridgeRuntime,
-        device_registry: &'a SharedDeviceRegistryStore,
+        control_plane_root: &'a Path,
+        shutting_down: &'a std::sync::atomic::AtomicBool,
     ) -> Self {
         Self {
-            hook_bridge: Some(hook_bridge),
-            device_registry: Some(device_registry),
+            http_scope: Some(control_plane_root),
+            shutting_down: Some(shutting_down),
             default_device: None,
             ws_emitter: None,
         }
@@ -189,8 +204,8 @@ impl<'a> DaemonOtterWorkflowRelay<'a> {
         ws_emitter: &'a mut dyn FnMut(String),
     ) -> Self {
         Self {
-            hook_bridge: None,
-            device_registry: None,
+            http_scope: None,
+            shutting_down: None,
             default_device,
             ws_emitter: Some(ws_emitter),
         }
@@ -200,30 +215,11 @@ impl<'a> DaemonOtterWorkflowRelay<'a> {
 impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
     fn has_connected_terminal(&self, preferred_device_id: Option<&str>) -> bool {
         if self.ws_emitter.is_some() {
-            return true;
+            return preferred_device_id
+                .is_none_or(|target| self.default_device.as_deref() == Some(target));
         }
-        if has_active_http_relay_worker(preferred_device_id) {
-            return true;
-        }
-        let ws_clients = self
-            .hook_bridge
-            .and_then(|hb| hb.lock().ok())
-            .map(|bridge| bridge.connected_clients.load(Ordering::SeqCst))
-            .unwrap_or(0);
-        if ws_clients > 0 {
-            return true;
-        }
-        if let Some(registry) = self.device_registry {
-            if let Ok(store) = registry.lock() {
-                let now = unix_time_millis();
-                return store.sessions.values().any(|session| {
-                    session.expires_at_ms > now
-                        && !session.revoked.load(Ordering::SeqCst)
-                        && preferred_device_id.is_none_or(|target| session.device_id == target)
-                });
-            }
-        }
-        false
+        self.http_scope
+            .is_some_and(|root| has_active_http_relay_worker(root, preferred_device_id))
     }
 
     fn default_device_id(&self) -> Option<String> {
@@ -233,12 +229,11 @@ impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
         let hub = global_relay_hub();
         if let Ok(state) = hub.state.lock() {
             let now = unix_time_millis();
-            if let Some((id, _)) = state
-                .worker_heartbeats
-                .iter()
-                .find(|(_, seen)| now.saturating_sub(**seen) <= WORKER_HEARTBEAT_TTL_MS)
-            {
-                return Some(id.clone());
+            if let Some((id, _)) = state.worker_heartbeats.iter().find(|((root, _), seen)| {
+                self.http_scope == Some(root.as_path())
+                    && now.saturating_sub(**seen) <= WORKER_HEARTBEAT_TTL_MS
+            }) {
+                return Some(id.1.clone());
             }
         }
         None
@@ -248,6 +243,18 @@ impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
         &mut self,
         request: TerminalNodeRelayRequest<'_>,
     ) -> WorkflowRuntimeResult<Value> {
+        if self
+            .shutting_down
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(WorkflowRuntimeError::Cancelled);
+        }
+        if !self.has_connected_terminal(request.device_id) {
+            return Err(WorkflowRuntimeError::TerminalUnavailable {
+                workflow_id: request.workflow_id.to_owned(),
+                node_id: request.node_id.to_owned(),
+            });
+        }
         let relay_id = format!("relay-{}", Uuid::new_v4());
         let descriptor = PendingTerminalRelayDescriptor {
             relay_id: relay_id.clone(),
@@ -281,6 +288,7 @@ impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
             state.slots.insert(
                 relay_id.clone(),
                 RelaySlot {
+                    http_scope: self.http_scope.map(Path::to_path_buf),
                     descriptor: descriptor.clone(),
                     outcome: None,
                 },
@@ -298,8 +306,6 @@ impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
 
         if let Some(emitter) = self.ws_emitter.as_deref_mut() {
             emitter(serde_json::to_string(&event_payload).unwrap_or_default());
-        } else if let Some(hb) = self.hook_bridge {
-            crate::broadcast_otter_bridge_json(hb, &event_payload);
         }
 
         let budget = request.timeout.unwrap_or(DEFAULT_TERMINAL_RELAY_TIMEOUT);
@@ -313,16 +319,19 @@ impl WorkflowTerminalRelay for DaemonOtterWorkflowRelay<'_> {
                     message: "terminal relay hub lock poisoned".to_owned(),
                 })?;
         loop {
-            if request
-                .cancellation
-                .is_some_and(|token| token.load(Ordering::Acquire))
+            if self
+                .shutting_down
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+                || request
+                    .cancellation
+                    .is_some_and(|token| token.load(Ordering::Acquire))
             {
                 return Err(WorkflowRuntimeError::Cancelled);
             }
             if let Some(outcome) = state
                 .slots
-                .get_mut(&relay_id)
-                .and_then(|slot| slot.outcome.take())
+                .get(&relay_id)
+                .and_then(|slot| slot.outcome.clone())
             {
                 return outcome.map_err(|message| WorkflowRuntimeError::TerminalRelayFailed {
                     workflow_id: request.workflow_id.to_owned(),
@@ -354,6 +363,7 @@ pub(crate) fn route(
     route_path: &str,
     authenticated_device_id: Option<&str>,
     admin_authenticated: bool,
+    control_plane_root: &Path,
 ) -> Option<Result<(u16, String)>> {
     if !route_path.starts_with("/v1/otter/relay/") {
         return None;
@@ -371,7 +381,10 @@ pub(crate) fn route(
                 Err(error) => return Some(invalid_request(error.to_string())),
             };
             let effective_device = authenticated_device_id.unwrap_or(&parsed.device_id);
-            record_terminal_worker_heartbeat(effective_device);
+            if effective_device.trim().is_empty() {
+                return Some(invalid_request("deviceId is required"));
+            }
+            record_terminal_worker_heartbeat(control_plane_root, effective_device);
             Some(Ok((
                 200,
                 serde_json::to_string(&json!({ "registered": true, "deviceId": effective_device }))
@@ -382,7 +395,7 @@ pub(crate) fn route(
             let query_device = request.query_parameter("deviceId");
             let effective_device = authenticated_device_id.or(query_device.as_deref());
             if let Some(dev) = effective_device {
-                record_terminal_worker_heartbeat(dev);
+                record_terminal_worker_heartbeat(control_plane_root, dev);
             }
             let items = global_relay_hub()
                 .state
@@ -391,6 +404,7 @@ pub(crate) fn route(
                     state
                         .slots
                         .values()
+                        .filter(|slot| slot.http_scope.as_deref() == Some(control_plane_root))
                         .filter(|slot| slot.outcome.is_none())
                         .filter(|slot| {
                             match (effective_device, slot.descriptor.device_id.as_deref()) {
@@ -413,7 +427,11 @@ pub(crate) fn route(
                     Ok(submission) => submission,
                     Err(error) => return Some(invalid_request(error.to_string())),
                 };
-            match complete_relay_slot(submission) {
+            match complete_relay_slot(
+                submission,
+                Some(control_plane_root),
+                authenticated_device_id,
+            ) {
                 Ok(()) => Some(Ok((
                     200,
                     serde_json::to_string(&json!({ "accepted": true })).unwrap_or_default(),
@@ -427,3 +445,7 @@ pub(crate) fn route(
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_relay_tests.rs"]
+mod tests;

@@ -96,7 +96,7 @@ export async function waitForLoomOnline(
 
 
 export function retainAvailableSnapshotData(previous: LoomSnapshot, next: LoomSnapshot): LoomSnapshot {
-  if (previous.connectionState !== "online") return next;
+  if (previous.baseUrl !== next.baseUrl || previous.connectionState !== "online") return next;
   if (next.connectionState === "offline") {
     return {
       ...next,

@@ -4,7 +4,7 @@ Loom is an independent Rust workspace and daemon-first personal/home control hub
 
 ## System boundaries
 
-- **Loom (`loom-daemon` and workspace crates)**: owns Art, Framework, Capability Plugin, and MCP server package lifecycles; outbound MCP server exposure (`/mcp` and `loom mcp-stdio`); Otter workflow synchronization, hybrid cross-end workflow relay, live streams, QR/peer/cloud projection, and Tile Walls; companion application configuration ownership; durable SQLite run/event evidence; and global AI Gateway relay calls.
+- **Loom (`loom-daemon` and workspace crates)**: owns Art, Framework, Capability Plugin, and MCP server package lifecycles; outbound MCP server exposure (`/mcp` and `loom mcp-stdio`); Otter workflow synchronization, hybrid cross-end workflow relay, live streams, QR/peer projection, and Tile Walls; companion application configuration ownership; durable SQLite run/event evidence; and global AI Gateway relay calls. Cloud Relay configuration is reserved; cloud transport is not implemented.
 - **Neuro Gateway**: owns hosted model-provider routing, upstream credentials, quota accounting, and provider adapters. Loom forwards OpenAI-compatible requests via `loom_gateway` without embedding upstream provider secrets in capability child processes.
 - **NAccount & Neuro Platform**: own user authentication (`https://naccount-auth.aiaimimi.com`), AssetLibrary cloud package distribution (`https://assetlibrary.aiaimimi.com`), and central QR projection v2 coordination.
 - **Otter**: owns foreground desktop screen capture, canvas UI interaction, local `otter.art.v1` QuickJS execution under Loom-issued Ed25519 grants, and physical Tile display rendering.
@@ -21,7 +21,7 @@ Loom builds from one codebase into three explicit editions (`scripts/build-relea
 | `web` | `loom-daemon` (compiled with `management-ui` embedding `loom_embedded_ui` at `/ui/`) + `loom` CLI | Home/Linux/Docker server or NAS with browser-accessible management console |
 | `api` | Headless `loom-daemon` (`runtime-defaults` only, `/ui/*` disabled) + `loom` CLI | Minimal headless server, container, or appliance deployment |
 
-Both the Tauri desktop shell and the `/ui/` Web console support **local** (`127.0.0.1:8765` sidecar/loopback) and **remote** connection profiles (`loom_local_data` connection profile persistence), enabling a desktop client or browser to administer a remote home/cloud `loom-daemon` over authenticated HTTPS or LAN.
+The Tauri shell supports **local** sidecar and **remote HTTP** profiles. Native HTTPS is explicitly rejected without changing the profile. The `/ui/` Web console instead uses its browser origin; access an HTTPS server through its own `/ui/` behind an authenticated TLS terminator. Login submits the token in a `POST /ui/` form body, never in a login URL. An HttpOnly cookie does not encrypt plaintext LAN transport.
 
 ## Workspace crates and applications
 
@@ -29,7 +29,7 @@ Both the Tauri desktop shell and the `/ui/` Web console support **local** (`127.
 
 - `loom_core`: shared identifiers, structured error codes, version constants, and run/session status types.
 - `loom_durable`: synchronous `RunEvidenceStore` trait with in-memory and WAL-mode bundled SQLite (`runs/loom-runs.sqlite3`) implementations, atomic run/event transactions, and startup `daemon_restarted` recovery.
-- `loom_embedded_ui`: compile-time asset table bundling `apps/desktop/dist` for the `web` server edition under `/ui/*` with path-traversal rejection and SPA route fallback.
+- `loom_embedded_ui`: compile-time asset table bundling `apps/desktop/dist/web` for the `web` server edition under `/ui/*` with path-traversal rejection and SPA route fallback.
 - `loom_local_data`: platform control-plane root resolution and client-server connection profile validation (`local` vs. `remote` daemon endpoints).
 - `loom_configuration`: schema-driven UI configuration sections (`UiSection`), ownership claims, and file-backed document persistence for Loom-managed companion apps.
 - `loom_gateway`: bounded OpenAI-compatible HTTP client supporting loopback HTTP/HTTPS, private LAN (RFC1918/ULA) HTTP/HTTPS with system-proxy bypass, and remote HTTPS.
@@ -81,7 +81,7 @@ All installable extensions live under `<LOOM_CONTROL_PLANE_ROOT>` (`frameworks/`
 
 Loom coordinates local and remote Otter instances across:
 
-- Native loopback TLS 1.3 bridge (`loom.hook.v1` / `loom.surface.v1`), optional RFC1918 LAN HTTPS listener (`8766`), peer-to-peer projection, and 3-tier NAccount Cloud Relay (`/v1/cloud-relay/*`).
+- Native loopback TLS 1.3 bridge (`loom.hook.v1` / `loom.surface.v1`), optional RFC1918 LAN HTTPS listener (`8766`), and peer-to-peer projection. Cloud Relay exposes configuration/status only: projection send/inbox fail with `501 cloud_relay_transport_unavailable`; no envelope is sent or queued. The cloud-domain MCP route dispatches locally and is not a cloud tunnel.
 - Two-level Host Device -> App Sessions hierarchy (`GET /v1/devices/hierarchy`), live multi-device execution tracking, and 200-entry workflow history archiving (`/v1/otter-sync/*`).
 - Intra-workflow hybrid terminal relay (`/v1/otter/relay/*`) and schema-driven Companion App Settings Hub (`/v1/configuration/companion-apps*`). See [Otter integration](OTTER_INTEGRATION.md) and [protocol specifications](../protocol/README.md).
 

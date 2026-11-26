@@ -87,19 +87,22 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) 
 fn resolve_dist_dir(repo_root: &Path) -> Option<PathBuf> {
     if let Some(explicit) = env::var_os("LOOM_EMBEDDED_UI_DIST_DIR").filter(|v| !v.is_empty()) {
         let dir = PathBuf::from(explicit);
+        watch_candidate(&dir);
         if dir.join("index.html").is_file() {
             return Some(dir);
         }
+        return None;
     }
-    for candidate in [
-        repo_root.join("apps/desktop/dist/web"),
-        repo_root.join("apps/desktop/dist"),
-    ] {
-        if candidate.join("index.html").is_file() {
-            return Some(candidate);
-        }
+    let candidate = repo_root.join("apps/desktop/dist/web");
+    watch_candidate(&candidate);
+    candidate.join("index.html").is_file().then_some(candidate)
+}
+
+fn watch_candidate(path: &Path) {
+    // Watching the nearest existing parent detects the first frontend build too.
+    if let Some(existing) = path.ancestors().find(|candidate| candidate.is_dir()) {
+        println!("cargo:rerun-if-changed={}", existing.display());
     }
-    None
 }
 
 fn main() {
@@ -123,10 +126,7 @@ fn main() {
 
     if let Some(dist_dir) = resolve_dist_dir(repo_root) {
         let canonical_dist = fs::canonicalize(&dist_dir).unwrap_or(dist_dir);
-        println!(
-            "cargo:rerun-if-changed={}",
-            canonical_dist.join("index.html").display()
-        );
+        println!("cargo:rerun-if-changed={}", canonical_dist.display());
         let mut assets = Vec::new();
         collect_files(&canonical_dist, &canonical_dist, &mut assets);
         assert!(
@@ -153,7 +153,7 @@ fn main() {
     } else {
         if require_prebuilt {
             panic!(
-                "LOOM_REQUIRE_PREBUILT_WEB_UI=1 requires compiled frontend assets in apps/desktop/dist/web or apps/desktop/dist"
+                "LOOM_REQUIRE_PREBUILT_WEB_UI=1 requires compiled Web assets in apps/desktop/dist/web (npm run build:web)"
             );
         }
         let fallback_html = concat!(

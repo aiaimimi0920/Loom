@@ -66,22 +66,55 @@ pub(super) fn resolve_cross_platform_script_spawn_command(
 }
 
 fn resolve_bundled_or_system_node(script_path: &Path) -> String {
+    resolve_node_for_platform(script_path, cfg!(windows))
+}
+
+fn resolve_node_for_platform(script_path: &Path, windows: bool) -> String {
     if let Some(parent) = script_path.parent() {
-        let candidates = [
-            parent.join("node").join("node.exe"),
-            parent.join("node").join("bin").join("node"),
-            parent.join("node").join("node"),
-        ];
+        let candidates = if windows {
+            vec![parent.join("node").join("node.exe")]
+        } else {
+            vec![
+                parent.join("node").join("bin").join("node"),
+                parent.join("node").join("node"),
+            ]
+        };
         for candidate in candidates {
             if candidate.is_file() {
                 return candidate.display().to_string();
             }
         }
     }
-    if cfg!(windows) {
+    if windows {
         "node.exe".to_owned()
     } else {
         "node".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn unix_node_resolution_never_selects_bundled_windows_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "loom-node-platform-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("node")).unwrap();
+        std::fs::write(root.join("node/node.exe"), b"windows fixture").unwrap();
+        let script = root.join("server.mjs");
+        assert_eq!(resolve_node_for_platform(&script, false), "node");
+        assert_eq!(
+            resolve_node_for_platform(&script, true),
+            root.join("node").join("node.exe").display().to_string()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

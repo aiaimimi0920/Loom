@@ -32,7 +32,7 @@
       "required": ["protocolVersion", "grant", "devicePublicKey", "resources"],
       "properties": {
         "protocolVersion": {"const": "loom.art.local.package.v1"},
-        "grant": {"$ref": "local-art-grant.v1.schema.json#/$defs/grant"},
+        "grant": {"$ref": "https://loom.local/protocol/local-art-grant.v1.schema.json#/$defs/grant"},
         "devicePublicKey": {"type": "string", "pattern": "^$|^[A-Za-z0-9+/]{43}=$"},
         "resources": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/resource"}}
       }

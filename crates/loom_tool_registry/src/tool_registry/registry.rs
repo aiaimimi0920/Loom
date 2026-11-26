@@ -7,6 +7,7 @@ pub(super) const MAX_TOOL_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct ToolRegistry {
     root: PathBuf,
+    control_plane_root: Option<PathBuf>,
 }
 
 impl ToolRegistry {
@@ -14,7 +15,45 @@ impl ToolRegistry {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
+            control_plane_root: None,
         }
+    }
+
+    /// Bind execution and parameter stores to the same instance as this registry.
+    #[must_use]
+    pub fn with_control_plane_root(mut self, root: impl AsRef<Path>) -> Self {
+        self.control_plane_root = Some(root.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn prepare_arguments(
+        &self,
+        tool: &ToolDefinition,
+        arguments: serde_json::Value,
+    ) -> ToolRegistryResult<serde_json::Value> {
+        execution::prepare_tool_arguments_in_root(
+            tool,
+            arguments,
+            self.control_plane_root.as_deref(),
+        )
+    }
+
+    pub fn execute(
+        &self,
+        tool: &ToolDefinition,
+        servers: &[loom_mcp::McpServerConfig],
+        arguments: serde_json::Value,
+        timeout: Option<Duration>,
+        cancellation: Option<&AtomicBool>,
+    ) -> ToolRegistryResult<serde_json::Value> {
+        execution::execute_tool_in_context(
+            tool,
+            servers,
+            arguments,
+            timeout,
+            cancellation,
+            self.control_plane_root.as_deref(),
+        )
     }
 
     pub fn save_tool(&self, tool: ToolDefinition) -> ToolRegistryResult<ToolDefinition> {

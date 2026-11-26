@@ -1,5 +1,6 @@
 // Connection requests reuse persistent device pairing; activation still proves the device key.
-// A previously paired key alone never bypasses a manual per-connection decision.
+// Previously approved paired devices may reconnect automatically; activation still requires
+// a fresh receipt, current epoch, and a signed device session matching that device.
 const OTTER_CONNECTION_TTL_MS: u64 = 5 * 60_000;
 const OTTER_CONNECTION_LIMIT: usize = 64;
 const OTTER_CONNECTION_PUBLIC_LIMIT: usize = 48;

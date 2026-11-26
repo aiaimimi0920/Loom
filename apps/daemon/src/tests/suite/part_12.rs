@@ -278,6 +278,13 @@ fn live_session_event_long_polls_do_not_starve_request_workers() {
     live_sessions
         .create(&device_id, start)
         .expect("create live session");
+    let after = live_sessions
+        .events_after(&session_id, 0)
+        .unwrap()
+        .1
+        .last()
+        .expect("initial session event")
+        .sequence;
 
     let s1 = session_id.clone();
     let t1 = device_token.clone();
@@ -286,7 +293,7 @@ fn live_session_event_long_polls_do_not_starve_request_workers() {
             port,
             &t1,
             "GET",
-            &format!("/v1/live/sessions/{s1}/events?after=1&timeoutMs=1000"),
+            &format!("/v1/live/sessions/{s1}/events?after={after}&timeoutMs=3000"),
             None,
         )
         .0
@@ -298,16 +305,25 @@ fn live_session_event_long_polls_do_not_starve_request_workers() {
             port,
             &t2,
             "GET",
-            &format!("/v1/live/sessions/{s2}/events?after=1&timeoutMs=1000"),
+            &format!("/v1/live/sessions/{s2}/events?after={after}&timeoutMs=3000"),
             None,
         )
         .0
     });
-    thread::sleep(Duration::from_millis(150));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while live_sessions.waiting_event_polls.load(Ordering::SeqCst) < 2 {
+        assert!(Instant::now() < deadline, "both long-polls must enter wait");
+        thread::yield_now();
+    }
 
     let started = Instant::now();
     let workflows = http_get(port, "/v1/workflows");
     let waited = started.elapsed();
+    assert_eq!(
+        live_sessions.waiting_event_polls.load(Ordering::SeqCst),
+        2,
+        "ordinary request must finish while both long-polls are still waiting"
+    );
 
     let r1 = poll_one.join().expect("poll one");
     let r2 = poll_two.join().expect("poll two");
@@ -362,7 +378,10 @@ fn ai_gateway_config_hot_reloads_and_persists_token_privately() {
     drop(runtime);
     let reloaded = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     let status = expect_json_text_route_response(
-        route_request(&reloaded, &parsed_request("GET", "/v1/ai/status", &[], None)),
+        route_request(
+            &reloaded,
+            &parsed_request("GET", "/v1/ai/status", &[], None),
+        ),
         200,
     );
     assert_eq!(status["configured"], true);

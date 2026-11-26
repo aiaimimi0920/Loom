@@ -267,7 +267,7 @@ test("manages Otter recycle bin, temporary cache, and reference images from the 
 });
 
 test("auto-saves Loom fields and Otter shortcuts without a manual save action", () => {
-  assert.match(appSource, /pendingSettingsRef\.current = draft/);
+  assert.match(appSource, /draftRef\.current = next;\s*pendingSettingsRef\.current = next/);
   assert.match(appSource, /window\.setTimeout\(\(\) => \{[\s\S]*?void flushSettingsQueue\(\);[\s\S]*?\}, 360\)/);
   assert.match(appSource, /while \(pendingSettingsRef\.current\)/);
   assert.match(appSource, /await saveLoomSettings\(baseUrl, nextSettings\)/);

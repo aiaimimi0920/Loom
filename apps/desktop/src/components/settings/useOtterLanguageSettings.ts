@@ -78,7 +78,7 @@ export function useOtterLanguageSettings(baseUrl: string, online: boolean, activ
       || !locale.supportedLanguages.includes(language)) return;
     const version = generation.current;
     const request = {
-      requestId: crypto.randomUUID(),
+      requestId: randomId(),
       receiverGeneration: locale.receiverGeneration,
       expectedRevision: locale.revision,
       language,
@@ -111,3 +111,4 @@ export function useOtterLanguageSettings(baseUrl: string, online: boolean, activ
     chooseDevice, chooseLanguage, refresh,
   };
 }
+import { randomId } from "../../services/randomId.ts";

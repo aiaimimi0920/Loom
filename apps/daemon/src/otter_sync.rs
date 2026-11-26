@@ -92,8 +92,10 @@ struct ArchiveWorkflowRequest {
     tags: Vec<String>,
 }
 
-fn live_sync_map() -> &'static Mutex<BTreeMap<String, OtterDeviceSyncState>> {
-    static MAP: OnceLock<Mutex<BTreeMap<String, OtterDeviceSyncState>>> = OnceLock::new();
+type LiveSyncMap = BTreeMap<(PathBuf, String), OtterDeviceSyncState>;
+
+fn live_sync_map() -> &'static Mutex<LiveSyncMap> {
+    static MAP: OnceLock<Mutex<LiveSyncMap>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -135,18 +137,27 @@ fn save_history(control_plane_root: &Path, doc: &HistoryDocument) -> Result<()> 
     Ok(())
 }
 
-pub fn device_sync_state(device_id: &str) -> Option<OtterDeviceSyncState> {
+pub fn device_sync_state(root: &Path, device_id: &str) -> Option<OtterDeviceSyncState> {
     live_sync_map()
         .lock()
         .ok()
-        .and_then(|map| map.get(device_id).cloned())
+        .and_then(|map| map.get(&(root.to_owned(), device_id.to_owned())).cloned())
+}
+
+fn live_sync_snapshot(root: &Path) -> Vec<OtterDeviceSyncState> {
+    live_sync_map()
+        .lock()
+        .map(|map| {
+            map.iter()
+                .filter(|((scope, _), _)| scope == root)
+                .map(|(_, state)| state.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn summary_snapshot(control_plane_root: &Path) -> Value {
-    let devices = live_sync_map()
-        .lock()
-        .map(|map| map.values().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
+    let devices = live_sync_snapshot(control_plane_root);
     let _guard = history_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -215,10 +226,7 @@ pub fn route(
     }
     match (request.method.as_str(), route_path) {
         ("GET", "/v1/otter-sync/devices") => {
-            let devices = live_sync_map()
-                .lock()
-                .map(|map| map.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
+            let devices = live_sync_snapshot(control_plane_root);
             Some(
                 serde_json::to_string(&json!({ "devices": devices }))
                     .map(|s| (200, s))
@@ -261,7 +269,8 @@ pub fn route(
                 updated_at_ms: unix_time_millis(),
             };
             if let Ok(mut map) = live_sync_map().lock() {
-                if map.len() >= MAX_TRACKED_DEVICES && !map.contains_key(device_id) {
+                let key = (control_plane_root.to_owned(), device_id.to_owned());
+                if map.len() >= MAX_TRACKED_DEVICES && !map.contains_key(&key) {
                     if let Some(oldest) = map
                         .iter()
                         .min_by_key(|(_, v)| v.updated_at_ms)
@@ -270,7 +279,7 @@ pub fn route(
                         map.remove(&oldest);
                     }
                 }
-                map.insert(device_id.to_owned(), state.clone());
+                map.insert(key, state.clone());
             }
             Some(
                 serde_json::to_string(&json!({ "state": state }))
@@ -407,5 +416,33 @@ pub fn route(
             )
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_states_are_isolated_by_control_plane_root() {
+        let a = PathBuf::from(Uuid::new_v4().to_string());
+        let b = PathBuf::from(Uuid::new_v4().to_string());
+        let state = OtterDeviceSyncState {
+            device_id: "same-device".into(),
+            execution_state: "running".into(),
+            workflow_id: Some("private-workflow".into()),
+            workflow_name: None,
+            active_node_id: None,
+            node_count: 1,
+            progress: None,
+            updated_at_ms: 1,
+        };
+        let key = (a.clone(), state.device_id.clone());
+        live_sync_map().lock().unwrap().insert(key.clone(), state);
+        assert!(device_sync_state(&a, "same-device").is_some());
+        assert!(device_sync_state(&b, "same-device").is_none());
+        assert_eq!(live_sync_snapshot(&a).len(), 1);
+        assert!(live_sync_snapshot(&b).is_empty());
+        live_sync_map().lock().unwrap().remove(&key);
     }
 }

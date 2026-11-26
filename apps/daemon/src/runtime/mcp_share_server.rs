@@ -142,16 +142,9 @@ pub(crate) fn dispatch_mcp_share_jsonrpc(
 }
 
 fn sanitize_mcp_tool_suffix(raw: &str) -> String {
-    raw.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect()
+    // Qualified identity is authoritative; lossy truncation aliases unrelated Arts.
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(raw.as_bytes()))
 }
 
 fn build_outbound_mcp_tools(
@@ -179,7 +172,7 @@ fn build_outbound_mcp_tools(
                 continue;
             }
             tools.push(json!({
-                "name": format!("art__{}", sanitize_mcp_tool_suffix(&tool.id)),
+                "name": format!("art__{}", sanitize_mcp_tool_suffix(&tool.qualified_id())),
                 "description": format!("[Loom Art {}] {}", tool.qualified_id(), tool.description),
                 "inputSchema": {
                     "type": "object",

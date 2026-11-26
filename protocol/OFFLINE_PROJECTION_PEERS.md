@@ -150,7 +150,7 @@ verified is a point-in-time result, not a perpetual authorization or online flag
 POST /v1/projection-peer/catalog uses the pinned-key challenge with purpose
 catalog-request. The response signs the echoed challenge with purpose
 catalog-response followed by a newline and the SHA256 digest of the JSON tuple
-[devices, expiresAtMs, transferProtocol]. The supported transferProtocol is
+[devices, users, expiresAtMs, transferProtocol]. The digest is lowercase hexadecimal SHA-256 of the serialized JSON tuple. The supported transferProtocol is
 loom.offline-transfer.v1. Expiry is the requester timestamp plus 5000 ms.
 Only approved, current-epoch local Hooks with fresh receive presence and policy
 confirm or auto are exported. Catalogs never include transitive peer devices.
@@ -167,6 +167,7 @@ survive peer failures. Limits: 64 combined targets, 192 KiB catalog responses,
 two-second peer timeout, at most 16 parallel peer workers, one directory fetch
 per daemon. Network I/O holds neither the device registry nor trust mutex.
 An unchanged local trust revision and unexpired proof are required at publication.
+Failed or expired peer replies are skipped and counted in `unavailablePeers`; partial results retain local targets.
 
 ## Offline delivery lifecycle
 

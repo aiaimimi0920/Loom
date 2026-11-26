@@ -277,10 +277,16 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       await updateMcpServerCredentials(baseUrl, server.id, values, clear);
       updated = true;
-      notify("info", tf("mcp.toast.credentialsUpdated", { name: server.name }));
       await refresh();
+      notify("info", tf("mcp.toast.credentialsUpdated", { name: server.name }));
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : t("mcp.toast.credentialsSaveFailed"));
+      if (updated) {
+        notify("warning", error instanceof Error
+          ? tf("mcp.toast.savedRefreshFailedWithReason", { name: server.name, reason: error.message })
+          : tf("mcp.toast.savedRefreshFailed", { name: server.name }));
+      } else {
+        notify("error", error instanceof Error ? error.message : t("mcp.toast.credentialsSaveFailed"));
+      }
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);

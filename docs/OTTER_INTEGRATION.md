@@ -38,12 +38,12 @@ To prevent flat device lists from mixing physical machines with multiple running
 1. **Host Devices**: physical or virtual machines identified by their paired identity, online status, approval state, and LAN/local attributes.
 2. **App Sessions**: active application sessions (`otter`, bridge subscribers, live workflow sync reporters, and locale receivers) nested beneath their owning Host Device.
 
-## 3. Three-tier projection relay
+## 3. Direct projection and reserved Cloud Relay
 
-Image and object projections follow a unified Loom-mediated routing model (`Otter -> Loom 1 -> [Direct Peer / Server Cloud Relay] -> Loom 2 -> Otter`):
+Implemented image and object projections use direct Loom-mediated routing (`Otter -> Loom 1 -> Direct Peer -> Loom 2 -> Otter`):
 
 - **Same-Loom & LAN Peer**: governed by [QR Projection v2](../protocol/QR_PROJECTION_V2.md), [Offline Projection Peers](../protocol/OFFLINE_PROJECTION_PEERS.md), and [Projection Edit](../protocol/PROJECTION_EDIT.md). Target directories expose connected user and device summaries across the local Loom and directly trusted 1-hop peer Looms without leaking credentials or 2-hop directories.
-- **Internet 3-Tier Cloud Relay**: when signed in with NAccount, `/v1/cloud-relay/*` forwards bounded encrypted/signed projection envelopes across Loom hubs under the same account policy (see [AssetLibrary & Cloud Relay](ASSET_LIBRARY_INTEGRATION.md#5-naccount-3-tier-cloud-relay-v1cloud-relay)).
+- **Internet 3-Tier Cloud Relay (reserved)**: configuration/status exist, but send/inbox return `501 cloud_relay_transport_unavailable` after applicable checks. No cloud payload is sent or queued, and the cloud-domain MCP alias is local dispatch, not tunneling (see [AssetLibrary & Cloud Relay](ASSET_LIBRARY_INTEGRATION.md#5-naccount-3-tier-cloud-relay-v1cloud-relay)).
 
 ## 4. Otter Canvas projection and preview security
 

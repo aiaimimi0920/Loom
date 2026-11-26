@@ -49,9 +49,11 @@ export function LoomSettingsSections({
   } = controller;
 
   return (
-    <div className="settings-accordion">
+    <fieldset className="settings-accordion" disabled={controller.connectionSwitching || controller.settingsLoading}
+      style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <SettingsAccordionSection id="general" label={t("settings.sections.general")} open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
-        <ConnectionModeSettingsPanel baseUrl={baseUrl} />
+        <ConnectionModeSettingsPanel baseUrl={baseUrl}
+          beforeSave={controller.prepareConnectionSwitch} afterSave={controller.finishConnectionSwitch} />
         <NAccountSettingsPanel baseUrl={baseUrl} />
         <AccountSettingsPanel baseUrl={baseUrl} />
         <GeneralSettingsPanel
@@ -137,6 +139,6 @@ export function LoomSettingsSections({
           onOpenRepository={(url) => void openRepository(url)}
         />
       </SettingsAccordionSection>
-    </div>
+    </fieldset>
   );
 }

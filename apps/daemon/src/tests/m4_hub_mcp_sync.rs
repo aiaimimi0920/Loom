@@ -16,8 +16,15 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
     );
     let port = server.port;
 
-    let http_json = |method: &str, path: &str, token: &str, host: &str, body: Option<&Value>| -> (u16, Value) {
-        let payload = body.map(|v| serde_json::to_string(v).unwrap()).unwrap_or_default();
+    let http_json = |method: &str,
+                     path: &str,
+                     token: &str,
+                     host: &str,
+                     body: Option<&Value>|
+     -> (u16, Value) {
+        let payload = body
+            .map(|v| serde_json::to_string(v).unwrap())
+            .unwrap_or_default();
         let content_headers = if body.is_some() {
             format!(
                 "Content-Type: application/json\r\nContent-Length: {}\r\n",
@@ -108,14 +115,20 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
     assert_eq!(arch_status, 201);
     let entry_id = arch_body["entry"]["entryId"].as_str().unwrap().to_owned();
 
-    let (hier_status, hier_body) =
-        http_json("GET", "/v1/devices/hierarchy", "m4-admin-secret", &localhost, None);
+    let (hier_status, hier_body) = http_json(
+        "GET",
+        "/v1/devices/hierarchy",
+        "m4-admin-secret",
+        &localhost,
+        None,
+    );
     assert_eq!(hier_status, 200);
     assert_eq!(hier_body["model"], "host_to_apps");
     assert_eq!(
         hier_body["hosts"][0]["apps"][0]["executionState"],
-        "running"
+        "offline"
     );
+    assert_eq!(hier_body["hosts"][0]["apps"][0]["connected"], false);
     assert_eq!(hier_body["hosts"][0]["terminalAgentSlotReady"], true);
 
     // 3. Issue Scoped MCP Share Token (`arts:execute` + `devices:control`, NO `screen:read`).
@@ -130,7 +143,10 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
         })),
     );
     assert_eq!(tok_status, 201);
-    let share_token = tok_body["token"].as_str().expect("plaintext token").to_owned();
+    let share_token = tok_body["token"]
+        .as_str()
+        .expect("plaintext token")
+        .to_owned();
     assert!(share_token.starts_with("loom_mcp_"));
 
     // 4. Call `POST /mcp` over a simulated public tunnel Host header (`loom-tunnel.example.com`)!
@@ -162,7 +178,17 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect::<Vec<_>>();
-    assert!(tool_names.contains(&"art__m4-demo-art"));
+    let art_name = tool_names
+        .iter()
+        .find(|name| name.starts_with("art__"))
+        .expect("dynamic Art tool");
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| name.starts_with("art__"))
+            .count(),
+        1
+    );
     assert!(tool_names.contains(&"loom_otter_workflow_restore"));
     assert!(!tool_names.contains(&"loom_live_frame_read"));
 
@@ -181,7 +207,7 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
     );
     assert_eq!(denied_resp["error"]["code"], -32003);
 
-    // Calling `art__m4-demo-art` and `loom_otter_workflow_restore` succeeds!
+    // Invoke the catalog's collision-resistant Art name and the workflow restore tool.
     let (_, call_art_resp) = http_json(
         "POST",
         "/mcp",
@@ -191,7 +217,7 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": { "name": "art__m4-demo-art", "arguments": {} }
+            "params": { "name": art_name, "arguments": {} }
         })),
     );
     assert_eq!(call_art_resp["result"]["isError"], false);
@@ -216,7 +242,7 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
         true
     );
 
-    // 5. Cloud Relay: fails closed before NAccount login, succeeds once signed in!
+    // 5. Configuration/login are not remote transport: never claim undelivered data succeeded.
     assert_eq!(
         http_json(
             "PUT",
@@ -265,8 +291,13 @@ fn m4_outbound_mcp_scoped_tokens_cloud_relay_otter_sync_and_companion_settings()
             "payload": { "kind": "frame_offer" }
         })),
     );
-    assert_eq!(signed_relay_status, 200);
-    assert_eq!(signed_relay_body["hops"][2], "naccount_cloud_relay");
+    assert_eq!(signed_relay_status, 501);
+    assert_eq!(
+        signed_relay_body["error"]["code"],
+        "cloud_relay_transport_unavailable"
+    );
+    assert_eq!(cloud_relay::status_value(&root)["active"], false);
+    assert_eq!(cloud_relay::status_value(&root)["queuedEnvelopes"], 0);
 
     let (relay_mcp_status, relay_mcp_body) = http_json(
         "POST",

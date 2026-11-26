@@ -106,18 +106,6 @@ fn route_framework_tools(
                 framework_registry,
             )
         }
-        ("POST", path) if tool_execute_path_id(path).is_some() => execute_registered_tool(
-            &tool_execute_path_id(path).expect("checked path"),
-            &request.body,
-            mcp_servers,
-            tool_registry,
-            workflow_store,
-            framework_registry,
-            hook_bridge,
-            device_registry,
-            run_store,
-            control_plane_root,
-        ),
         ("GET", "/v1/tools/enabled") => list_enabled_tools(tool_registry),
         ("GET", path) if path_id(path, "/v1/tools/").is_some() => get_tool(
             path_id(path, "/v1/tools/").expect("checked path"),

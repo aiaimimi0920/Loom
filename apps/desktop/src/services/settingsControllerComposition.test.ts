@@ -15,8 +15,13 @@ test("settings persistence remains the owner of hydration, ordered writes and ru
   );
   assert.match(controller, /while \(pendingSettingsRef.current\)/);
   assert.match(controller, /await saveLoomSettings\(baseUrl, nextSettings\)/);
-  assert.match(controller, /settingsBaseUrlRef.current === baseUrl/);
-  assert.match(controller, /suppressNextSettingsSaveRef.current = true/);
+  assert.match(controller, /settingsGenerationRef.current !== generation/);
+  assert.match(controller, /settingsGenerationRef.current === generation/);
+  assert.match(controller, /if \(connectionSwitchingRef.current\) return/);
+  assert.match(controller, /if \(!settingsHydratedRef.current \|\| connectionSwitchingRef.current\) return/);
+  assert.match(controller, /draftRef.current = next;\s*pendingSettingsRef.current = next;\s*setDraftState\(next\)/);
+  assert.doesNotMatch(controller, /\[draft, flushSettingsQueue\]/);
+  assert.match(controller, /draftRef.current = rollback/);
   assert.match(controller, /shortcutsRef.current = rollbackShortcuts/);
   assert.match(controller, /void flushSettingsQueue\(\);[\s\S]*?\}, 360\)/);
   assert.match(controller, /apply_loom_general_settings/);

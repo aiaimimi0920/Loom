@@ -67,7 +67,11 @@ pub(super) fn execute_workflow_node(
         insert_child_input(&mut child_args, input);
     }
 
-    if is_sticker_art(&node.uses) {
+    let explicit_terminal = node
+        .placement
+        .or_else(|| node.meta.as_ref().and_then(|meta| meta.placement))
+        == Some(ExecutionPlacement::OtterTerminal);
+    if !explicit_terminal && is_sticker_art(&node.uses) {
         let input = child_input.ok_or_else(|| WorkflowRuntimeError::MissingImageInput {
             workflow_id: workflow_id.to_owned(),
             node_id: node.id.clone(),
@@ -83,7 +87,7 @@ pub(super) fn execute_workflow_node(
         return Ok(image_content_response(&input, "image/png"));
     }
 
-    if loom_native_image::is_native_art_id(&node.uses) {
+    if !explicit_terminal && loom_native_image::is_native_art_id(&node.uses) {
         let input = child_input.ok_or_else(|| WorkflowRuntimeError::MissingImageInput {
             workflow_id: workflow_id.to_owned(),
             node_id: node.id.clone(),
@@ -125,7 +129,12 @@ pub(super) fn execute_workflow_node(
         return Ok(image_content_response(&output, "image/png"));
     }
 
-    let resolved_child = resolve_workflow_child_tool(parent_tool, &node.uses, tool_registry)?;
+    let resolved_child =
+        if is_sticker_art(&node.uses) || loom_native_image::is_native_art_id(&node.uses) {
+            None
+        } else {
+            resolve_workflow_child_tool(parent_tool, &node.uses, tool_registry)?
+        };
     let placement = resolve_node_placement(
         node,
         resolved_child.as_ref(),

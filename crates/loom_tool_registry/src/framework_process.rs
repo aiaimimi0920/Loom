@@ -52,8 +52,7 @@ mod package;
 mod redaction;
 
 use candidates::*;
-#[cfg(test)]
-use execute::execute_framework_art_in_root_with_timeout;
+pub(crate) use execute::execute_framework_art_in_root_with_timeout;
 use host::*;
 use image::*;
 use lifecycle::*;

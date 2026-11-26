@@ -5,7 +5,7 @@ fn daemon_relays_terminal_gpu_subgraph_node_during_workflow_execution() {
     let server = EditionTestDaemon::start(
         DaemonConfig::localhost(0)
             .with_bearer_token("m3-relay-token")
-            .with_bounded_request_executor(4, 16),
+            .with_bounded_request_executor(1, 16),
     );
     let port = server.port;
 
@@ -25,7 +25,10 @@ fn daemon_relays_terminal_gpu_subgraph_node_during_workflow_execution() {
             .nth(1)
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(0);
-        (status, serde_json::from_str(json_str).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_str(json_str).unwrap_or(Value::Null),
+        )
     };
 
     let raw_put = |path: &str, payload: &Value| -> u16 {
@@ -146,7 +149,11 @@ fn daemon_relays_terminal_gpu_subgraph_node_during_workflow_execution() {
 
     // 3. Register simulated Otter terminal worker and spawn background poller.
     assert_eq!(
-        raw_post("/v1/otter/relay/register", &json!({ "deviceId": "device-lan-otter-1" })).0,
+        raw_post(
+            "/v1/otter/relay/register",
+            &json!({ "deviceId": "device-lan-otter-1" })
+        )
+        .0,
         200
     );
     let worker = thread::spawn(move || {
@@ -185,7 +192,8 @@ fn daemon_relays_terminal_gpu_subgraph_node_during_workflow_execution() {
         panic!("terminal poller never observed pending relay");
     });
 
-    let (exec_status, exec_json) = raw_post("/v1/tools/hybrid-art/execute", &json!({ "arguments": {} }));
+    let (exec_status, exec_json) =
+        raw_post("/v1/tools/hybrid-art/execute", &json!({ "arguments": {} }));
     worker.join().expect("join terminal worker");
     assert_eq!(exec_status, 200, "exec failed: {exec_json}");
     assert_eq!(
@@ -200,5 +208,85 @@ fn daemon_relays_terminal_gpu_subgraph_node_during_workflow_execution() {
     assert_eq!(trace[1]["target"], "otter_terminal");
     assert_eq!(trace[2]["target"], "loom_central");
 
+    server.stop();
+}
+
+#[test]
+fn inline_http_rejects_terminal_relay_without_blocking_central_execution() {
+    let server = EditionTestDaemon::start(
+        DaemonConfig::localhost(0).with_bearer_token("inline-relay-token"),
+    );
+    let request = |method: &str, path: &str, value: Value| {
+        let body = value.to_string();
+        let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        write!(stream,
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer inline-relay-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            server.port, body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, serde_json::from_str::<Value>(body).unwrap())
+    };
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/otter/relay/register",
+            json!({"deviceId": "inline-worker"})
+        )
+        .0,
+        200
+    );
+    for (name, nodes) in [
+        ("central", "nodes: []\n"),
+        (
+            "terminal",
+            "nodes:\n  - id: terminal\n    uses: __sticker__\n    placement: otter_terminal\n",
+        ),
+    ] {
+        assert_eq!(
+            request(
+                "PUT",
+                &format!("/v1/workflows/{name}"),
+                json!({"data": nodes})
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            request(
+                "PUT",
+                &format!("/v1/tools/{name}"),
+                json!({
+                    "id": name, "name": name, "description": "Inline relay regression", "enabled": true,
+                    "execution": {"type": "workflow", "workflowId": name}
+                })
+            )
+            .0,
+            200
+        );
+    }
+    let started = Instant::now();
+    let (status, body) = request(
+        "POST",
+        "/v1/tools/terminal/execute",
+        json!({"arguments": {}}),
+    );
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["error"]["code"], "workflow_runtime_error", "{body}");
+    assert!(body.to_string().contains("terminal"), "{body}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/tools/central/execute",
+            json!({"arguments": {}})
+        )
+        .0,
+        200
+    );
     server.stop();
 }

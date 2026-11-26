@@ -15,6 +15,8 @@ This directory contains the public, source-independent wire contracts and JSON S
 
 ## Compatibility and canonical-only rules
 
+LAN discovery is not authorization: TOFU pins a certificate only after explicit target selection; it cannot prevent an attacker impersonating a hub on that first selection. Later broadcasts cannot replace the pin. Previously known devices still require connection activation and signed device-session authentication. This is distinct from the loopback bridge's per-start certificate and TLS exporter proof.
+
 - Loom and Otter upgrade together on canonical wire contracts. Obsolete wire aliases, unnamespaced methods, ArtLoom/AHRP routes, short Art-ID catalog aliases, and legacy app-data paths are rejected rather than translated.
 - `loom.framework.v1` is stable: existing field names and single-request/single-response JSON framing do not change incompatibly.
 - `loom.hook.v1` is the Loom<->Otter bridge contract governing capability discovery, Art execution requests/results, Surface attachment/resource operations, workflow synchronization, and structured failures. Hosts negotiate via `protocolVersion` plus `supportedProtocolVersions`; packages must never infer behavior from application version strings.
@@ -53,6 +55,8 @@ Otter enforces `resource.authorization.v1` before reading Unit images or attachm
 2. Loom verifies package trust and digest-bound grants in `grants.json`, issuing an opaque single-use `authorizationId` (30-second TTL, max 32 outstanding tickets per connection).
 3. `loom.extension.command.invoke` consumes that `authorizationId` before staging uploads, resource references, unit attachments, or OCR contexts, re-verifying grants before and after execution.
 
+Resource authorization denies by default when current digest-bound grants do not cover the command's requested permissions. `checkOnly` returns authorization status without issuing a ticket. Tickets are single-use and connection-bound; reconnecting requires a new ticket. This does not change Framework permission mode's separate `audit` default.
+
 ## Normative framework process ABI and ZIP layouts
 
 1. Loom starts one managed child process per `loom.framework.v1` execution inside the immutable framework directory, writes one newline-terminated UTF-8 JSON request to `stdin`, and closes `stdin`.
@@ -67,7 +71,7 @@ Schemas under `protocol/schemas/`:
 
 - `capability-package.v1.schema.json`, `capability-runtime.v1.schema.json`, `extension.v1.schema.json`
 - `framework-manifest.v1.schema.json`, `framework-execute-request.v1.schema.json`, `framework-execute-response.v1.schema.json`, `framework-authoring.v1.schema.json`
-- `art-runtime.v1.schema.json`, `local-art-grant.v1.schema.json`, `local-art-package.v1.schema.json`, `local-art-resume.v1.schema.json`
+- `art-runtime.v1.schema.json`, `local-art-grant.v1.schema.json`, `local-art-package.v1.schema.json`, `local-art-package.v2.schema.json`, `local-art-package.v3.schema.json`, `local-art-resume.v1.schema.json` (v3 is the production prepare route; older package schemas are reference-only)
 - `surface-manifest.v1.schema.json`, `surface-message.v1.schema.json`, `surface-scene.v1.schema.json`, `surface-stream.v1.schema.json`
 - `device-session.v1.schema.json`, `otter-message.v1.schema.json`, `live-control.v1.schema.json`, `qr-projection.v1.schema.json`
 - `wall.v1.schema.json`, `wall-presentation.v1.schema.json`, `wall-identification.v1.schema.json`, `wall-timing.v1.schema.json`

@@ -32,9 +32,7 @@ impl EditionTestDaemon {
 
 fn raw_http_get(port: u16, target: &str, extra_headers: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect test daemon");
-    let raw = format!(
-        "GET {target} HTTP/1.1\r\n{extra_headers}Connection: close\r\n\r\n"
-    );
+    let raw = format!("GET {target} HTTP/1.1\r\n{extra_headers}Connection: close\r\n\r\n");
     stream.write_all(raw.as_bytes()).expect("write request");
     let mut out = String::new();
     stream.read_to_string(&mut out).expect("read response");
@@ -58,11 +56,23 @@ fn management_ui_serves_login_gate_cookie_exchange_and_embedded_spa() {
         );
         assert!(unauth.contains("Loom Web Management Console"));
 
-        let exchange = raw_http_get(
+        let query_login = raw_http_get(
             port,
             "/ui/?token=web-console-secret",
             &format!("Host: 127.0.0.1:{port}\r\n"),
         );
+        assert!(query_login.starts_with("HTTP/1.1 200 OK"));
+        assert!(!query_login.contains("Set-Cookie:"));
+        let body = "token=web-console-secret";
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect login");
+        write!(
+            stream,
+            "POST /ui/ HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write login");
+        let mut exchange = String::new();
+        stream.read_to_string(&mut exchange).expect("read login");
         assert!(exchange.starts_with("HTTP/1.1 303 See Other"));
         assert!(exchange.contains("Location: /ui/\r\n"));
         assert!(exchange.contains(

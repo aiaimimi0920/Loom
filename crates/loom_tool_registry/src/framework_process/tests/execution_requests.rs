@@ -249,3 +249,46 @@ fn execute_tool_routes_framework_art_to_the_external_process() {
     assert_eq!(result["request"]["params"]["strength"], 40);
     fs::remove_dir_all(root).ok();
 }
+
+#[cfg(windows)]
+#[test]
+fn registry_execution_keeps_framework_and_value_bindings_in_its_own_root() {
+    let _powershell_guard = lock_windows_powershell_fixture();
+    let root_a = temp_root("scope-a");
+    let root_b = temp_root("scope-b");
+    let script_a = SUCCESS_SCRIPT.replace("request = $request", "request = $request; marker = 'a'");
+    let script_b = SUCCESS_SCRIPT.replace("request = $request", "request = $request; marker = 'b'");
+    write_fixture_package(&root_a.join("frameworks"), &script_a);
+    let art_b = write_fixture_package(&root_b.join("frameworks"), &script_b);
+    let _environment = EnvVarGuard::set("LOOM_FRAMEWORK_PACKAGES_DIR", &root_b.join("frameworks"));
+    let mut tool = fixture_tool_with_schema(&art_b);
+    tool.metadata.as_mut().unwrap()["artUserSettings"] = json!({
+        "valueBindings": { "strength": "strength_value" }
+    });
+    for (root, value, marker) in [(&root_a, 21, "a"), (&root_b, 42, "b")] {
+        crate::credentials::CredentialStore::new(root)
+            .upsert(crate::credentials::CredentialInput {
+                name: "strength_value".to_owned(),
+                value: value.to_string(),
+                value_type: crate::credentials::CredentialValueType::Integer,
+                scope: crate::credentials::CredentialScope::default(),
+                expires_at: None,
+            })
+            .unwrap();
+        let registry =
+            crate::ToolRegistry::new(root.join("tools")).with_control_plane_root(root.clone());
+        let output = registry
+            .execute(
+                &tool,
+                &[],
+                json!({}),
+                Some(FUNCTIONAL_FIXTURE_TIMEOUT),
+                None,
+            )
+            .expect("execute in registry root");
+        assert_eq!(output["marker"], marker);
+        assert_eq!(output["request"]["params"]["strength"], value);
+    }
+    fs::remove_dir_all(root_a).unwrap();
+    fs::remove_dir_all(root_b).unwrap();
+}

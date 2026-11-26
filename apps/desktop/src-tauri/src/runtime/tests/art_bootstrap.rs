@@ -51,6 +51,7 @@ fn packaged_art_bootstrap_installs_catalog_once() {
     );
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind Art bootstrap fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read Art bootstrap fixture address");
@@ -172,6 +173,7 @@ fn packaged_art_bootstrap_repairs_invalid_lock_without_restoring_uninstalled_art
         .expect("write previously applied Art catalog marker");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind repair fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read repair fixture address");
     let (request_tx, request_rx) = mpsc::channel();
     let server = thread::spawn(move || {
@@ -313,6 +315,7 @@ fn packaged_art_bootstrap_relocks_arts_after_mcp_catalog_change() {
     .expect("write previously applied Art catalog marker");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind MCP relock fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read MCP relock fixture address");

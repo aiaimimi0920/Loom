@@ -187,7 +187,8 @@ export function officialFrameworkDisplayName(reference: string | null | undefine
     : normalized.includes("/")
       ? null
       : normalized;
-  const messageId = id ? officialFrameworkMessageIds[id] : undefined;
+  const messageId = id && Object.hasOwn(officialFrameworkMessageIds, id)
+    ? officialFrameworkMessageIds[id] : undefined;
   return messageId ? uiText(messageId) : null;
 }
 

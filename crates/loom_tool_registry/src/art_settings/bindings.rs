@@ -15,15 +15,26 @@ pub fn resolve_tool_value_bindings(
     tool: &ToolDefinition,
     arguments: Value,
 ) -> Result<Value, ArtSettingsError> {
+    resolve_tool_value_bindings_in_root(tool, arguments, None)
+}
+
+pub(crate) fn resolve_tool_value_bindings_in_root(
+    tool: &ToolDefinition,
+    arguments: Value,
+    root: Option<&Path>,
+) -> Result<Value, ArtSettingsError> {
     let bindings = tool_value_bindings(tool);
     if bindings.is_empty() {
         return Ok(arguments);
     }
-    let control_plane_root = control_plane_root_for_tool(tool).ok_or_else(|| {
-        ArtSettingsError::ParameterBinding(
-            "cannot locate the Loom control-plane root for this installed Art".to_owned(),
-        )
-    })?;
+    let control_plane_root = root
+        .map(Path::to_path_buf)
+        .or_else(|| control_plane_root_for_tool(tool))
+        .ok_or_else(|| {
+            ArtSettingsError::ParameterBinding(
+                "cannot locate the Loom control-plane root for this installed Art".to_owned(),
+            )
+        })?;
     let resolved = CredentialStore::new(control_plane_root)
         .global_values_for_bindings(&bindings)
         .map_err(|error| ArtSettingsError::ParameterBinding(error.to_string()))?;

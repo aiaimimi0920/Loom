@@ -77,8 +77,8 @@ fn test_daemon_runtime_from_config(
         }
     };
     let run_store_status = run_store.status();
-    let ai_gateway =
-        build_ai_gateway(config.ai_gateway, Some(control_plane_root)).expect("build test AI Gateway");
+    let ai_gateway = build_ai_gateway(config.ai_gateway, Some(control_plane_root))
+        .expect("build test AI Gateway");
     let settings_base_url = std::env::var("LOOM_SETTINGS_BASE_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:0/settings".to_owned());
     let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(control_plane_root)));
@@ -128,6 +128,7 @@ fn test_daemon_runtime_from_config(
         &capability_runtime,
     )));
     DaemonRuntime {
+        shutting_down: AtomicBool::new(false),
         local_art_tasks: local_art::Tasks::default(),
         offline_peers: offline_peers::OfflinePeers::new(control_plane_root).expect("offline peers"),
         projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())

@@ -69,6 +69,7 @@ fn route_with_runtime(
         &runtime.projection_owner,
         &runtime.offline_peers,
         &runtime.local_art_tasks,
+        &runtime.shutting_down,
     )?;
     if status == 200
         && ((request.method == "POST" && path == "/v1/projections/targets")
@@ -134,6 +135,7 @@ fn route(
     projection_owner: &ProjectionOwner,
     offline_peers: &offline_peers::OfflinePeers,
     local_art_tasks: &local_art::Tasks,
+    shutting_down: &AtomicBool,
 ) -> Result<(u16, String)> {
     let route_path = request
         .path
@@ -188,6 +190,7 @@ fn route(
         route_path,
         authenticated_device_id.as_deref(),
         admin_authenticated,
+        control_plane_root,
     ) {
         return response;
     }
@@ -447,6 +450,22 @@ fn route(
         return response;
     }
 
+    if request.method == "POST" {
+        if let Some(tool_id) = tool_execute_path_id(route_path) {
+            return execute_registered_tool(
+                &tool_id,
+                &request.body,
+                mcp_servers,
+                tool_registry,
+                workflow_store,
+                framework_registry,
+                run_store,
+                control_plane_root,
+                shutting_down,
+                request_executor.mode != "inline",
+            );
+        }
+    }
     // Ordered route groups preserve the former match-table precedence and final fallback.
     route_surfaces_devices(
         request,

@@ -119,9 +119,24 @@ fn tokens_path(control_plane_root: &Path) -> PathBuf {
 }
 
 fn load_document(control_plane_root: &Path) -> Result<TokenStoreDocument> {
+    use std::io::Read;
+    const MAX_STORE_BYTES: u64 = 256 * 1024;
     let path = tokens_path(control_plane_root);
-    match fs::read(&path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+    match fs::File::open(&path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(MAX_STORE_BYTES + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() as u64 <= MAX_STORE_BYTES,
+                "MCP share token store exceeds byte limit"
+            );
+            let document: TokenStoreDocument = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(
+                document.tokens.len() <= MAX_SHARE_TOKENS,
+                "MCP share token store exceeds token limit"
+            );
+            Ok(document)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(TokenStoreDocument::default())
         }
@@ -227,14 +242,17 @@ pub fn route_admin(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let now = unix_time_millis();
-            let active_count = load_document(control_plane_root)
-                .map(|doc| {
-                    doc.tokens
-                        .iter()
-                        .filter(|t| t.expires_at_ms.is_none_or(|exp| exp > now))
-                        .count()
-                })
-                .unwrap_or(0);
+            let document = match load_document(control_plane_root) {
+                Ok(document) => document,
+                Err(error) => return Some(Err(error)),
+            };
+            let active_count = {
+                document
+                    .tokens
+                    .iter()
+                    .filter(|t| t.expires_at_ms.is_none_or(|exp| exp > now))
+                    .count()
+            };
             let relay_status = crate::cloud_relay::status_value(control_plane_root);
             let body = json!({
                 "httpEndpoint": format!("{origin}/mcp"),

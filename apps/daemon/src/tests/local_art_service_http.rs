@@ -112,6 +112,40 @@ fn local_art_service_http_rejects_forgery_cross_owner_and_revoked_approval() {
     assert_eq!(f.service("submit", submit).0, 403);
 }
 #[test]
+fn local_art_service_http_other_session_cannot_cancel_owner_task() {
+    let f = Fixture::with_service();
+    assert_eq!(f.approve(0, true).0, 200);
+    let submit = f.service_submit("call:other-session", json!({"hang":true}), 5000);
+    assert_eq!(f.service("submit", submit.clone()).0, 200);
+    f.service_started(&submit);
+    let (status, session) = issue_session(f.port, &f.device, &f.key);
+    assert_eq!(status, 201, "{session}");
+    let token = session["token"].as_str().expect("device session token");
+    let (status, reply) = device(
+        f.port,
+        token,
+        "POST",
+        "/v1/art/local/service/poll",
+        Some(Fixture::service_control(&submit)),
+    );
+    assert_eq!(status, 403, "{reply}");
+    let (status, reply) = device(
+        f.port,
+        token,
+        "POST",
+        "/v1/art/local/service/cancel",
+        Some(Fixture::service_control(&submit)),
+    );
+    assert_eq!(status, 403, "{reply}");
+    let (status, reply) = f.service("poll", Fixture::service_control(&submit));
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["status"], "running");
+    let (status, reply) = f.service("cancel", Fixture::service_control(&submit));
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["status"], "cancelled");
+}
+
+#[test]
 fn local_art_service_http_cancel_timeout_and_output_limit_are_terminal() {
     let f = Fixture::with_service();
     assert_eq!(f.approve(0, true).0, 200);
@@ -149,6 +183,7 @@ fn local_art_service_http_shutdown_joins_running_task_and_process() {
     assert_eq!(f.approve(0, true).0, 200);
     let submit = f.service_submit("call:shutdown", json!({"hang":true}), 5000);
     assert_eq!(f.service("submit", submit.clone()).0, 200);
+    f.service_started(&submit);
     let runtime = f.runtime.clone();
     drop(f);
     assert!(runtime.process_ids().is_empty());
@@ -209,28 +244,37 @@ fn local_art_service_http_device_disable_preserves_an_unclaimed_shared_runtime()
     assert_eq!(f.approve(0, true).0, 200);
     let submit = f.service_submit("call:unclaimed", json!({}), 2000);
     let pids = f.runtime.process_ids();
-    assert_eq!(pids.len(), 1, "persistent plugin is already warm without submit");
+    assert_eq!(
+        pids.len(),
+        1,
+        "persistent plugin is already warm without submit"
+    );
     let (status, body) = admin(
         f.port,
         "PUT",
         &format!("/v1/devices/{}", f.device),
-        Some(json!({"name":"Local Art client","kind":"computer","address":"127.0.0.1","enabled":false})),
+        Some(
+            json!({"name":"Local Art client","kind":"computer","address":"127.0.0.1","enabled":false}),
+        ),
     );
     assert_eq!(status, 200, "{body}");
     assert_eq!(f.service("submit", submit).0, 401);
     assert_eq!(f.runtime.process_ids(), pids);
     // The Device owns its grant, not the shared plugin's idle process.
-    let output = f.runtime.invoke(loom_capability_runtime::CapabilityInvocation {
-        request_id: "independent-host-call".into(),
-        command_id: "publisher.example/local-service.run".into(),
-        input: json!({}),
-        target: None,
-        resource_refs: vec![],
-        unit_attachments: vec![],
-        staged_resources: vec![],
-        user_gesture_token: None,
-        timeout: Some(Duration::from_secs(2)),
-    }).unwrap();
+    let output = f
+        .runtime
+        .invoke(loom_capability_runtime::CapabilityInvocation {
+            request_id: "independent-host-call".into(),
+            command_id: "publisher.example/local-service.run".into(),
+            input: json!({}),
+            target: None,
+            resource_refs: vec![],
+            unit_attachments: vec![],
+            staged_resources: vec![],
+            user_gesture_token: None,
+            timeout: Some(Duration::from_secs(2)),
+        })
+        .unwrap();
     assert_eq!(output.payload.unwrap()["output"]["calls"], 1);
     assert_eq!(f.runtime.process_ids(), pids);
 }

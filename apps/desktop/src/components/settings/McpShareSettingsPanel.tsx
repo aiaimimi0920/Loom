@@ -1,5 +1,5 @@
 // Outbound MCP Share Token & Cloud Relay settings panel inside Settings -> MCP.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Input, Switch } from "@neuro/ui";
 import { useUiText } from "../../i18n/index.ts";
 import { deleteJson, getJson, postJson, putJson } from "../../services/loomApi/transport";
@@ -45,6 +45,10 @@ const SCOPE_OPTIONS: readonly { id: McpShareScope; labelKey: string }[] = [
 ];
 
 export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
+  return <McpShareSession key={baseUrl} baseUrl={baseUrl} />;
+}
+
+function McpShareSession({ baseUrl }: { baseUrl: string }) {
   const { t, tf } = useUiText();
   const [status, setStatus] = useState<McpShareStatusResponse | null>(null);
   const [tokens, setTokens] = useState<ShareTokenSummary[]>([]);
@@ -55,22 +59,34 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
   ]);
   const [newlyIssuedToken, setNewlyIssuedToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(false);
+  const mutationActive = useRef(false);
+  const reloadVersion = useRef(0);
+  const showError = (cause: unknown) => {
+    if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
+  };
 
   const reload = useCallback(async () => {
+    const version = ++reloadVersion.current;
     try {
       const [statusData, tokensData] = await Promise.all([
         getJson<McpShareStatusResponse>(baseUrl, "/v1/mcp-share/status"),
         getJson<{ tokens: ShareTokenSummary[] }>(baseUrl, "/v1/mcp-share/tokens"),
       ]);
-      setStatus(statusData);
-      setTokens(tokensData.tokens ?? []);
-    } catch {
-      // Non-fatal in disconnected preview/test mocks.
+      if (mounted.current && version === reloadVersion.current) {
+        setStatus(statusData);
+        setTokens(tokensData.tokens ?? []);
+      }
+    } catch (cause) {
+      if (version === reloadVersion.current) showError(cause);
     }
   }, [baseUrl]);
 
   useEffect(() => {
+    mounted.current = true;
     void reload();
+    return () => { mounted.current = false; ++reloadVersion.current; };
   }, [reload]);
 
   const toggleScope = (scope: McpShareScope) => {
@@ -80,49 +96,71 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
   };
 
   const handleCreateToken = async () => {
-    if (!label.trim() || selectedScopes.length === 0) {
+    if (mutationActive.current || !label.trim() || selectedScopes.length === 0) {
       return;
     }
+    mutationActive.current = true;
     setBusy(true);
+    setError(null);
     try {
       const created = await postJson<{ token: string; summary: ShareTokenSummary }>(
         baseUrl,
         "/v1/mcp-share/tokens",
         { label: label.trim(), scopes: selectedScopes },
       );
+      if (!mounted.current) return;
       setNewlyIssuedToken(created.token);
       await reload();
+    } catch (cause) {
+      showError(cause);
     } finally {
-      setBusy(false);
+      mutationActive.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
   const handleRevoke = async (id: string) => {
+    if (mutationActive.current) return;
+    mutationActive.current = true;
     setBusy(true);
+    setError(null);
     try {
       await deleteJson(baseUrl, `/v1/mcp-share/tokens/${encodeURIComponent(id)}`);
-      await reload();
+      if (mounted.current) await reload();
+    } catch (cause) {
+      showError(cause);
     } finally {
-      setBusy(false);
+      mutationActive.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
   const handleRelayPatch = async (patch: Partial<CloudRelayStatus>) => {
-    if (!status) {
+    if (!status || mutationActive.current) {
       return;
     }
     const next = { ...status.cloudRelay, ...patch };
+    mutationActive.current = true;
     setBusy(true);
+    setError(null);
     try {
-      await putJson(baseUrl, "/v1/cloud-relay/config", {
+      const saved = await putJson<CloudRelayStatus>(baseUrl, "/v1/cloud-relay/config", {
         enabled: next.enabled,
         relayUrl: next.relayUrl ?? null,
         exposeMcp: next.exposeMcp,
         exposeProjectionRelay: next.exposeProjectionRelay,
       });
-      await reload();
+      if (mounted.current) {
+        // A failed follow-up GET must not roll back the baseline of the next PUT.
+        ++reloadVersion.current;
+        setStatus((current) => current ? { ...current, cloudRelay: saved } : current);
+        await reload();
+      }
+    } catch (cause) {
+      showError(cause);
     } finally {
-      setBusy(false);
+      mutationActive.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -132,6 +170,7 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
         <SettingsSectionIcon kind="mcp" />
         <strong>{t("settings.mcpShare.header")}</strong>
       </header>
+      {error ? <p role="alert">{error}</p> : null}
       <div className="settings-network-row">
         <div className="settings-network-row__label">
           <strong>{t("settings.mcpShare.endpointsTitle")}</strong>
@@ -151,7 +190,7 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
           className="settings-general-toggle"
           aria-label={t("settings.mcpShare.enableCloudRelayAria")}
           checked={Boolean(status?.cloudRelay.enabled)}
-          disabled={busy}
+          disabled={busy || !status}
           onChange={(event) => void handleRelayPatch({ enabled: event.target.checked })}
         />
       </div>

@@ -319,7 +319,10 @@ fn same_call(a: &Owner, b: &Owner) -> bool {
 }
 impl Task {
     fn snapshot(&self, lease: &Lease) -> LocalResult<Reply> {
-        if !self.lease.same_session(lease) || !self.lease.valid() || !lease.valid() {
+        if !self.lease.same_session(lease) {
+            return Err(fail(403, "local_art_authorization_changed"));
+        }
+        if !self.lease.valid() || !lease.valid() {
             self.cancel(Some("local_art_authorization_changed"));
             return Err(fail(403, "local_art_authorization_changed"));
         }

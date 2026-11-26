@@ -63,12 +63,12 @@ pub(super) fn execute_tool_with_workflows_internal(
     execution: &mut ExecutionContext<'_>,
 ) -> WorkflowRuntimeResult<serde_json::Value> {
     check_cancelled(cancellation)?;
-    let arguments = prepare_tool_arguments(tool, arguments)?;
     match &tool.execution {
         ToolExecution::Workflow {
             workflow_id,
             workflow_bindings,
         } => {
+            let arguments = tool_registry.prepare_arguments(tool, arguments)?;
             execution.enter(workflow_id)?;
             let is_root = execution.is_root_workflow();
             let result = execute_workflow_tool(
@@ -94,20 +94,15 @@ pub(super) fn execute_tool_with_workflows_internal(
             })
         }
         _ => {
-            let result = match (remaining_timeout(deadline)?, cancellation) {
-                (Some(timeout), Some(cancellation)) => execute_tool_with_timeout_and_cancellation(
+            let result = tool_registry
+                .execute(
                     tool,
                     mcp_servers,
                     arguments,
-                    timeout,
+                    remaining_timeout(deadline)?,
                     cancellation,
-                ),
-                (Some(timeout), None) => {
-                    execute_tool_with_timeout(tool, mcp_servers, arguments, timeout)
-                }
-                (None, _) => execute_tool(tool, mcp_servers, arguments),
-            }
-            .map_err(WorkflowRuntimeError::from)?;
+                )
+                .map_err(WorkflowRuntimeError::from)?;
             check_cancelled(cancellation)?;
             Ok(result)
         }

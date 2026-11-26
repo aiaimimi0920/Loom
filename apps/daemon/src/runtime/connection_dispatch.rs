@@ -200,7 +200,11 @@ fn read_connection(job: ConnectionReadJob, draining: &AtomicBool, runtime: &Daem
     match read_http_request_admitted(&mut stream, deadline, draining, |head, large| {
         http_body_admission::admit(head, large, runtime)
     }) {
-        Ok(HttpReadOutcome::RejectedBeforeBody { status, body, remaining }) => {
+        Ok(HttpReadOutcome::RejectedBeforeBody {
+            status,
+            body,
+            remaining,
+        }) => {
             http_body_admission::reject(stream, status, &body, remaining);
         }
         Ok(outcome) => {
@@ -250,6 +254,7 @@ fn dispatch_connection(
     runtime: &DaemonRuntime,
     executor: &Option<BoundedRequestExecutor<RequestJob>>,
     surface_stream_executor: &BoundedRequestExecutor<RequestJob>,
+    relay_control_executor: &BoundedRequestExecutor<RequestJob>,
     shutdown_after_read: bool,
 ) -> DispatchOutcome {
     let ReadyConnection { stream, outcome } = ready;
@@ -258,7 +263,11 @@ fn dispatch_connection(
         HttpReadOutcome::Rejected { status, body } => {
             write_response_safely(stream, status, &body);
         }
-        HttpReadOutcome::RejectedBeforeBody { status, body, remaining } => {
+        HttpReadOutcome::RejectedBeforeBody {
+            status,
+            body,
+            remaining,
+        } => {
             http_body_admission::reject(stream, status, &body, remaining);
         }
         HttpReadOutcome::Request(request) => {
@@ -279,6 +288,16 @@ fn dispatch_connection(
                 return DispatchOutcome::Stop;
             }
             match executor.as_ref() {
+                _ if job
+                    .request
+                    .path
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .starts_with("/v1/otter/relay/") =>
+                {
+                    submit_request_job(job, relay_control_executor, runtime);
+                }
                 None => handle_request_job(job, runtime),
                 Some(_) if is_reserved_probe(&job.request) => {
                     handle_parsed_request(job.stream, job.request, runtime);
@@ -304,6 +323,7 @@ fn begin_shutdown(
     runtime: &DaemonRuntime,
     executor: &mut Option<BoundedRequestExecutor<RequestJob>>,
     surface_stream_executor: &mut BoundedRequestExecutor<RequestJob>,
+    relay_control_executor: &mut BoundedRequestExecutor<RequestJob>,
     read_draining: &AtomicBool,
 ) {
     record_shutdown_observed(runtime);
@@ -311,6 +331,7 @@ fn begin_shutdown(
         request_executor.close();
     }
     surface_stream_executor.close();
+    relay_control_executor.close();
     read_draining.store(true, Ordering::SeqCst);
 }
 

@@ -76,7 +76,12 @@ fn wait_otter_extension_command<T: Send>(
 fn is_otter_art_execute_message(text: &str) -> bool {
     serde_json::from_str::<Value>(text)
         .ok()
-        .and_then(|value| value.get("method").and_then(Value::as_str).map(str::to_owned))
+        .and_then(|value| {
+            value
+                .get("method")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .as_deref()
         == Some(loom_protocol::HOOK_METHOD_ART_EXECUTE)
 }
@@ -91,6 +96,7 @@ fn wait_otter_art_execute<'a>(
     use tungstenite::Message;
 
     let (intermediate_tx, intermediate_rx) = mpsc::channel::<String>();
+    let mut issued_relays = std::collections::HashSet::new();
     thread::scope(|scope| {
         let worker = match thread::Builder::new()
             .name("loom-otter-art-execute".to_owned())
@@ -108,6 +114,13 @@ fn wait_otter_art_execute<'a>(
         };
         let connected = loop {
             while let Ok(intermediate) = intermediate_rx.try_recv() {
+                if let Ok(event) = serde_json::from_str::<Value>(&intermediate) {
+                    if event["event"] == terminal_relay::HOOK_EVENT_WORKFLOW_NODE_RELAY_REQUEST {
+                        if let Some(id) = event["data"]["relayId"].as_str() {
+                            issued_relays.insert(id.to_owned());
+                        }
+                    }
+                }
                 if send_otter_bridge_message(socket, Message::Text(intermediate)).is_err() {
                     return None;
                 }
@@ -130,7 +143,8 @@ fn wait_otter_art_execute<'a>(
                     }
                 }
                 Ok(Message::Text(next_text)) => {
-                    if terminal_relay::try_handle_websocket_relay_result(&next_text) {
+                    if terminal_relay::try_handle_websocket_relay_result(&next_text, &issued_relays)
+                    {
                         continue;
                     }
                     match serde_json::from_str::<OtterRequest>(&next_text) {
@@ -166,7 +180,8 @@ fn wait_otter_art_execute<'a>(
             }
         };
         while let Ok(intermediate) = intermediate_rx.try_recv() {
-            if connected && send_otter_bridge_message(socket, Message::Text(intermediate)).is_err() {
+            if connected && send_otter_bridge_message(socket, Message::Text(intermediate)).is_err()
+            {
                 return None;
             }
         }

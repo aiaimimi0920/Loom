@@ -36,6 +36,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          path: Project/Loom
+
+      - name: Checkout Neuro UI
+        uses: actions/checkout@v5
+        with:
+          repository: aiaimimi0920/NeuroDesign
+          ref: 02420e8d129cf952c6bee3cda96ab7ebc95c2d67
+          path: nas_home/NeuroDesign
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.22.2"
+
+      - name: Setup npm
+        run: npm install --global npm@11.21.1 --no-audit --no-fund
+
+      - name: Build Neuro UI library
+        working-directory: nas_home/NeuroDesign
+        run: npm ci --no-audit --no-fund && node scripts/build.mjs --library --theme neuro
+
+      - name: Build Web management assets
+        working-directory: Project/Loom/apps/desktop
+        run: npm ci --no-audit --no-fund && npm run build:web
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -45,7 +71,7 @@ jobs:
       - name: Build Loom CI scan image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: Project/Loom
           load: true
           push: false
           tags: loom-ci:scan

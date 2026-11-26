@@ -28,6 +28,8 @@ impl LiveSessionStore {
                 return Ok(collect_events_after(record, after));
             }
         }
+        #[cfg(test)]
+        let _waiting = TestLiveEventWaitGuard::enter(&self.waiting_event_polls);
         let (mut sessions, _) = self
             .changed
             .wait_timeout_while(sessions, timeout, |sessions| {
@@ -41,6 +43,24 @@ impl LiveSessionStore {
         let record = active_record_mut(&mut sessions, session_id)?;
         ensure_member(record, actor_device_id)?;
         Ok(collect_events_after(record, after))
+    }
+}
+
+#[cfg(test)]
+struct TestLiveEventWaitGuard<'a>(&'a AtomicUsize);
+
+#[cfg(test)]
+impl<'a> TestLiveEventWaitGuard<'a> {
+    fn enter(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestLiveEventWaitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

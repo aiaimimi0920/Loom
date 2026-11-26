@@ -169,4 +169,4 @@ finally {
     Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
 }
 
-Write-Output "Gateway brain.plan fixture protocol and cleanup contract passed."
+Write-Output "Gateway ai.chat fixture protocol and cleanup contract passed."

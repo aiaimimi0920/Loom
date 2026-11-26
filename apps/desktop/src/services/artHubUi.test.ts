@@ -27,6 +27,11 @@ const framework = (id: string, qualifiedId?: string, name = qualifiedId || id): 
   readyDetail: "ready",
 });
 
+test("prototype property names are not official framework translations", () => {
+  assert.doesNotThrow(() => officialFrameworkDisplayName("constructor"));
+  assert.doesNotThrow(() => officialFrameworkDisplayName("toString"));
+});
+
 test("resolves localized Art identity and publisher metadata", (context) => {
   const previousLanguage = currentLanguage();
   context.after(() => setLanguage(previousLanguage));

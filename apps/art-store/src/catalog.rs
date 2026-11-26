@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::archive::MAX_PUBLISHED_ZIP_BYTES;
 use crate::filesystem::{is_reparse_or_symlink, read_optional_regular_file};
 use crate::indexes::enrich_catalog;
-use crate::manifest::{catalog_entry_from_manifest, read_manifest_bytes};
+use crate::manifest::catalog_entry_from_zip;
 use crate::model::{CatalogEntry, StoreError, StorePackageKind};
 use crate::storage::{ARTS_DIR, PACKAGES_DIR};
 
@@ -79,10 +79,7 @@ fn merge_catalog_zip(
     else {
         return Ok(());
     };
-    let Ok(manifest) = read_manifest_bytes(&bytes) else {
-        return Ok(());
-    };
-    let Ok(mut incoming) = catalog_entry_from_manifest(&manifest) else {
+    let Ok(mut incoming) = catalog_entry_from_zip(&bytes) else {
         return Ok(());
     };
     if incoming.id.is_empty() {

@@ -4,6 +4,8 @@
 
 `loom.surface.v1` remains the declarative UI/state protocol: `/v1/surfaces/stream` never carries video frame bytes or per-frame Base64. Live media flows over a dedicated binary WebSocket (`/v1/live/media` or `/v1/walls/live/media`) or negotiated same-host transport.
 
+This protocol does not establish runtime availability; clients must negotiate it. Public NAT relay is unavailable. Loopback WebSocket diagnostics are not physical two-device, WAN, or multi-screen acceptance. The local retention policy is not an external cloud audit.
+
 ## Shared-Loom designated viewer
 
 An authenticated standalone source may include `directViewerDeviceId` in `POST /v1/live/sessions` outside the control envelope as an immutable grant to one paired recipient device (`directView: true` in snapshots; input and window observations disabled). `POST /v1/live/sessions/{sessionId}/direct-viewer` accepts a `session_ack` envelope from that exact paired `Device` + nonce actor before appending `viewer_joined`.

@@ -146,6 +146,7 @@ fn packaged_mcp_server_bootstrap_installs_once_and_respects_uninstall_marker() {
     .expect("write legacy MCP migration marker");
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind MCP bootstrap fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read MCP bootstrap fixture address");

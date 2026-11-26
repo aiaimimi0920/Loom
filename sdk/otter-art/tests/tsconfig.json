@@ -12,5 +12,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "files": ["types.ts", "../examples/packaged-image-service.js", "../examples/live-trigger.js"]
+  "files": ["types.ts", "../examples/packaged-image-service.js", "../examples/service-image-result.js", "../examples/live-trigger.js"]
 }

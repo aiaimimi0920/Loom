@@ -33,7 +33,7 @@ export function ProjectionGroupsEditor(props: {
           onClick={() => {
             props.onChange([
               ...props.groups,
-              { groupId: "group-" + crypto.randomUUID(), name: name.trim(), members: [] },
+              { groupId: "group-" + randomId(), name: name.trim(), members: [] },
             ]);
             setName("");
           }}
@@ -102,3 +102,4 @@ export function ProjectionGroupsEditor(props: {
     </section>
   );
 }
+import { randomId } from "../../services/randomId.ts";

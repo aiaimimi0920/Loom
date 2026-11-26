@@ -38,14 +38,14 @@ impl LoomDaemon {
             let trimmed = config.host.trim().trim_matches(['[', ']']);
             trimmed == "0.0.0.0"
                 || trimmed == "::"
-                || trimmed.parse::<IpAddr>().is_ok_and(|ip| match ip.to_canonical() {
-                    IpAddr::V4(v4) => v4.is_private(),
-                    IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
-                })
+                || trimmed
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| match ip.to_canonical() {
+                        IpAddr::V4(v4) => v4.is_private(),
+                        IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+                    })
         };
-        if !config.tls_terminated
-            && !allow_private_lan_bind
-            && !is_loopback_bind_host(&config.host)
+        if !config.tls_terminated && !allow_private_lan_bind && !is_loopback_bind_host(&config.host)
         {
             anyhow::bail!(
                 "loom daemon refuses plaintext non-loopback bind {}; place it behind an authenticated TLS terminator (LOOM_TLS_TERMINATED=1) or set LOOM_ALLOW_LAN_MANAGEMENT=1 for private home-LAN binds",
@@ -78,7 +78,9 @@ impl LoomDaemon {
                     .or_else(|| {
                         std::env::current_exe()
                             .ok()
-                            .and_then(|exe| loom_local_data::resolve_portable_root(&exe).ok().flatten())
+                            .and_then(|exe| {
+                                loom_local_data::resolve_portable_root(&exe).ok().flatten()
+                            })
                             .map(|portable| portable.join("control-plane"))
                     })
                     .unwrap_or_else(default_control_plane_root)
@@ -96,8 +98,6 @@ impl LoomDaemon {
                     .unwrap_or_else(default_configuration_root)
             }
         });
-        #[cfg(not(test))]
-        loom_tool_registry::set_default_control_plane_root(&control_plane_root);
         let ai_gateway = build_ai_gateway(config.ai_gateway, Some(&control_plane_root))?;
         repair_legacy_control_plane_permissions(&control_plane_root).with_context(|| {
             format!(
@@ -141,7 +141,8 @@ impl LoomDaemon {
             LoomSettingsStore::new(control_plane_root.join("settings").join("settings.json"));
         apply_runtime_settings(&settings_store.settings);
         let mcp_servers = Arc::new(Mutex::new(load_persisted_mcp_servers(&control_plane_root)));
-        let tool_registry = ToolRegistry::new(control_plane_root.join("tools"));
+        let tool_registry = ToolRegistry::new(control_plane_root.join("tools"))
+            .with_control_plane_root(&control_plane_root);
         let workflow_store = WorkflowStore::new(control_plane_root.join("workflows"));
         let mut bridge_runtime = OtterBridgeRuntime::new(control_plane_root.join("workflows"));
         bridge_runtime.discovery = capability_manifest;
@@ -198,6 +199,7 @@ impl LoomDaemon {
         let offline_peers = offline_peers::OfflinePeers::new(&control_plane_root)?;
         let loom_id = offline_peers.loom_id()?;
         let runtime = DaemonRuntime {
+            shutting_down: AtomicBool::new(false),
             local_art_tasks: local_art::Tasks::default(),
             offline_peers,
             projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
@@ -300,6 +302,12 @@ impl LoomDaemon {
             SURFACE_STREAM_QUEUE_CAPACITY,
             move |job: RequestJob| handle_request_job(job, &surface_stream_runtime),
         )?;
+        // Results and polling must progress even when every workflow worker waits for a relay.
+        let relay_runtime = Arc::clone(&self.runtime);
+        let mut relay_control_executor =
+            BoundedRequestExecutor::new("loom-relay-control", 2, 64, move |job: RequestJob| {
+                handle_request_job(job, &relay_runtime)
+            })?;
 
         // Reads happen on their own pool and come back through `ready_rx`, so the accept thread
         // never touches a client's byte stream. See `CONNECTION_READ_WORKERS`.
@@ -351,6 +359,7 @@ impl LoomDaemon {
                     &self.runtime,
                     &mut executor,
                     &mut surface_stream_executor,
+                    &mut relay_control_executor,
                     &read_draining,
                 );
                 // The readers are joined before the drain so that every connection which finished
@@ -362,6 +371,7 @@ impl LoomDaemon {
                         &self.runtime,
                         &executor,
                         &surface_stream_executor,
+                        &relay_control_executor,
                         true,
                     );
                 }
@@ -371,6 +381,7 @@ impl LoomDaemon {
                         &self.runtime,
                         &executor,
                         &surface_stream_executor,
+                        &relay_control_executor,
                         true,
                     );
                 }
@@ -424,6 +435,7 @@ impl LoomDaemon {
                         &self.runtime,
                         &mut executor,
                         &mut surface_stream_executor,
+                        &mut relay_control_executor,
                         &read_draining,
                     );
                 }
@@ -432,6 +444,7 @@ impl LoomDaemon {
                     &self.runtime,
                     &executor,
                     &surface_stream_executor,
+                    &relay_control_executor,
                     shutdown_after_read,
                 );
                 if matches!(outcome, DispatchOutcome::Stop) {
@@ -445,6 +458,7 @@ impl LoomDaemon {
                             &self.runtime,
                             &executor,
                             &surface_stream_executor,
+                            &relay_control_executor,
                             true,
                         );
                     }
@@ -457,11 +471,13 @@ impl LoomDaemon {
         // Sockets still queued for a read are answered rather than read: the daemon is on its way
         // out, and a queued client may be one that never finishes sending.
         read_draining.store(true, Ordering::SeqCst);
+        self.runtime.shutting_down.store(true, Ordering::Release);
         let shutdown_result = executor
             .as_mut()
             .map(BoundedRequestExecutor::shutdown)
             .transpose();
         let surface_stream_shutdown_result = surface_stream_executor.shutdown();
+        let relay_control_shutdown_result = relay_control_executor.shutdown();
         let read_stage_shutdown_result = read_stage.shutdown();
         let maintenance_result = maintenance.shutdown();
         self.runtime.local_art_tasks.shutdown();
@@ -478,6 +494,7 @@ impl LoomDaemon {
         if let Err(error) = serve_result {
             let _ = shutdown_result;
             let _ = surface_stream_shutdown_result;
+            let _ = relay_control_shutdown_result;
             let _ = read_stage_shutdown_result;
             let _ = read_stage_result;
             let _ = maintenance_result;
@@ -488,6 +505,7 @@ impl LoomDaemon {
         }
         shutdown_result.context("shutdown Loom request executor")?;
         surface_stream_shutdown_result.context("shutdown Loom Surface stream executor")?;
+        relay_control_shutdown_result.context("shutdown Loom relay control executor")?;
         read_stage_result.context("shutdown Loom connection reader")?;
         read_stage_shutdown_result.context("shutdown Loom connection reader")?;
         maintenance_result.context("shutdown Loom maintenance worker")?;

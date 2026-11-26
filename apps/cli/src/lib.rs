@@ -144,10 +144,7 @@ where
             writeln!(writer, "{response}")?;
         }
         ["mcp-stdio"] => {
-            let effective_token = options
-                .mcp_token
-                .as_deref()
-                .or(options.daemon_token.as_deref());
+            let effective_token = options.mcp_token.as_deref();
             mcp_stdio::run_mcp_stdio_bridge(
                 std::io::stdin().lock(),
                 writer,
@@ -182,7 +179,7 @@ fn cli_help_text() -> &'static str {
         "\n",
         "Options:\n",
         "  --daemon-url <URL>     Daemon URL [default: LOOM_DAEMON_URL or http://127.0.0.1:8765]\n",
-        "  --daemon-token <TOKEN> Bearer token [default: LOOM_DAEMON_TOKEN or control-plane token file]\n",
+        "  --daemon-token <TOKEN> Bearer token [loopback only default: LOOM_DAEMON_TOKEN or token file]\n",
         "  --mcp-token <TOKEN>    Scoped MCP share token [default: LOOM_MCP_SHARE_TOKEN]\n",
         "  --json                 Print raw JSON response for list commands\n",
         "  -h, --help             Print help\n",
@@ -249,7 +246,7 @@ impl CliOptions {
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
-        let mut daemon_token = default_daemon_auth_token()?;
+        let mut explicit_daemon_token = None;
         let mut mcp_token = std::env::var("LOOM_MCP_SHARE_TOKEN")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -272,11 +269,7 @@ impl CliOptions {
                     let raw = args
                         .get(index)
                         .ok_or_else(|| anyhow!("--daemon-token requires a value"))?;
-                    daemon_token = if raw.trim().is_empty() {
-                        None
-                    } else {
-                        Some(normalize_daemon_auth_token(raw, "--daemon-token")?)
-                    };
+                    explicit_daemon_token = Some(raw.clone());
                 }
                 "--mcp-token" => {
                     index += 1;
@@ -297,6 +290,11 @@ impl CliOptions {
             index += 1;
         }
 
+        let daemon_token = select_daemon_auth_token(
+            &daemon_url,
+            explicit_daemon_token.as_deref(),
+            default_daemon_auth_token,
+        )?;
         Ok(Self {
             command,
             daemon_url,
@@ -304,6 +302,31 @@ impl CliOptions {
             mcp_token,
             raw_json,
         })
+    }
+}
+
+fn select_daemon_auth_token(
+    base_url: &str,
+    explicit: Option<&str>,
+    load_local: impl FnOnce() -> Result<Option<String>>,
+) -> Result<Option<String>> {
+    let endpoint = parse_http_url(base_url)?;
+    if let Some(raw) = explicit {
+        return if raw.trim().is_empty() {
+            Ok(None)
+        } else {
+            normalize_daemon_auth_token(raw, "--daemon-token").map(Some)
+        };
+    }
+    if endpoint.host.eq_ignore_ascii_case("localhost")
+        || endpoint
+            .host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    {
+        load_local()
+    } else {
+        Ok(None)
     }
 }
 

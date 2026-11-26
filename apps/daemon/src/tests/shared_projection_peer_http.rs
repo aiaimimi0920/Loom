@@ -152,6 +152,11 @@ fn shared_peer_link_local_and_remote_accept_compete_for_the_same_slot() {
         1,
         "{results:?}"
     );
+    assert_eq!(
+        results.iter().filter(|&&status| status == 409).count(),
+        1,
+        "{results:?}"
+    );
     sa.finish().unwrap();
     sb.finish().unwrap();
 }

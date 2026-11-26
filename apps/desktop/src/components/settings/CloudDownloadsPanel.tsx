@@ -32,7 +32,7 @@ export function CloudDownloadsPanel({ baseUrl }: { baseUrl: string }) {
   }
   async function download(item: Publication, install = false) {
     const token = ++generation.current;
-    const id = crypto.randomUUID();
+    const id = randomId();
     setTaskId(id);
     setBusy(true); setError(""); setSaved(""); setInstalled("");
     try {
@@ -75,3 +75,4 @@ export function CloudDownloadsPanel({ baseUrl }: { baseUrl: string }) {
     {error && <Notice tone="danger">{error}</Notice>}
   </div>;
 }
+import { randomId } from "../../services/randomId.ts";

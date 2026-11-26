@@ -11,6 +11,7 @@ mod store;
 mod validation;
 
 pub use bindings::resolve_tool_value_bindings;
+pub(crate) use bindings::resolve_tool_value_bindings_in_root;
 pub use metadata::{apply_settings_metadata, art_is_locally_authored, merge_tool_arguments};
 pub use model::{ArtParameterDefinition, ArtSettingsError, ArtUpdateSource, ArtUserSettings};
 pub use parameters::{

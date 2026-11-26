@@ -75,7 +75,7 @@ pub fn execute_framework_art_with_timeout_and_cancellation(
     )
 }
 
-pub(super) fn execute_framework_art_in_root_with_timeout(
+pub(crate) fn execute_framework_art_in_root_with_timeout(
     tool: &ToolDefinition,
     framework: &str,
     arguments: Value,

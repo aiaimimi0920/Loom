@@ -260,15 +260,14 @@ fn settings_file_path(control_plane_root: &Path) -> std::path::PathBuf {
         .join(AI_GATEWAY_SETTINGS_FILE)
 }
 
-fn load_persisted_token(control_plane_root: &Path) -> Option<String> {
+fn load_persisted_token(control_plane_root: &Path) -> Result<Option<String>, AiGatewayRelayError> {
     let store = CredentialStore::new(control_plane_root);
     let scope = ai_gateway_credential_scope();
-    store
+    Ok(store
         .reveal(AI_GATEWAY_TOKEN_CREDENTIAL_KEY, &scope)
-        .ok()
-        .flatten()
+        .map_err(|error| AiGatewayRelayError::Storage(error.to_string()))?
         .map(|details| details.value)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty()))
 }
 
 fn load_persisted_endpoint(
@@ -290,7 +289,7 @@ fn load_persisted_endpoint(
         .clamp(MIN_GATEWAY_TIMEOUT_SECS, MAX_GATEWAY_TIMEOUT_SECS);
     let endpoint = AiGatewayEndpointConfig {
         base_url: persisted.base_url.trim().to_owned(),
-        auth_token: load_persisted_token(control_plane_root),
+        auth_token: load_persisted_token(control_plane_root)?,
         default_model: persisted
             .default_model
             .map(|model| model.trim().to_owned())
@@ -436,7 +435,9 @@ impl AiGatewayService for ManagedAiGateway {
         let credential_store = CredentialStore::new(control_plane_root);
         let credential_scope = ai_gateway_credential_scope();
         if update.clear_auth_token {
-            let _ = credential_store.delete(AI_GATEWAY_TOKEN_CREDENTIAL_KEY, &credential_scope);
+            credential_store
+                .delete(AI_GATEWAY_TOKEN_CREDENTIAL_KEY, &credential_scope)
+                .map_err(|error| AiGatewayRelayError::Storage(error.to_string()))?;
         } else if let Some(token) = update
             .auth_token
             .as_ref()
@@ -464,20 +465,19 @@ impl AiGatewayService for ManagedAiGateway {
             default_model: default_model.clone(),
             timeout_seconds,
         };
-        let path = settings_file_path(control_plane_root);
-        crate::write_json_atomically(&path, &persisted)
-            .map_err(|error| AiGatewayRelayError::Storage(error.to_string()))?;
-
         let next_active = if update.enabled {
             Some(ManagedAiGateway::from_endpoint(AiGatewayEndpointConfig {
                 base_url,
-                auth_token: load_persisted_token(control_plane_root),
+                auth_token: load_persisted_token(control_plane_root)?,
                 default_model,
                 timeout: Duration::from_secs(timeout_seconds),
             })?)
         } else {
             None
         };
+        let path = settings_file_path(control_plane_root);
+        crate::write_json_atomically(&path, &persisted)
+            .map_err(|error| AiGatewayRelayError::Storage(error.to_string()))?;
         *self
             .inner
             .write()
@@ -494,36 +494,5 @@ pub(crate) fn build_ai_gateway(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    #[test]
-    fn env_config_supports_unconfigured_loopback_and_lan_urls() {
-        let empty = HashMap::<String, String>::new();
-        assert_eq!(
-            AiGatewayConfig::from_lookup(|name| empty.get(name).cloned()).expect("unconfigured"),
-            AiGatewayConfig::Unconfigured
-        );
-
-        let mut values = HashMap::new();
-        values.insert(
-            "LOOM_GATEWAY_BASE_URL".to_owned(),
-            "http://192.168.1.40:4200".to_owned(),
-        );
-        values.insert("LOOM_GATEWAY_MODEL".to_owned(), "qwen-home".to_owned());
-        values.insert("LOOM_GATEWAY_TOKEN".to_owned(), "secret-token".to_owned());
-        values.insert("LOOM_GATEWAY_TIMEOUT_SECS".to_owned(), "15".to_owned());
-        let config =
-            AiGatewayConfig::from_lookup(|name| values.get(name).cloned()).expect("lan config");
-        assert!(matches!(config, AiGatewayConfig::Gateway(_)));
-        assert!(!format!("{config:?}").contains("secret-token"));
-
-        values.insert("LOOM_GATEWAY_TIMEOUT_SECS".to_owned(), "0".to_owned());
-        assert_eq!(
-            AiGatewayConfig::from_lookup(|name| values.get(name).cloned())
-                .expect_err("zero timeout"),
-            AiGatewayConfigError::TimeoutOutOfRange(0)
-        );
-    }
-}
+#[path = "ai_gateway_tests.rs"]
+mod tests;

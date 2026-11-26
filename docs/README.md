@@ -15,7 +15,7 @@ Use the documents below as the authoritative reference for operating, integratin
 - [Otter and companion integration](OTTER_INTEGRATION.md): global Otter connection control, two-level Host -> App Sessions hierarchy, Otter canvas projection, multi-device workflow sync and history archive, intra-workflow hybrid terminal relay, Otter display language, and Companion App Settings Hub.
 - [Workflow contract](WORKFLOW_CONTRACT.md): `loom.workflow.v1` graph synchronization, dynamic execution placement (`local`/`server`/`auto`), child Art dependencies, and SemVer compatibility.
 - [Gateway integration](GATEWAY_INTEGRATION.md): global AI Gateway configuration (`/v1/ai/*`), LAN/remote origin rules, and durable `ai.chat.v1` invocation.
-- [AssetLibrary, NAccount, and Unified Store](ASSET_LIBRARY_INTEGRATION.md): NAccount PKCE login (`/v1/naccount/*`), AssetLibrary catalog/download/install (`/v1/asset-library/*`), unified multi-platform catalog (`GET /v1/store/catalog`), forward-slash ZIP rule, and 3-tier Cloud Relay (`/v1/cloud-relay/*`).
+- [AssetLibrary, NAccount, and Unified Store](ASSET_LIBRARY_INTEGRATION.md): NAccount PKCE login (`/v1/naccount/*`), AssetLibrary catalog/download/install (`/v1/asset-library/*`), unified multi-platform catalog (`GET /v1/store/catalog`), forward-slash ZIP rule, and reserved Cloud Relay configuration/status (`/v1/cloud-relay/*`; transport unavailable).
 - [Download engine](DOWNLOAD_ENGINE.md): Windows in-process `libaria2` (`loom_aria2.dll`), Linux portable fallback, loopback ticket relay, download-control API, and GPL corresponding-source bundle rules.
 - [Neuro UI integration](NEURO_UI.md): `@neuro/ui` local linking, pinned clean-CI checkout layout, and UI-versus-controller ownership boundaries.
 

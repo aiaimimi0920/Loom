@@ -33,9 +33,11 @@ fn cloud_actions_have_bounded_network_budget_without_extending_local_routes() {
 
 #[test]
 fn refresh_response_after_local_budget_succeeds_only_with_cloud_budget() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     // Simulate a refresh exceeding the three-second local budget without connecting to the account service or using a real refresh token.
     for old_budget in [true, false] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind refresh fixture");
+        let _origin = TestDaemonOrigin::bind(&listener);
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept refresh fixture");

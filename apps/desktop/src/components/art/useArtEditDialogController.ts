@@ -25,17 +25,8 @@ export function useArtEditDialogController({
   const busy = busyAction !== null;
   useEffect(() => {
     if (!management) return;
-    const identity = tool ? artDisplayIdentity(tool, management.artId, language) : null;
-    setName(
-      management.canEditIdentity
-        ? management.name || tool?.name || ""
-        : identity?.localizedName || management.name || tool?.name || "",
-    );
-    setDescription(
-      management.canEditIdentity
-        ? management.description || tool?.description || ""
-        : identity?.localizedDescription || management.description || tool?.description || "",
-    );
+    setName(management.name || tool?.name || "");
+    setDescription(management.description || tool?.description || "");
     setAutoUpdate(management.autoUpdate !== false);
     setTargetVersion(management.currentVersion);
     setParameterValues(
@@ -91,7 +82,8 @@ export function useArtEditDialogController({
       ),
     );
     setFormError(null);
-  }, [language, management, tool]);
+  }, [management, tool]);
+  const identity = tool ? artDisplayIdentity(tool, management?.artId, language) : null;
   const requiredParameters =
     management?.parameters.filter((parameter) => parameter.required && !parameter.secret) ?? [];
   const optionalParameters =
@@ -124,8 +116,8 @@ export function useArtEditDialogController({
     }
   };
   return {
-    name,
-    description,
+    name: management?.canEditIdentity ? name : identity?.localizedName || name,
+    description: management?.canEditIdentity ? description : identity?.localizedDescription || description,
     autoUpdate,
     targetVersion,
     parameterValues,

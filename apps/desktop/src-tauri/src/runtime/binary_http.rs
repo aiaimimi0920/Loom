@@ -19,9 +19,9 @@ pub(super) fn percent_encode_path_segment(value: &str) -> String {
 // not corrupted by UTF-8 decoding, and it returns the Content-Type so the caller
 // can build a correct `data:` URL.
 pub(super) fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), String> {
-    let (host, port, addr) = parse_daemon_http_endpoint(base_url)?;
+    let (authority, addr) = parse_daemon_http_endpoint(base_url)?;
     let path = normalize_daemon_path(path.to_owned())?;
-    let authorization = daemon_auth_token()?
+    let authorization = daemon_auth_token_for(base_url)?
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
     let mut stream = TcpStream::connect_timeout(&addr, LOOM_DAEMON_CONNECT_TIMEOUT)
@@ -34,7 +34,7 @@ pub(super) fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec
         .map_err(|error| format!("Failed to set Loom local service write timeout: {error}"))?;
 
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: image/*\r\n{authorization}Connection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: image/*\r\n{authorization}Connection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -120,16 +120,14 @@ pub(super) fn normalize_daemon_path(path: String) -> Result<String, String> {
     Ok(path.to_string())
 }
 
-pub(super) fn parse_daemon_http_endpoint(
-    base_url: &str,
-) -> Result<(String, u16, SocketAddr), String> {
+pub(super) fn parse_daemon_http_endpoint(base_url: &str) -> Result<(String, SocketAddr), String> {
     let allow_remote = is_remote_connection_mode();
     let endpoint = loom_local_data::parse_loom_endpoint_url(base_url, allow_remote)?;
     if endpoint.scheme != "http" {
         return Err("Direct transport uses HTTP (loopback or private LAN IP); access HTTPS endpoints through the built-in browser console.".to_owned());
     }
     let addr = endpoint.resolve_socket_addr()?;
-    Ok((endpoint.host, endpoint.port, addr))
+    Ok((endpoint.authority(), addr))
 }
 
 pub(super) fn parse_loopback_http_url(base_url: &str) -> Result<(String, u16), String> {

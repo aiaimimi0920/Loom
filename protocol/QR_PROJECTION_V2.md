@@ -4,6 +4,8 @@ Scope and upgrade boundary: Otter and Loom upgrade together on `neuro.qr-project
 
 ## Ownership and transport
 
+Self-hosted relay deployment, physical two-machine NAT/Windows networking, and real OAuth/UI acceptance remain open.
+
 Otter sends formal PNG snapshots to its own authenticated Loom. Loom owns source
 revisions, persisted associations, account authorization, network recovery and
 peer connections. Otter retains image composition and the receiver's local layout.

@@ -430,6 +430,7 @@ try {
     Assert-Equal "smoke-resolved-model" ([string]$invoke.output.gateway.model) "Gateway resolved model mismatch"
     $parsedAssistant = ([string]$invoke.output.content) | ConvertFrom-Json
     Assert-Equal "Packaged Gateway plan" ([string]$parsedAssistant.summary) "Gateway assistant summary mismatch"
+    Assert-Equal "inspect packaged request,execute packaged plan" ($parsedAssistant.steps -join ",") "Gateway assistant steps mismatch"
 
     $runId = [string]$invoke.output.runId
     Assert-True (-not [string]::IsNullOrWhiteSpace($runId)) "Gateway smoke did not return a run id"
@@ -453,10 +454,10 @@ try {
     Assert-Equal "packaged-gateway-smoke" ([string]$userPayload.context.source) "Gateway user context mismatch"
     Assert-True (-not ([string]$capture.userContent).Contains("smoke-token")) "Gateway user prompt leaked token"
 
-    $summary.gatewayResolvedModel = [string]$invoke.output.planner.model
-    $summary.plannerSource = [string]$invoke.output.planner.source
-    $summary.planSummary = [string]$invoke.output.summary
-    $summary.planSteps = @($invoke.output.steps | ForEach-Object { [string]$_ })
+    $summary.gatewayResolvedModel = [string]$invoke.output.gateway.model
+    $summary.plannerSource = [string]$invoke.output.gateway.source
+    $summary.planSummary = [string]$parsedAssistant.summary
+    $summary.planSteps = @($parsedAssistant.steps | ForEach-Object { [string]$_ })
     $summary.runId = $runId
     $summary.runStatus = [string]$run.status
     $summary.eventKinds = $eventKinds

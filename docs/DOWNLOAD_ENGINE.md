@@ -12,13 +12,13 @@ Loom selects a platform-appropriate download backend automatically:
    - While loaded, Loom holds a share-read file handle that denies concurrent writes or deletion, restricts DLL dependency resolution to system directories, initializes the library once, drains session events per task, and cleanly shuts down the library on normal daemon exit.
    - No `aria2c.exe` child process or JSON-RPC listener is started on Windows.
 2. **Linux and portable fallback (`aria2_portable.rs`)**:
-   - Server and container deployments on non-Windows hosts use a bounded portable HTTP/aria2c runner behind the same localhost relay and digest verification contract.
+   - Non-Windows hosts use an in-process bounded `reqwest` HTTP downloader, with Range resume and the same loopback relay and digest verification contract. It does not launch `aria2c`.
 
 ## Localhost ticket relay and security boundary
 
 - All remote AssetLibrary byte fetches are mediated by a short-lived loopback relay (`aria2_relay.rs`).
 - Only validated `Range` and `If-Range` headers are forwarded; remote HTTP redirects are rejected, proxy auto-discovery and `.netrc` loading are disabled, and each task uses up to four connections in a bounded sequential queue.
-- Standard package downloads (`art`, `capability`, `mcp`) enforce an 8 MiB payload ceiling, a 75-second transfer deadline, and a 90-second wait budget. Dedicated `application-large-zip-format-v1` archives allow up to 96,000,000 bytes with chunked SHA-256 verification and exclusive file-handle staging.
+- Standard package downloads (`art`, `capability`, `mcp`) enforce an 8 MiB payload ceiling and a 75-second transfer deadline; the Windows native wrapper has a 90-second result-wait budget. Dedicated `application-large-zip-format-v1` archives allow up to 96,000,000 bytes with chunked SHA-256 verification and exclusive file-handle staging.
 - Completed downloads are verified against both exact byte length and expected SHA-256 before atomic handoff to the target directory or package installer. Cross-process persistent resume is not enabled.
 
 ## Download control API

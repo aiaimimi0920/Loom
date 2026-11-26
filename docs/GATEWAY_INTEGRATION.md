@@ -41,7 +41,7 @@ fragment:
 
 HTTP redirects are never followed, including same-origin redirects. Every 3xx
 response is a typed HTTP status error so bearer credentials and chat payloads are
-never replayed to a `Location` destination. Response bodies are bounded to 1 MiB.
+never replayed to a `Location` destination. Response bodies are bounded to 2 MiB.
 
 ## Relay and capability endpoints
 

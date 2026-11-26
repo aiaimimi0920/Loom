@@ -89,7 +89,7 @@ mod slider {
         let final_state = wait_source(&f, &mut child, instance, |v| {
             v["authoritativeState"]["price"] == 100.0
                 && v["latestResult"]["outputs"]["price"]["value"] == 100.0
-                && v["pending"].as_array().is_none_or(|p| p.is_empty())
+                && v["pendingEvents"].as_array().is_some_and(|p| p.is_empty())
                 && v["eventAcks"]
                     .as_object()
                     .is_some_and(|a| a.len() >= 3 && a.values().all(|a| a["status"] == "succeeded"))

@@ -12,9 +12,6 @@ pub(super) fn active_loom_daemon_url() -> Option<String> {
 }
 
 pub(super) fn configured_loom_daemon_url() -> String {
-    if let Some(active_url) = active_loom_daemon_url() {
-        return active_url;
-    }
     if let Ok(profile) = connection_store().load_profile() {
         if profile.mode == loom_local_data::ConnectionMode::Remote {
             if let Some(remote_url) = profile.remote_url {
@@ -22,23 +19,29 @@ pub(super) fn configured_loom_daemon_url() -> String {
             }
         }
     }
-    std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
+    configured_local_daemon_url()
+}
+
+pub(super) fn configured_local_daemon_url() -> String {
+    active_loom_daemon_url().unwrap_or_else(|| {
+        std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
+    })
 }
 
 pub(super) fn configured_otter_bridge_url() -> String {
+    if let Ok(profile) = connection_store().load_profile() {
+        if profile.mode == loom_local_data::ConnectionMode::Remote {
+            if let Some(bridge_url) = profile.otter_bridge_url {
+                return bridge_url;
+            }
+        }
+    }
     if let Ok(active_url) = ACTIVE_OTTER_BRIDGE_URL
         .get_or_init(|| Mutex::new(None))
         .lock()
     {
         if let Some(active_url) = active_url.as_ref() {
             return active_url.clone();
-        }
-    }
-    if let Ok(profile) = connection_store().load_profile() {
-        if profile.mode == loom_local_data::ConnectionMode::Remote {
-            if let Some(bridge_url) = profile.otter_bridge_url {
-                return bridge_url;
-            }
         }
     }
     if let Ok(url) = loom_local_channel::brand_env::var("LOOM_HOOK_BRIDGE_URL") {
@@ -57,13 +60,17 @@ pub(super) fn configured_otter_bridge_url() -> String {
 }
 
 pub(super) fn resolve_command_base_url(base_url: String) -> String {
-    resolve_command_base_url_with_active(base_url, active_loom_daemon_url())
+    resolve_command_base_url_with_active(base_url, Some(configured_loom_daemon_url()))
 }
 
 pub(super) fn resolve_command_base_url_with_active(
     base_url: String,
     active_url: Option<String>,
 ) -> String {
+    // Explicit caller destinations must not be silently retargeted after a profile switch.
+    if !base_url.trim().is_empty() {
+        return normalize_base_url(base_url);
+    }
     if let Some(active_url) = active_url {
         return normalize_base_url(active_url);
     }

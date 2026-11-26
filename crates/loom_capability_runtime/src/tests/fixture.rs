@@ -83,7 +83,7 @@ fn main() {
             let trigger = std::path::PathBuf::from(std::env::args().nth(2).unwrap());
             if trigger.exists() {
                 std::fs::write(trigger.with_extension("started"), b"ready").unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(1500));
+                std::thread::sleep(std::time::Duration::from_millis(if mode == "cancel-init" { 10000 } else { 1500 }));
             }
         }
         if mode == "cancel-init" && method == "command" {

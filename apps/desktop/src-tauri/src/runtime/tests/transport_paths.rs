@@ -3,8 +3,41 @@
 use super::*;
 
 #[test]
+fn native_http_sends_a_bracketed_ipv6_host_header() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let listener = TcpListener::bind("[::1]:0").expect("IPv6 loopback fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_test_http_request(&mut stream);
+        write_test_json_response(&mut stream, "200 OK", "{}");
+        request
+    });
+    http_get_json(&format!("http://{address}"), "/health").unwrap();
+    assert!(server
+        .join()
+        .unwrap()
+        .contains(&format!("\r\nHost: {address}\r\n")));
+}
+
+#[test]
+fn local_bearer_is_not_sent_to_a_different_loopback_origin() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let configured = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let _origin = TestDaemonOrigin::bind(&configured);
+    let other = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    other.set_nonblocking(true).unwrap();
+    let target = format!("http://{}", other.local_addr().unwrap());
+    assert!(http_get_json(&target, "/status").is_err());
+    assert!(matches!(other.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+}
+
+#[test]
 fn delete_peer_configuration_preserves_revision_body() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind delete fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept delete");
@@ -28,7 +61,9 @@ fn delete_peer_configuration_preserves_revision_body() {
 
 #[test]
 fn daemon_that_disappears_after_core_probes_is_offline() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind disappearing fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read disappearing fixture address");
@@ -57,7 +92,9 @@ fn daemon_that_disappears_after_core_probes_is_offline() {
 
 #[test]
 fn malformed_optional_module_contract_is_reported_as_degraded() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind malformed fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener
         .local_addr()
         .expect("read malformed fixture address");
@@ -197,7 +234,9 @@ fn json_and_raster_content_types_are_derived_from_safe_contracts() {
 
 #[test]
 fn daemon_json_transport_rejects_non_json_content_type() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind content-type fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept content-type request");
@@ -219,7 +258,9 @@ fn daemon_json_transport_rejects_non_json_content_type() {
 
 #[test]
 fn binary_transport_derives_mime_from_bytes_instead_of_response_header() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind image fixture");
+    let _origin = TestDaemonOrigin::bind(&listener);
     let address = listener.local_addr().expect("read image fixture address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept image request");

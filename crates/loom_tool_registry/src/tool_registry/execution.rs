@@ -48,6 +48,17 @@ pub(super) fn execute_tool_with_optional_timeout(
     timeout: Option<Duration>,
     cancellation: Option<&AtomicBool>,
 ) -> ToolRegistryResult<serde_json::Value> {
+    execute_tool_in_context(tool, mcp_servers, arguments, timeout, cancellation, None)
+}
+
+pub(super) fn execute_tool_in_context(
+    tool: &ToolDefinition,
+    mcp_servers: &[loom_mcp::McpServerConfig],
+    arguments: serde_json::Value,
+    timeout: Option<Duration>,
+    cancellation: Option<&AtomicBool>,
+    control_plane_root: Option<&Path>,
+) -> ToolRegistryResult<serde_json::Value> {
     tool.validate()?;
     if !tool.enabled {
         return Err(ToolRegistryError::ExecutionRejected {
@@ -55,7 +66,7 @@ pub(super) fn execute_tool_with_optional_timeout(
         });
     }
 
-    let arguments = prepare_tool_arguments(tool, arguments)?;
+    let arguments = prepare_tool_arguments_in_root(tool, arguments, control_plane_root)?;
     match &tool.execution {
         ToolExecution::Mcp {
             server_id,
@@ -143,6 +154,19 @@ pub(super) fn execute_tool_with_optional_timeout(
             cloud_api_timeout(tool, timeout),
             cancellation,
         ),
+        ToolExecution::FrameworkArt { framework } if control_plane_root.is_some() => {
+            let timeout = timeout
+                .unwrap_or(framework_process::DEFAULT_FRAMEWORK_PROCESS_TIMEOUT)
+                .min(framework_process::DEFAULT_FRAMEWORK_PROCESS_TIMEOUT);
+            framework_process::execute_framework_art_in_root_with_timeout(
+                tool,
+                framework,
+                arguments,
+                &control_plane_root.unwrap().join("frameworks"),
+                timeout,
+                cancellation,
+            )
+        }
         ToolExecution::FrameworkArt { framework } => match (timeout, cancellation) {
             (Some(timeout), Some(cancellation)) => {
                 framework_process::execute_framework_art_with_timeout_and_cancellation(
@@ -169,8 +193,16 @@ pub fn prepare_tool_arguments(
     tool: &ToolDefinition,
     arguments: serde_json::Value,
 ) -> ToolRegistryResult<serde_json::Value> {
+    prepare_tool_arguments_in_root(tool, arguments, None)
+}
+
+pub(super) fn prepare_tool_arguments_in_root(
+    tool: &ToolDefinition,
+    arguments: serde_json::Value,
+    root: Option<&Path>,
+) -> ToolRegistryResult<serde_json::Value> {
     let arguments = art_settings::merge_tool_arguments(tool, arguments);
-    art_settings::resolve_tool_value_bindings(tool, arguments).map_err(|error| {
+    art_settings::resolve_tool_value_bindings_in_root(tool, arguments, root).map_err(|error| {
         ToolRegistryError::ParameterBinding {
             id: tool.qualified_id(),
             reason: error.to_string(),

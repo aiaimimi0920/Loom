@@ -168,9 +168,16 @@ pub(super) async fn read_loom_snapshot(base_url: Option<String>) -> Result<LoomS
 }
 
 pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, String> {
-    let _start_guard = DAEMON_START_LOCK
+    let start_guard = DAEMON_START_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    start_loom_daemon_locked(&start_guard)
+}
+
+// Profile changes and process ownership must share one critical section.
+pub(super) fn start_loom_daemon_locked(
+    _start_guard: &std::sync::MutexGuard<'_, ()>,
+) -> Result<LoomDaemonStartResult, String> {
     if LOOM_EXITING.load(Ordering::Acquire) {
         return Err("Loom is exiting; canceled local service startup.".to_owned());
     }
@@ -184,7 +191,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
                 .to_owned(),
         });
     }
-    let mut base_url = normalize_base_url(configured_loom_daemon_url());
+    let mut base_url = normalize_base_url(configured_local_daemon_url());
     let mut isolated_otter_bridge_url = None;
     let current_exe =
         std::env::current_exe().map_err(|error| format!("Failed to locate Loom.exe: {error}"))?;

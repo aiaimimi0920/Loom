@@ -2,22 +2,22 @@
 use std::path::Path;
 
 use loom_art_store::{
-    build_catalog, build_unified_catalog, read_package_zip_version,
-    read_package_zip_version_sha256, register_publisher_with_id, rotate_publisher_key,
-    store_verified_published_zip, PublisherRotationRequest, StorePackageKind,
+    build_unified_catalog, read_package_zip_version, read_package_zip_version_sha256,
+    register_publisher_with_id, rotate_publisher_key, store_verified_published_zip,
+    PublisherRotationRequest, StorePackageKind,
 };
 
 use crate::{store_error_response, Request, Response};
 
 pub(crate) fn handle_catalog(root: &Path) -> Response {
-    let arts = match build_catalog(root) {
-        Ok(arts) => arts,
-        Err(error) => return store_error_response(error),
-    };
     let packages = match build_unified_catalog(root) {
         Ok(packages) => packages,
         Err(error) => return store_error_response(error),
     };
+    let arts = packages
+        .iter()
+        .filter(|entry| entry.kind == StorePackageKind::Art)
+        .collect::<Vec<_>>();
     Response::json(
         200,
         serde_json::json!({

@@ -81,10 +81,10 @@ fn execute_registered_tool(
     tool_registry: &ToolRegistry,
     workflow_store: &WorkflowStore,
     framework_registry: &FrameworkRegistry,
-    hook_bridge: &SharedOtterBridgeRuntime,
-    device_registry: &SharedDeviceRegistryStore,
     run_store: &SharedRunStore,
     control_plane_root: &Path,
+    shutting_down: &AtomicBool,
+    allow_http_relay: bool,
 ) -> Result<(u16, String)> {
     let request_body = if body.trim().is_empty() { "{}" } else { body };
     let request = match serde_json::from_str::<ExecuteToolRequest>(request_body) {
@@ -174,7 +174,7 @@ fn execute_registered_tool(
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     }
     let mut relay =
-        terminal_relay::DaemonOtterWorkflowRelay::for_http(hook_bridge, device_registry);
+        terminal_relay::DaemonOtterWorkflowRelay::for_http(control_plane_root, shutting_down);
     let result = match execute_tool_with_workflows_and_relay(
         &tool,
         &servers,
@@ -183,7 +183,9 @@ fn execute_registered_tool(
         request.arguments,
         None,
         None,
-        Some(&mut relay),
+        // Inline owns the accept loop and cannot receive a worker's response while waiting.
+        allow_http_relay
+            .then_some(&mut relay as &mut dyn loom_workflow_runtime::WorkflowTerminalRelay),
         |_| {},
     ) {
         Ok(result) => result,

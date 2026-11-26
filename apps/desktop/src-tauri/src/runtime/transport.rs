@@ -186,13 +186,13 @@ pub(super) fn http_request_json_with_timeout(
     body: Option<&Value>,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let (host, port, addr) = parse_daemon_http_endpoint(base_url)?;
+    let (authority, addr) = parse_daemon_http_endpoint(base_url)?;
     let method = match method {
         "GET" | "POST" | "PUT" | "DELETE" => method,
         _ => return Err("Invalid HTTP method for Loom local service.".to_owned()),
     };
     let path = normalize_daemon_path(path.to_owned())?;
-    let authorization = daemon_auth_token()?
+    let authorization = daemon_auth_token_for(base_url)?
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
     let mut stream = TcpStream::connect_timeout(&addr, LOOM_DAEMON_CONNECT_TIMEOUT)
@@ -215,12 +215,12 @@ pub(super) fn http_request_json_with_timeout(
             ));
         }
         format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{authorization}Connection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{authorization}Connection: close\r\n\r\n{body}",
             body.len()
         )
     } else {
         format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\n{authorization}Connection: close\r\n\r\n"
+            "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\n{authorization}Connection: close\r\n\r\n"
         )
     };
     stream

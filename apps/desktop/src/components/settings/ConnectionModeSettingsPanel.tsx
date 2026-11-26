@@ -1,6 +1,6 @@
 // Desktop/Web server connection mode selector (`local` bundled core vs `remote` LAN Loom server).
 import { Button } from "@neuro/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useUiText } from "../../i18n/index.ts";
 import { pushAppToast } from "../feedback/AppFeedback";
 import {
@@ -11,7 +11,9 @@ import {
   saveLoomConnectionProfile,
 } from "../../services/loomRuntimeTarget";
 
-export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
+export function ConnectionModeSettingsPanel({ baseUrl, beforeSave, afterSave }: {
+  baseUrl: string; beforeSave: () => Promise<void>; afterSave: () => void;
+}) {
   const { t, tf } = useUiText();
   const desktopShell = isDesktopTauriShell();
   const [status, setStatus] = useState<LoomConnectionStatus | null>(null);
@@ -20,6 +22,7 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
   const [serverLabel, setServerLabel] = useState("");
   const [remoteToken, setRemoteToken] = useState("");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,8 +54,11 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
   }
 
   const handleSave = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
+      await beforeSave();
       const updated = await saveLoomConnectionProfile({
         mode,
         remoteUrl: mode === "remote" ? remoteUrl.trim() : (remoteUrl.trim() || null),
@@ -62,19 +68,24 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
       });
       setStatus(updated);
       setRemoteToken("");
+      // Reset every target-owned draft, pending read, and canvas, including same-URL
+      // credential changes. Native transport rejects late requests for the old target.
+      window.location.reload();
       pushAppToast({
         level: "info",
         text: updated.mode === "remote"
           ? tf("settings.connection.switchedRemote", { url: updated.activeUrl })
           : t("settings.connection.switchedLocal"),
       });
+      return;
     } catch (error) {
       pushAppToast({
         level: "error",
         text: error instanceof Error ? error.message : String(error),
       });
-    } finally {
+      savingRef.current = false;
       setSaving(false);
+      afterSave();
     }
   };
 

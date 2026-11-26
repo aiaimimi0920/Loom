@@ -76,7 +76,7 @@ impl CapabilityRuntimeHost {
             ));
         }
         let started_process = active.process.is_none();
-        ensure_process(&mut active, &self.limits)?;
+        crate::session::ensure_process_controlled(&mut active, &self.limits, control)?;
         if let Some(control) = control {
             if let Err(error) = control.check() {
                 // Initialization can outlive cancellation. Retire only the child this

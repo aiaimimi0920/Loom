@@ -42,8 +42,8 @@ fn handle_outbound_mcp_tool_call(
                 .list_tools()
                 .unwrap_or_default()
                 .into_iter()
-                .find(|t| t.enabled && sanitize_mcp_tool_suffix(&t.id) == suffix)
-                .map(|t| t.id)
+                .find(|t| t.enabled && sanitize_mcp_tool_suffix(&t.qualified_id()) == suffix)
+                .map(|t| t.qualified_id())
                 .ok_or_else(|| (-32602, format!("enabled Art `{name}` not found")))?
         };
         let exec_args = if name == "loom_art_execute" {
@@ -60,10 +60,10 @@ fn handle_outbound_mcp_tool_call(
             &runtime.tool_registry,
             &runtime.workflow_store,
             &runtime.framework_registry,
-            &runtime.hook_bridge,
-            &runtime.device_registry,
             &runtime.run_store,
             &runtime.control_plane_root,
+            &runtime.shutting_down,
+            runtime.request_executor_status.mode != "inline",
         )
         .map_err(|e| (-32000, e.to_string()))?;
         let parsed: Value = serde_json::from_str(&resp).unwrap_or_else(|_| json!({ "raw": resp }));
@@ -102,7 +102,17 @@ fn handle_outbound_mcp_tool_call(
                     "MCP token lacks scope `capabilities:invoke`".to_owned(),
                 ));
             }
-            let body = serde_json::to_string(&args).map_err(|e| (-32603, e.to_string()))?;
+            let capability = args
+                .get("capability")
+                .and_then(Value::as_str)
+                .ok_or_else(|| (-32602, "capability is required".to_owned()))?;
+            let body = serde_json::to_string(&json!({
+                "requestId": format!("mcp:{}", Uuid::new_v4()),
+                "caller": format!("mcp-share:{}", grant.token_id),
+                "capability": capability,
+                "input": args.get("input").cloned().unwrap_or_else(|| json!({})),
+            }))
+            .map_err(|e| (-32603, e.to_string()))?;
             let (status, resp) = invoke_capability(
                 &body,
                 &runtime.run_store,
@@ -135,8 +145,14 @@ fn handle_outbound_mcp_tool_call(
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| (-32602, "sessionId is required".to_owned()))?;
-            let frame = snapshot_live_latest_frame(&runtime.live_sessions, session_id)
-                .ok_or_else(|| (-32004, format!("no buffered frame for session `{session_id}`")))?;
+            let frame = snapshot_live_latest_frame(&runtime.live_sessions, session_id).ok_or_else(
+                || {
+                    (
+                        -32004,
+                        format!("no buffered frame for session `{session_id}`"),
+                    )
+                },
+            )?;
             Ok(mcp_text_result(frame))
         }
         "loom_devices_hierarchy" => {
@@ -189,7 +205,9 @@ fn handle_outbound_mcp_tool_call(
                 .walls
                 .snapshot(None)
                 .map_err(|e| (-32000, e.message.to_owned()))?;
-            Ok(mcp_text_result(serde_json::to_value(view).unwrap_or(Value::Null)))
+            Ok(mcp_text_result(
+                serde_json::to_value(view).unwrap_or(Value::Null),
+            ))
         }
         _ => Err((-32601, format!("unknown MCP tool `{name}`"))),
     }
