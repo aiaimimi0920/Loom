@@ -3,45 +3,45 @@
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0370"
-ignoreUntil = 2026-10-31
-reason = "Transitive Tauri dependency is unmaintained and has no patched release; replace it through the owning upstream dependency before expiry."
+ignoreUntil = 2027-02-20
+reason = "Transitive Tauri dependency proc-macro-error is unmaintained and has no patched release; replace through upstream Tauri upgrade before expiry."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0429"
-ignoreUntil = 2026-10-31
-reason = "Affected glib code is Linux-only and absent from the formal Windows release; block Linux desktop publication until upgraded or reassessed."
+ignoreUntil = 2027-02-20
+reason = "Affected glib 0.18 code is Linux-desktop-only and absent from Windows desktop and headless Linux api/web server editions; Linux desktop release remains blocked."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
-ignoreUntil = 2026-10-31
-reason = "Transitive paste dependency is unmaintained and has no patched release; replace it through the owning upstream dependency before expiry."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0075"
-ignoreUntil = 2026-10-31
-reason = "Transitive unic dependency is unmaintained and has no patched release; replace the parent dependency before the exception expires."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0080"
-ignoreUntil = 2026-10-31
-reason = "Transitive unic dependency is unmaintained and has no patched release; replace the parent dependency before the exception expires."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0081"
-ignoreUntil = 2026-10-31
-reason = "Transitive unic dependency is unmaintained and has no patched release; replace the parent dependency before the exception expires."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0098"
-ignoreUntil = 2026-10-31
-reason = "Transitive unic dependency is unmaintained and has no patched release; replace the parent dependency before the exception expires."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0100"
-ignoreUntil = 2026-10-31
-reason = "Transitive unic dependency is unmaintained and has no patched release; replace the parent dependency before the exception expires."
+ignoreUntil = 2027-02-20
+reason = "Transitive paste macro dependency is unmaintained and has no patched release; replace through the owning upstream dependency before expiry."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
-ignoreUntil = 2026-10-31
-reason = "Transitive ttf-parser dependency is unmaintained and has no patched release; replace it through the owning upstream dependency before expiry."
+ignoreUntil = 2027-02-20
+reason = "Transitive ttf-parser dependency is unmaintained and has no patched release; replace through the owning upstream dependency before expiry."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-02-20
+reason = "Transitive Linux D-Bus zvariant dependency via tauri-plugin-single-instance/zbus is unmaintained; absent from Windows and Linux api/web server editions."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-02-20
+reason = "Transitive Linux D-Bus zbus_names dependency via tauri-plugin-single-instance/zbus is unmaintained; absent from Windows and Linux api/web server editions."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-02-20
+reason = "Transitive Linux D-Bus zvariant_derive macro via tauri-plugin-single-instance/zbus is unmaintained; absent from Windows and Linux api/web server editions."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-20
+reason = "Upstream chrono 0.4 advisory is an unmaintained notice with no replacement release; migrate direct and transitive callers before expiry."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0555"
+ignoreUntil = 2027-02-20
+reason = "Transitive chrono-tz dependency via rxing in loom-ocr-host is unmaintained with no patched release; replace through upstream upgrade before expiry."

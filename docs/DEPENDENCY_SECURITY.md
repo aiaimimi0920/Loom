@@ -230,6 +230,16 @@ but was still an unreleased draft requiring Git patches at this reassessment.
 Do not substitute those development branches for compatible official releases
 or treat the resumed maintenance as a fix to the locked vulnerable version.
 
+On 2026-11-26, all directly patchable advisories (`rusqlite`, `libsqlite3-sys`,
+`zip`, `tokio`, `quinn-proto`, `quinn-udp`, `rustls-webpki`, `rustix`,
+`ctutils`, `url` including detached `runtime-host`, `cookie`, and
+`webpki-roots`) were upgraded across the workspace lockfiles, obsolete `unic`
+entries no longer present in any lockfile were removed, and the remaining
+unmaintained/Linux-desktop-only transitive entries were reassessed and renewed
+through 2027-02-20 with maintainer approval. Headless Linux `api`/`web` server
+editions do not link Tauri GTK/D-Bus crates; Linux Tauri desktop publication
+remains blocked until upstream replaces `glib` 0.18.
+
 This scheme does not prove source code safety, runtime reachability, absence of
 zero-days, or safety of untracked/vendored inputs. It also does not replace Rust
 tests, frontend tests, plugin trust enforcement, secret scanning, container
