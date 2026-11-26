@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "appId": "loom",
   "displayName": "Loom",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "pid": 12345,
   "transport": {
     "type": "http",
@@ -10,10 +10,8 @@
     "auth": "none"
   },
   "capabilities": [
-    "brain.plan",
-    "tea.ticket.decompose.v1",
-    "tea.ticket.execute.v1",
-    "tea.ticket.review.v1"
+    "ai.chat.v1",
+    "loom.runtime.probe.v1"
   ],
   "startedAt": 1780861361
 }

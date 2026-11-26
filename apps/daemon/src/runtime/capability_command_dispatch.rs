@@ -2,7 +2,7 @@
 fn invoke_capability(
     body: &str,
     run_store: &SharedRunStore,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
     registry: &SharedCapabilityDispatchRegistry,
     resources: &SharedCapabilityResourceBroker,
     surface_resources: &SharedSurfaceResourceStore,
@@ -39,11 +39,11 @@ fn invoke_capability(
         Err(error) => return capability_runtime_error_response(error),
     };
     match owner {
-        CapabilityCommandOwner::Core(CoreCapabilityHandler::BrainPlan) => {
-            invoke_brain_plan(request, run_store, brain_planner)
+        CapabilityCommandOwner::Core(CoreCapabilityHandler::AiChat) => {
+            invoke_ai_chat(request, run_store, ai_gateway)
         }
-        CapabilityCommandOwner::Core(CoreCapabilityHandler::TeaTicketDecompose) => {
-            invoke_tea_ticket_decompose(request, run_store)
+        CapabilityCommandOwner::Core(CoreCapabilityHandler::RuntimeProbe) => {
+            invoke_runtime_probe(request, run_store)
         }
         CapabilityCommandOwner::Plugin(plugin_id) => invoke_plugin_command(
             request,

@@ -384,11 +384,11 @@ try {
     Assert-Equal "ok" ([string]$health.status) "Loom health status mismatch"
     $status = Invoke-JsonGet -Uri "$daemonBaseUrl/status"
     Assert-Equal "ready" ([string]$status.status) "Loom status mismatch"
-    Assert-Equal "gateway" ([string]$status.brain_planner.mode) "Gateway planner mode mismatch"
-    Assert-Equal $true ([bool]$status.brain_planner.configured) "Gateway planner configured flag mismatch"
-    Assert-Equal "smoke-planner" ([string]$status.brain_planner.model) "Gateway planner model mismatch"
-    Assert-Equal 10 ([int]$status.brain_planner.timeout_seconds) "Gateway planner timeout mismatch"
-    Assert-True ($null -eq $status.brain_planner.PSObject.Properties["auth_token"]) "Gateway planner status must not expose auth_token"
+    Assert-Equal "gateway" ([string]$status.ai_gateway.mode) "AI Gateway mode mismatch"
+    Assert-Equal $true ([bool]$status.ai_gateway.configured) "AI Gateway configured flag mismatch"
+    Assert-Equal "smoke-planner" ([string]$status.ai_gateway.model) "AI Gateway model mismatch"
+    Assert-Equal 10 ([int]$status.ai_gateway.timeout_seconds) "AI Gateway timeout mismatch"
+    Assert-True ($null -eq $status.ai_gateway.PSObject.Properties["auth_token"]) "AI Gateway status must not expose auth_token"
     $summary.cliStatus = [string]$status.status
 
     $oldCliToken = [Environment]::GetEnvironmentVariable("LOOM_DAEMON_TOKEN", "Process")
@@ -411,29 +411,31 @@ try {
     }
     Assert-True ([string]$cliStatus.output -match '"status"\s*:\s*"ready"') "packaged loom.exe status output mismatch"
 
+    $userPrompt = ([ordered]@{
+        goal = "Verify packaged Gateway planning"
+        constraints = @("preserve packaged run contract", "record Gateway evidence")
+        context = [ordered]@{ source = "packaged-gateway-smoke" }
+    } | ConvertTo-Json -Depth 10 -Compress)
     $invoke = Invoke-JsonPost -Uri "$daemonBaseUrl/v1/invoke" -Body ([ordered]@{
         requestId = "loom-gateway-package-smoke"
         caller = "packaged-smoke"
-        capability = "brain.plan"
+        capability = "ai.chat.v1"
         input = [ordered]@{
-            goal = "Verify packaged Gateway planning"
-            constraints = @("preserve packaged run contract", "record Gateway evidence")
-            context = [ordered]@{ source = "packaged-gateway-smoke" }
+            prompt = $userPrompt
+            system = "Return JSON."
         }
     })
-    Assert-Equal "succeeded" ([string]$invoke.status) "Gateway brain.plan smoke status mismatch"
-    Assert-Equal "Packaged Gateway plan" ([string]$invoke.output.summary) "Gateway plan summary mismatch"
-    Assert-Equal "gateway" ([string]$invoke.output.planner.source) "Gateway planner source mismatch"
-    Assert-Equal "smoke-resolved-model" ([string]$invoke.output.planner.model) "Gateway resolved model mismatch"
-    Assert-Equal 2 (@($invoke.output.steps).Count) "Gateway plan step count mismatch"
-    Assert-Equal "inspect packaged request" ([string]$invoke.output.steps[0]) "Gateway plan first step mismatch"
-    Assert-Equal "execute packaged plan" ([string]$invoke.output.steps[1]) "Gateway plan second step mismatch"
+    Assert-Equal "succeeded" ([string]$invoke.status) "Gateway ai.chat.v1 smoke status mismatch"
+    Assert-Equal "gateway" ([string]$invoke.output.gateway.source) "Gateway source mismatch"
+    Assert-Equal "smoke-resolved-model" ([string]$invoke.output.gateway.model) "Gateway resolved model mismatch"
+    $parsedAssistant = ([string]$invoke.output.content) | ConvertFrom-Json
+    Assert-Equal "Packaged Gateway plan" ([string]$parsedAssistant.summary) "Gateway assistant summary mismatch"
 
     $runId = [string]$invoke.output.runId
     Assert-True (-not [string]::IsNullOrWhiteSpace($runId)) "Gateway smoke did not return a run id"
     $run = Invoke-JsonGet -Uri "$daemonBaseUrl/v1/runs/$runId"
     Assert-Equal "succeeded" ([string]$run.status) "Stored Gateway run status mismatch"
-    Assert-Equal "gateway" ([string]$run.output.planner.source) "Stored planner source mismatch"
+    Assert-Equal "gateway" ([string]$run.output.gateway.source) "Stored gateway source mismatch"
     $events = Invoke-JsonGet -Uri "$daemonBaseUrl/v1/runs/$runId/events"
     $eventKinds = @($events.events | ForEach-Object { [string]$_.kind })
     Assert-Equal "run_started,capability_completed" ($eventKinds -join ",") "Gateway event sequence mismatch"

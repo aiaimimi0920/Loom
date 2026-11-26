@@ -1,6 +1,8 @@
 //! 对接当前 Workers API；不复用历史 Art-store 协议或自动执行远端载荷。
 mod aria2;
 mod aria2_native;
+#[cfg(any(not(windows), test))]
+mod aria2_portable;
 mod download;
 mod download_control;
 pub(crate) fn shutdown_download_engine() {

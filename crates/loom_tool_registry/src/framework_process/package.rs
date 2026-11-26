@@ -8,17 +8,41 @@ struct McpArtDependency {
     version: String,
 }
 
+static DEFAULT_CONTROL_PLANE_ROOT: OnceLock<std::sync::RwLock<Option<PathBuf>>> = OnceLock::new();
+
+fn control_plane_root_slot() -> &'static std::sync::RwLock<Option<PathBuf>> {
+    DEFAULT_CONTROL_PLANE_ROOT.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Set the default control-plane root for in-process framework execution without mutating process env.
+pub fn set_default_control_plane_root(root: impl Into<PathBuf>) {
+    *control_plane_root_slot()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(root.into());
+}
+
+#[must_use]
+pub fn configured_control_plane_root() -> Option<PathBuf> {
+    std::env::var("LOOM_CONTROL_PLANE_ROOT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            control_plane_root_slot()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+}
+
 pub(super) fn framework_packages_root() -> Option<PathBuf> {
     std::env::var("LOOM_FRAMEWORK_PACKAGES_DIR")
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("LOOM_CONTROL_PLANE_ROOT")
-                .ok()
-                .map(|value| PathBuf::from(value).join("frameworks"))
-        })
+        .or_else(|| configured_control_plane_root().map(|root| root.join("frameworks")))
 }
 
 pub(super) fn art_directory(tool: &ToolDefinition) -> Option<PathBuf> {

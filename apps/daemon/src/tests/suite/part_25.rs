@@ -23,7 +23,7 @@ fn daemon_requires_tls_and_bearer_auth_for_non_loopback_routes() {
         "POST",
         "/v1/invoke",
         Some(
-            r#"{"requestId":"loom-request-auth","caller":"hook","capability":"brain.plan","input":{"goal":"token protected"}}"#,
+            r#"{"requestId":"loom-request-auth","caller":"hook","capability":"loom.runtime.probe.v1","input":{"label":"token protected"}}"#,
         ),
     );
     assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized"));
@@ -35,7 +35,7 @@ fn daemon_requires_tls_and_bearer_auth_for_non_loopback_routes() {
         "POST",
         "/v1/invoke",
         Some(
-            r#"{"requestId":"loom-request-auth","caller":"hook","capability":"brain.plan","input":{"goal":"token protected"}}"#,
+            r#"{"requestId":"loom-request-auth","caller":"hook","capability":"loom.runtime.probe.v1","input":{"label":"token protected"}}"#,
         ),
         "local-token",
     );
@@ -376,19 +376,6 @@ fn http_get(port: u16, path: &str) -> String {
 
 fn http_get_without_auth(port: u16, path: &str) -> String {
     http_request_without_auth(port, "GET", path, None)
-}
-
-fn http_post(port: u16, path: &str, body: &str) -> String {
-    let response = http_request(port, "POST", path, Some(body));
-    assert!(
-        response.starts_with("HTTP/1.1 200 OK"),
-        "unexpected response: [omitted]"
-    );
-    response
-        .split_once("\r\n\r\n")
-        .expect("response body")
-        .1
-        .to_string()
 }
 
 fn http_json_get(port: u16, path: &str) -> serde_json::Value {

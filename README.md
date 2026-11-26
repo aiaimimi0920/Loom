@@ -4,7 +4,8 @@
 [![Build Windows](https://github.com/aiaimimi0920/Loom/actions/workflows/build-windows.yml/badge.svg)](https://github.com/aiaimimi0920/Loom/actions/workflows/build-windows.yml)
 [![Docker](https://github.com/aiaimimi0920/Loom/actions/workflows/docker.yml/badge.svg)](https://github.com/aiaimimi0920/Loom/actions/workflows/docker.yml)
 
-Loom is Neuro's daemon-first AI brain and orchestration runtime.
+Loom is Neuro's daemon-first personal and home control hub, Art/MCP runtime, and
+AI Gateway relay.
 
 Repository: https://github.com/aiaimimi0920/Loom
 
@@ -14,14 +15,12 @@ Otter 局域网连接：桌面“Otter 连接”设置提供默认关闭的 HTTP
 
 It owns the local runtime contracts for:
 
-- agent definitions and deterministic resolution,
-- workflow graph execution,
-- durable run/session events,
-- memory and retrieval interfaces,
-- safe execution boundaries,
-- hook event dispatch, and
-- Gateway-backed model access, with an optional loopback-only local adapter for
-  the signed text-translation capability.
+- Art, Framework, Capability Plugin, and MCP server package lifecycles,
+- Otter workflow synchronization, projection, live streams, and display walls,
+- durable capability run/session evidence in SQLite,
+- device pairing, LAN transport boundaries, and configuration ownership claims, and
+- global AI Gateway relay (`/v1/ai/*` and `ai.chat.v1`), plus an optional
+  loopback-only local adapter for the signed text-translation capability.
 
 Loom is not a Gateway replacement. Gateway continues to own hosted-provider
 routing, credentials, relay APIs, and provider/runtime details. The optional
@@ -62,15 +61,11 @@ establish acceptance of a later package.
 ├── crates/
 │   ├── loom_core
 │   ├── loom_durable
-│   ├── loom_agent
-│   ├── loom_workflow
-│   ├── loom_memory
-│   ├── loom_sandbox
 │   ├── loom_gateway
-│   └── loom_hooks
-├── examples/
-│   ├── agents/
-│   └── workflows/
+│   ├── loom_protocol
+│   ├── loom_tool_registry
+│   ├── loom_workflow_store
+│   └── loom_workflow_runtime
 └── docs/
 ```
 
@@ -208,9 +203,10 @@ In another shell:
 
 ```powershell
 .\target\debug\loom.exe status --daemon-url http://127.0.0.1:48766
-.\target\debug\loom.exe agents list --examples-dir .\examples
-.\target\debug\loom.exe workflows list --examples-dir .\examples
-.\target\debug\loom.exe run sample.three_node --examples-dir .\examples
+.\target\debug\loom.exe frameworks list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe arts list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe workflows list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe ai status --daemon-url http://127.0.0.1:48766
 ```
 
 ## Installable frameworks and art packages
@@ -572,16 +568,17 @@ GET /v1/capabilities
 POST /v1/invoke
 ```
 
-The current unified capability is `brain.plan`:
+Built-in hub capabilities include `ai.chat.v1` and `loom.runtime.probe.v1`:
 
 ```json
 {
   "requestId": "uuid",
   "caller": "hook",
-  "capability": "brain.plan",
+  "capability": "ai.chat.v1",
   "input": {
-    "goal": "Create a concise plan",
-    "constraints": ["optional constraint"]
+    "messages": [
+      { "role": "user", "content": "Summarize this workflow" }
+    ]
   }
 }
 ```
@@ -595,14 +592,14 @@ GET /v1/runs/{run_id}/events
 ```
 
 Errors are structured and include codes such as `unknown_capability`,
-`invalid_input`, `gateway_planner_failed`, `run_not_found`,
-`run_store_failed`, and `unauthorized`.
+`invalid_input`, `ai_gateway_not_configured`, `ai_gateway_upstream_failed`,
+`run_not_found`, `run_store_failed`, and `unauthorized`.
 
-### Gateway-backed `brain.plan`
+### Global AI Gateway relay
 
-The default planner is deterministic and offline. Set a non-empty
-`LOOM_GATEWAY_MODEL` to explicitly route planning through the external Neuro
-Gateway:
+Configure an external AI Gateway via environment variables or at runtime via
+`PUT /v1/ai/config` (supporting loopback HTTP/HTTPS, private LAN RFC1918/ULA
+HTTP/HTTPS, and remote HTTPS):
 
 ```powershell
 $env:LOOM_GATEWAY_MODEL = "planner-model"
@@ -612,18 +609,14 @@ $env:LOOM_GATEWAY_TIMEOUT_SECS = "60"
 .\target\debug\loom-daemon.exe
 ```
 
-`LOOM_GATEWAY_BASE_URL` defaults to `http://127.0.0.1:4200` and the timeout is
-bounded to 1 through 300 seconds. A configured Gateway is required to answer
-successfully; timeout, unavailable Gateway, non-2xx response, malformed JSON,
-or an invalid plan returns HTTP 502 with
-`gateway_planner_failed` instead of silently using the local template.
-
-Successful output identifies its source in `output.planner.source` as
-`local_template` or `gateway`, and includes the resolved Gateway model when
-available. Every valid request creates a queryable `running` run first, then
-stores either `succeeded` plus `capability_completed` or `failed` plus
-`capability_failed` evidence. Gateway tokens and prompts are not persisted in
-status, runs, events, or public error responses.
+`LOOM_GATEWAY_BASE_URL` defaults to `http://127.0.0.1:4200` when
+`LOOM_GATEWAY_MODEL` is set, and the timeout is bounded to 1 through 300 seconds.
+`GET /v1/ai/status`, `GET /v1/ai/models`, and `POST /v1/ai/chat/completions`
+provide direct relay endpoints. Every valid `POST /v1/invoke` request creates a
+queryable `running` run first, then stores either `succeeded` plus
+`capability_completed` or `failed` plus `capability_failed` evidence. Gateway
+tokens and prompts are never persisted in status, runs, events, or public error
+responses.
 
 Check the operator-visible mode without probing Gateway:
 
@@ -679,14 +672,12 @@ opt into bounded mode explicitly with
 opts into bounded mode automatically through the environment.
 
 The concurrent route allowlist includes `/health`, `/status`, `/v1/capabilities`,
-the MCP registry, Otter canvas/previews, run reads/events and creation/stop/retry,
-invocation cancellation, and `/v1/invoke` for `brain.plan` and
-`tea.ticket.decompose.v1`. Surface stream and Live event long-polls also run
-concurrently: they wait under their stores' own synchronization and must not
-hold the global route lock against the input/action that wakes them. Only
-`/health` and `/status` are reserved probes outside the normal queue. The other
-allowlisted routes still use a worker and bounded queue capacity. Other
-file-backed control-plane mutations retain the serialized route boundary.
+`/v1/ai/status`, `/v1/ai/models`, `/v1/ai/chat/completions`, the MCP registry,
+Otter canvas/previews, asset-library downloads and download control, run
+reads/events and stop/retry, invocation cancellation, and `/v1/invoke`. Surface
+stream and Live event long-polls run on their dedicated stream executor so they
+never hold the global route lock or starve normal request workers. Only `/health`
+and `/status` are reserved probes outside the normal queue.
 
 When the bounded queue is full, Loom returns HTTP `503 Service Unavailable`
 with `error.code = "daemon_busy"` and `retryable = true`. The rejected request
@@ -701,7 +692,7 @@ connections, closes the request sender, drains all accepted and queued work,
 and joins every worker. It does not forcibly cancel a blocking Gateway call;
 the existing Gateway timeout remains the boundary for that work.
 
-Consequently, a Gateway-backed `brain.plan` call blocks only its assigned worker,
+Consequently, a Gateway-backed `ai.chat.v1` call blocks only its assigned worker,
 not the accept loop. `/health` and `/status` bypass the normal queue, while
 another approved capability can proceed when a worker is available. The
 packaged check is:
@@ -780,17 +771,9 @@ When `tea` is listed, the claim returns `managed: true` and
 Loom and to reject competing Tea-local configuration writes while Loom is the
 active owner.
 
-## Tea run API
+## Run lifecycle control
 
-`loom-daemon` exposes the minimal HTTP run contract consumed by Tea:
-
-```http
-POST /v1/runs
-{ "ticket": { "id": "<ticket uuid>", "title": "...", "description": "..." } }
-```
-
-It returns a Tea-compatible `Run` JSON object with `id`, `ticket_id`,
-`loom_session_id`, `status`, and optional `evidence`.
+`loom-daemon` exposes run stop and retry endpoints for durable stored runs:
 
 ```http
 POST /v1/runs/{run_id}/stop
@@ -799,10 +782,8 @@ POST /v1/runs/{run_id}/retry
 ```
 
 These return the updated canonical stored `Run`. The request body must contain
-the matching `run.id`, but caller-supplied input, output, and evidence fields do
-not overwrite stored history. This contract lets Tea dispatch approved
-work-order runs to Loom over HTTP while keeping Tea as the ticket/event source
-of truth.
+the matching `run.id`, while caller-supplied input, output, and evidence fields
+do not overwrite stored history.
 
 ## Container image
 
@@ -905,11 +886,9 @@ cargo test --locked --workspace
 Targeted useful gates:
 
 ```powershell
-cargo test --locked -p loom_agent -p loom_workflow
-cargo test --locked -p loom_memory
-cargo test --locked -p loom_gateway -p loom_sandbox -p loom_hooks
+cargo test --locked -p loom_gateway -p loom_durable
 cargo test --locked -p loom-daemon -p loom-cli
-cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
+cargo test --locked -p loom_protocol -p loom_workflow_store -p loom_workflow_runtime -p loom_tool_registry
 ```
 
 ## Docs
@@ -919,6 +898,5 @@ cargo test --locked -p loom_protocol -p loom_workflow -p loom_tool_registry
 - `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
 - `docs/WORKFLOW_CONTRACT.md`
-- `docs/AGENT_DEFINITIONS.md`
 - `docs/GATEWAY_INTEGRATION.md`
 - `docs/ASSET_LIBRARY_INTEGRATION.md`

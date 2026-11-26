@@ -1,15 +1,4 @@
 // Loom daemon tests fragment 26; included into the shared crate test module.
-fn shared_tea_brain_provider_example(name: &str) -> String {
-    std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("tea-brain-provider")
-            .join(name),
-    )
-    .expect("read standalone Tea BrainProvider fixture")
-}
-
 fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> String {
     let token = test_bound_daemon_token(port).unwrap_or_else(|| TEST_DAEMON_AUTH_TOKEN.to_owned());
     http_request_with_bearer(port, method, path, body, &token)

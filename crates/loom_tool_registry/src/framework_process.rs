@@ -66,6 +66,7 @@ pub use execute::{
 };
 pub use host::invalidate_persistent_mcp_framework_hosts;
 pub use lifecycle::PersistentMcpHostInvalidationOutcome;
+pub use package::{configured_control_plane_root, set_default_control_plane_root};
 
 #[cfg(test)]
 mod tests;

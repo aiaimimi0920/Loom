@@ -31,10 +31,9 @@ fn route_with_runtime(
     }
     let (status, body) = route(
         request,
-        &runtime.hook_settings,
         &runtime.run_store,
         runtime.run_store_status,
-        &runtime.brain_planner,
+        &runtime.ai_gateway,
         &runtime.capability_runtime,
         &runtime.capability_dispatch,
         &runtime.capability_resources,
@@ -96,10 +95,9 @@ fn route_with_runtime(
 
 fn route(
     request: &ParsedHttpRequest,
-    hook_settings: &HookSettings,
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
     capability_runtime: &SharedCapabilityRuntime,
     capability_dispatch: &SharedCapabilityDispatchRegistry,
     capability_resources: &SharedCapabilityResourceBroker,
@@ -168,6 +166,15 @@ fn route(
         );
     }
 
+    if let Some(response) = route_ai_gateway(
+        request,
+        route_path,
+        admin_authenticated,
+        ai_gateway,
+        control_plane_root,
+    ) {
+        return response;
+    }
     if let Some(response) = otter_locale::handle(
         request,
         route_path,
@@ -317,7 +324,7 @@ fn route(
         return invoke_capability(
             &request.body,
             run_store,
-            brain_planner,
+            ai_gateway,
             capability_dispatch,
             capability_resources,
             surface_resources,
@@ -377,10 +384,9 @@ fn route(
     // Ordered route groups preserve the former match-table precedence and final fallback.
     route_surfaces_devices(
         request,
-        hook_settings,
         run_store,
         run_store_status,
-        brain_planner,
+        ai_gateway,
         config_registry,
         config_store,
         mcp_servers,

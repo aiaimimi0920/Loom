@@ -111,16 +111,17 @@ const HOOK_BRIDGE_POLL_MAX_MESSAGES: usize = 128;
 // Cursor zero requests recovery. Reserve one non-message cursor so an initial recovery can advance
 // even when no broadcast exists, without skipping the first future broadcast.
 const HOOK_BRIDGE_RECOVERY_CURSOR: usize = 1;
-const SURFACE_STREAM_WORKERS: usize = 8;
+const SURFACE_STREAM_WORKERS: usize = 16;
 const SURFACE_STREAM_QUEUE_CAPACITY: usize = 128;
 
 fn is_surface_stream_request(request: &ParsedHttpRequest) -> bool {
-    request.method == "GET"
-        && request
-            .path
-            .split('?')
-            .next()
-            .is_some_and(|path| path == "/v1/surfaces/stream")
+    if request.method != "GET" {
+        return false;
+    }
+    let Some(path) = request.path.split('?').next() else {
+        return false;
+    };
+    path == "/v1/surfaces/stream" || live_session_suffix_id(path, "/events").is_some()
 }
 
 impl OtterBridgeBroadcastHub {

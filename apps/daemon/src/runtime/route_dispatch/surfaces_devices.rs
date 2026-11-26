@@ -2,10 +2,9 @@
 #[allow(clippy::too_many_arguments, unused_variables)]
 fn route_surfaces_devices(
     request: &ParsedHttpRequest,
-    hook_settings: &HookSettings,
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
     mcp_servers: &SharedMcpServerStore,
@@ -62,8 +61,7 @@ fn route_surfaces_devices(
                     .map(|path| path.display().to_string())
                     .unwrap_or_default(),
                 modules: module_statuses(),
-                hooks: hook_settings.summary(),
-                brain_planner: brain_planner.status(),
+                ai_gateway: ai_gateway.status(),
                 run_store: run_store_status,
                 request_executor,
                 live_sessions: live_sessions.status(),
@@ -298,10 +296,9 @@ fn route_surfaces_devices(
         }
         _ => route_mcp_art(
             request,
-            hook_settings,
             run_store,
             run_store_status,
-            brain_planner,
+            ai_gateway,
             config_registry,
             config_store,
             mcp_servers,

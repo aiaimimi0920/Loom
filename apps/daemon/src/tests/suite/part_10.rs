@@ -178,12 +178,12 @@ fn resolve_otter_session_path_uses_canonical_default_when_no_session_exists() {
 
 fn start_daemon_with_store(
     path: &Path,
-    brain_planner: BrainPlannerConfig,
+    ai_gateway: AiGatewayConfig,
 ) -> (u16, mpsc::Sender<()>, thread::JoinHandle<Result<()>>) {
     let daemon = LoomDaemon::bind(
         DaemonConfig::localhost(0)
             .with_sqlite_run_store(path)
-            .with_brain_planner(brain_planner),
+            .with_ai_gateway(ai_gateway),
     )
     .expect("bind daemon with SQLite store");
     let port = daemon.local_addr().expect("local address").port();
@@ -329,25 +329,25 @@ fn daemon_serves_health_and_module_status_on_configured_isolated_port() {
     assert!(status.contains("\"status\":\"ready\""));
     assert!(status.contains("\"name\":\"core\""));
     assert!(status.contains("\"name\":\"gateway\""));
-    assert!(status.contains("\"name\":\"hooks\""));
+    assert!(status.contains("\"name\":\"mcp\""));
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");
 }
 
 #[test]
-fn daemon_reports_brain_planner_status_by_default() {
-    let root = unique_temp_dir("status-brain-planner-default");
+fn daemon_reports_ai_gateway_status_by_default() {
+    let root = unique_temp_dir("status-ai-gateway-default");
     let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
     let status = expect_json_text_route_response(
         route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
         200,
     );
 
-    assert_eq!(status["brain_planner"]["mode"], "local_template");
-    assert_eq!(status["brain_planner"]["configured"], false);
-    assert!(status["brain_planner"].get("model").is_none());
-    assert!(status["brain_planner"].get("timeout_seconds").is_none());
+    assert_eq!(status["ai_gateway"]["mode"], "unconfigured");
+    assert_eq!(status["ai_gateway"]["configured"], false);
+    assert!(status["ai_gateway"].get("model").is_none());
+    assert!(status["ai_gateway"].get("timeout_seconds").is_none());
     fs::remove_dir_all(root).expect("cleanup");
 }
 

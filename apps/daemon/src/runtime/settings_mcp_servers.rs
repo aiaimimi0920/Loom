@@ -154,68 +154,29 @@ fn capabilities() -> Result<(u16, String)> {
         serde_json::to_string(&json!({
             "capabilities": [
                 {
-                    "id": CAPABILITY_BRAIN_PLAN,
+                    "id": CAPABILITY_AI_CHAT,
                     "mode": "run",
-                    "description": "Create a concise Loom-side execution plan from a goal and optional constraints.",
+                    "description": "Execute a non-streaming OpenAI-compatible chat request through Loom's global AI Gateway relay.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "goal": { "type": "string" },
-                            "constraints": {
-                                "type": "array",
-                                "items": { "type": "string" }
-                            }
-                        },
-                        "required": ["goal"]
+                            "prompt": { "type": "string" },
+                            "system": { "type": "string" },
+                            "model": { "type": "string" },
+                            "messages": { "type": "array" }
+                        }
                     }
                 },
                 {
-                    "id": CAPABILITY_TEA_TICKET_DECOMPOSE,
+                    "id": CAPABILITY_RUNTIME_PROBE,
                     "mode": "run",
-                    "description": "Use Loom reasoning to generate a Tea work-order decomposition proposal without mutating Tea ticket state.",
+                    "description": "Verify Loom control-plane invoke routing and durable run-evidence storage.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "schema_version": { "type": "integer" },
-                            "request_id": { "type": "string" },
-                            "ticket": { "type": "object" },
-                            "comments": { "type": "array" },
-                            "policy": { "type": "object" },
-                            "context": { "type": "object" }
+                            "label": { "type": "string" }
                         },
-                        "required": ["schema_version", "request_id", "ticket", "policy", "context"]
-                    }
-                },
-                {
-                    "id": CAPABILITY_TEA_TICKET_EXECUTE,
-                    "mode": "run",
-                    "description": "Execute an approved Tea plan through Loom runtime and return run evidence.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "schema_version": { "type": "integer" },
-                            "request_id": { "type": "string" },
-                            "ticket": { "type": "object" },
-                            "approved_plan_id": { "type": "string" },
-                            "plan": { "type": "object" },
-                            "policy": { "type": "object" }
-                        },
-                        "required": ["schema_version", "request_id", "ticket", "approved_plan_id", "plan", "policy"]
-                    }
-                },
-                {
-                    "id": CAPABILITY_TEA_TICKET_REVIEW,
-                    "mode": "run",
-                    "description": "Review Tea execution evidence and return a review suggestion without changing Tea state.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "schema_version": { "type": "integer" },
-                            "request_id": { "type": "string" },
-                            "ticket": { "type": "object" },
-                            "evidence": { "type": "object" }
-                        },
-                        "required": ["schema_version", "request_id", "ticket", "evidence"]
+                        "required": ["label"]
                     }
                 }
             ]

@@ -31,7 +31,7 @@ fn sqlite_store_survives_reopen_and_continues_sequence() {
         let mut run = store.get_run("run-1").expect("read").unwrap();
         assert_eq!(run["status"], "failed");
         assert_eq!(run["error"]["code"], "daemon_restarted");
-        assert_eq!(run["input"]["goal"], "persist evidence");
+        assert_eq!(run["input"]["prompt"], "persist evidence");
         run["status"] = json!("retrying");
         store
             .transition_run(

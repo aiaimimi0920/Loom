@@ -2,10 +2,9 @@
 #[allow(clippy::too_many_arguments, unused_variables)]
 fn route_mcp_art(
     request: &ParsedHttpRequest,
-    hook_settings: &HookSettings,
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
     mcp_servers: &SharedMcpServerStore,
@@ -96,7 +95,7 @@ fn route_mcp_art(
         }
         ("GET", path) if path.split('?').next() == Some("/v1/support-bundle") => support_bundle(
             path,
-            hook_settings,
+            ai_gateway,
             run_store,
             run_store_status,
             tool_registry,
@@ -250,10 +249,9 @@ fn route_mcp_art(
         }
         _ => route_framework_tools(
             request,
-            hook_settings,
             run_store,
             run_store_status,
-            brain_planner,
+            ai_gateway,
             config_registry,
             config_store,
             mcp_servers,

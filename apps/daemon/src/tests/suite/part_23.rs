@@ -48,7 +48,7 @@ fn daemon_settings_pages_render_real_html() {
 }
 
 #[test]
-fn daemon_invokes_brain_plan_and_serves_run_and_events() {
+fn daemon_invokes_runtime_probe_and_serves_run_and_events() {
     let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
     let address = daemon.local_addr().expect("local address");
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
@@ -60,25 +60,24 @@ fn daemon_invokes_brain_plan_and_serves_run_and_events() {
         r#"{
                 "requestId": "loom-request-1",
                 "caller": "hook",
-                "capability": "brain.plan",
+                "capability": "loom.runtime.probe.v1",
                 "input": {
-                    "goal": "Plan Loom capability API tests",
-                    "constraints": ["preserve Tea run contract"]
+                    "label": "Verify Loom capability API tests"
                 }
             }"#,
     );
 
     assert_eq!(invoke["requestId"], "loom-request-1");
     assert_eq!(invoke["status"], "succeeded");
-    assert_eq!(invoke["output"]["run"]["capability"], "brain.plan");
+    assert_eq!(invoke["output"]["run"]["capability"], "loom.runtime.probe.v1");
     assert_eq!(
-        invoke["output"]["run"]["input"]["goal"],
-        "Plan Loom capability API tests"
+        invoke["output"]["run"]["input"]["label"],
+        "Verify Loom capability API tests"
     );
     assert!(invoke["output"]["summary"]
         .as_str()
         .expect("summary")
-        .contains("Plan Loom capability API tests"));
+        .contains("Verify Loom capability API tests"));
     let run_id = invoke["output"]["runId"].as_str().expect("run id");
 
     let stored_run = http_json_get(address.port(), &format!("/v1/runs/{run_id}"));
@@ -91,35 +90,29 @@ fn daemon_invokes_brain_plan_and_serves_run_and_events() {
     assert_eq!(events["events"][0]["run_id"], run_id);
     assert_eq!(events["events"][1]["kind"], "capability_completed");
     assert_eq!(events["events"][1]["run_id"], run_id);
-    assert_eq!(events["events"][1]["planner"]["source"], "local_template");
-    assert_eq!(invoke["output"]["planner"]["source"], "local_template");
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");
 }
 
 #[test]
-fn daemon_invokes_gateway_brain_plan_and_forwards_input() {
-    let plan_content = serde_json::json!({
-        "summary": "Gateway plan",
-        "steps": ["inspect", "execute"]
-    })
-    .to_string();
+fn daemon_invokes_ai_gateway_chat_and_http_relay_routes() {
     let fixture = GatewayBrainPlanFixture::start(
         "200 OK",
         serde_json::json!({
+            "id": "cmpl-smoke",
             "model": "resolved-model",
             "choices": [{
-                "message": { "content": plan_content }
+                "message": { "role": "assistant", "content": "Hello from home Gateway" }
             }]
         })
         .to_string(),
     );
-    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_brain_planner(
-        brain_plan::BrainPlannerConfig::Gateway(brain_plan::GatewayPlannerConfig {
+    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_ai_gateway(
+        AiGatewayConfig::Gateway(AiGatewayEndpointConfig {
             base_url: fixture.base_url(),
             auth_token: Some("test-token".to_owned()),
-            model: "planner-model".to_owned(),
+            default_model: Some("hub-model".to_owned()),
             timeout: Duration::from_secs(5),
         }),
     ))
@@ -134,35 +127,30 @@ fn daemon_invokes_gateway_brain_plan_and_forwards_input() {
         &serde_json::json!({
             "requestId": "loom-request-gateway-success",
             "caller": "hook",
-            "capability": "brain.plan",
+            "capability": "ai.chat.v1",
             "input": {
-                "goal": "Plan Gateway-backed smoke",
-                "constraints": ["preserve run contract", 42, "  "],
-                "context": {"release": "candidate-2"}
+                "prompt": "Summarize Otter workflow state",
+                "system": "Be concise."
             }
         })
         .to_string(),
     );
 
     assert_eq!(invoke["status"], "succeeded");
-    assert_eq!(invoke["output"]["summary"], "Gateway plan");
-    assert_eq!(
-        invoke["output"]["steps"],
-        serde_json::json!(["inspect", "execute"])
-    );
-    assert_eq!(invoke["output"]["planner"]["source"], "gateway");
-    assert_eq!(invoke["output"]["planner"]["model"], "resolved-model");
+    assert_eq!(invoke["output"]["content"], "Hello from home Gateway");
+    assert_eq!(invoke["output"]["model"], "resolved-model");
+    assert_eq!(invoke["output"]["gateway"]["source"], "gateway");
+    assert_eq!(invoke["output"]["gateway"]["model"], "resolved-model");
     assert_eq!(invoke["output"]["run"]["status"], "succeeded");
 
     let run_id = invoke["output"]["runId"].as_str().expect("run id");
     let stored_run = http_json_get(address.port(), &format!("/v1/runs/{run_id}"));
     assert_eq!(stored_run["status"], "succeeded");
-    assert_eq!(stored_run["output"]["planner"]["source"], "gateway");
     let events = http_json_get(address.port(), &format!("/v1/runs/{run_id}/events"));
     assert_eq!(events["events"].as_array().expect("events").len(), 2);
     assert_eq!(events["events"][0]["kind"], "run_started");
     assert_eq!(events["events"][1]["kind"], "capability_completed");
-    assert_eq!(events["events"][1]["planner"]["source"], "gateway");
+    assert_eq!(events["events"][1]["gateway"]["source"], "gateway");
 
     let gateway_request = fixture.request();
     assert!(gateway_request.starts_with("POST /v1/chat/completions HTTP/1.1"));
@@ -175,35 +163,18 @@ fn daemon_invokes_gateway_brain_plan_and_forwards_input() {
         .1;
     let gateway_payload: serde_json::Value =
         serde_json::from_str(gateway_body).expect("Gateway request JSON");
-    assert_eq!(gateway_payload["model"], "planner-model");
-    let user_content = gateway_payload["messages"][1]["content"]
-        .as_str()
-        .expect("Gateway user content");
-    let user_payload: serde_json::Value =
-        serde_json::from_str(user_content).expect("Gateway user JSON");
-    assert_eq!(user_payload["goal"], "Plan Gateway-backed smoke");
+    assert_eq!(gateway_payload["model"], "hub-model");
     assert_eq!(
-        user_payload["constraints"],
-        serde_json::json!(["preserve run contract"])
+        gateway_payload["messages"][1]["content"],
+        "Summarize Otter workflow state"
     );
-    assert_eq!(
-        user_payload["context"],
-        serde_json::json!({"release": "candidate-2"})
-    );
-    assert_eq!(
-        user_payload.as_object().expect("Gateway user object").len(),
-        3
-    );
-    assert!(user_content.contains("Plan Gateway-backed smoke"));
-    assert!(!user_content.contains("test-token"));
-    assert!(!user_content.contains("LOOM_GATEWAY_BASE_URL"));
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");
 }
 
 #[test]
-fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
+fn daemon_records_failed_ai_gateway_chat_with_run_evidence() {
     let fixture = GatewayBrainPlanFixture::start(
         "503 Service Unavailable",
         serde_json::json!({
@@ -214,11 +185,11 @@ fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
         })
         .to_string(),
     );
-    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_brain_planner(
-        brain_plan::BrainPlannerConfig::Gateway(brain_plan::GatewayPlannerConfig {
+    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0).with_ai_gateway(
+        AiGatewayConfig::Gateway(AiGatewayEndpointConfig {
             base_url: fixture.base_url(),
             auth_token: Some("failure-secret".to_owned()),
-            model: "failure-model".to_owned(),
+            default_model: Some("failure-model".to_owned()),
             timeout: Duration::from_secs(5),
         }),
     ))
@@ -235,9 +206,9 @@ fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
             r#"{
                     "requestId":"loom-request-gateway-failure",
                     "caller":"hook",
-                    "capability":"brain.plan",
+                    "capability":"ai.chat.v1",
                     "input":{
-                        "goal":"record Gateway failure",
+                        "prompt":"record Gateway failure",
                         "context":{"raw":"must not become diagnostic"}
                     }
                 }"#,
@@ -250,13 +221,13 @@ fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
     );
     let body = response_json_body(&response);
     assert_eq!(body["status"], "failed");
-    assert_eq!(body["error"]["code"], "gateway_planner_failed");
+    assert_eq!(body["error"]["code"], "ai_gateway_failed");
     let run_id = body["error"]["runId"].as_str().expect("failed run id");
     assert!(!response.contains("failure-secret"));
 
     let stored_run = http_json_get(address.port(), &format!("/v1/runs/{run_id}"));
     assert_eq!(stored_run["status"], "failed");
-    assert_eq!(stored_run["error"]["code"], "gateway_planner_failed");
+    assert_eq!(stored_run["error"]["code"], "ai_gateway_failed");
     let diagnostic = stored_run["error"]["diagnostic"]
         .as_str()
         .expect("failed run diagnostic");
@@ -267,27 +238,22 @@ fn daemon_records_failed_gateway_brain_plan_with_run_evidence() {
     assert_eq!(events["events"].as_array().expect("events").len(), 2);
     assert_eq!(events["events"][0]["kind"], "run_started");
     assert_eq!(events["events"][1]["kind"], "capability_failed");
-    assert_eq!(events["events"][1]["planner"]["source"], "gateway");
-    assert_eq!(
-        events["events"][1]["error"]["code"],
-        "gateway_planner_failed"
-    );
+    assert_eq!(events["events"][1]["error"]["code"], "ai_gateway_failed");
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");
 }
 
 #[test]
-fn daemon_reads_brain_plan_run_after_restart() {
+fn daemon_reads_persisted_run_after_restart() {
     let root = unique_temp_dir("run-restart");
     let path = root.join("runs.sqlite3");
-    let (port, shutdown_tx, server) =
-        start_daemon_with_store(&path, BrainPlannerConfig::LocalTemplate);
+    let (port, shutdown_tx, server) = start_daemon_with_store(&path, AiGatewayConfig::Unconfigured);
 
     let invoke = http_json_post(
         port,
         "/v1/invoke",
-        r#"{"requestId":"persist-1","caller":"hook","capability":"brain.plan","input":{"goal":"survive restart"}}"#,
+        r#"{"requestId":"persist-1","caller":"hook","capability":"loom.runtime.probe.v1","input":{"label":"survive restart"}}"#,
     );
     let run_id = invoke["output"]["runId"]
         .as_str()
@@ -296,12 +262,11 @@ fn daemon_reads_brain_plan_run_after_restart() {
     shutdown_tx.send(()).expect("shutdown first daemon");
     server.join().expect("first daemon").expect("first serve");
 
-    let (port, shutdown_tx, server) =
-        start_daemon_with_store(&path, BrainPlannerConfig::LocalTemplate);
+    let (port, shutdown_tx, server) = start_daemon_with_store(&path, AiGatewayConfig::Unconfigured);
     let run = http_json_get(port, &format!("/v1/runs/{run_id}"));
     let events = http_json_get(port, &format!("/v1/runs/{run_id}/events"));
     assert_eq!(run["status"], "succeeded");
-    assert_eq!(run["input"]["goal"], "survive restart");
+    assert_eq!(run["input"]["label"], "survive restart");
     assert_eq!(events["events"][0]["kind"], "run_started");
     assert_eq!(events["events"][1]["kind"], "capability_completed");
     shutdown_tx.send(()).expect("shutdown second daemon");
@@ -313,20 +278,20 @@ fn daemon_reads_brain_plan_run_after_restart() {
 fn daemon_reads_failed_gateway_run_after_restart() {
     let root = unique_temp_dir("gateway-run-restart");
     let path = root.join("runs.sqlite3");
-    let planner = BrainPlannerConfig::Gateway(brain_plan::GatewayPlannerConfig {
+    let gateway = AiGatewayConfig::Gateway(AiGatewayEndpointConfig {
         base_url: "http://127.0.0.1:9".to_owned(),
         auth_token: Some("restart-secret".to_owned()),
-        model: "restart-model".to_owned(),
+        default_model: Some("restart-model".to_owned()),
         timeout: Duration::from_secs(1),
     });
-    let (port, shutdown_tx, server) = start_daemon_with_store(&path, planner);
+    let (port, shutdown_tx, server) = start_daemon_with_store(&path, gateway);
 
     let response = http_request(
         port,
         "POST",
         "/v1/invoke",
         Some(
-            r#"{"requestId":"persist-gateway-failure","caller":"hook","capability":"brain.plan","input":{"goal":"persist gateway failure"}}"#,
+            r#"{"requestId":"persist-gateway-failure","caller":"hook","capability":"ai.chat.v1","input":{"prompt":"persist gateway failure"}}"#,
         ),
     );
     assert!(response.starts_with("HTTP/1.1 502 Bad Gateway"));
@@ -336,12 +301,11 @@ fn daemon_reads_failed_gateway_run_after_restart() {
     shutdown_tx.send(()).expect("shutdown first daemon");
     server.join().expect("first daemon").expect("first serve");
 
-    let (port, shutdown_tx, server) =
-        start_daemon_with_store(&path, BrainPlannerConfig::LocalTemplate);
+    let (port, shutdown_tx, server) = start_daemon_with_store(&path, AiGatewayConfig::Unconfigured);
     let run = http_json_get(port, &format!("/v1/runs/{run_id}"));
     let events = http_json_get(port, &format!("/v1/runs/{run_id}/events"));
     assert_eq!(run["status"], "failed");
-    assert_eq!(run["error"]["code"], "gateway_planner_failed");
+    assert_eq!(run["error"]["code"], "ai_gateway_failed");
     assert!(!run.to_string().contains("restart-secret"));
     assert_eq!(events["events"][1]["kind"], "capability_failed");
     shutdown_tx.send(()).expect("shutdown second daemon");
@@ -359,27 +323,26 @@ fn daemon_recovers_preexisting_running_run_after_bind() {
             .insert_run(
                 json!({
                     "id": "preseeded-running",
-                    "capability": "brain.plan",
+                    "capability": "ai.chat.v1",
                     "loom_session_id": "session-preseeded",
                     "status": "running",
-                    "input": { "goal": "recover me" }
+                    "input": { "prompt": "recover me" }
                 }),
                 vec![RunEventDraft::new(
                     "run_started",
-                    json!({ "capability": "brain.plan", "status": "running" }),
+                    json!({ "capability": "ai.chat.v1", "status": "running" }),
                 )
                 .expect("start event")],
             )
             .expect("seed running run");
     }
 
-    let (port, shutdown_tx, server) =
-        start_daemon_with_store(&path, BrainPlannerConfig::LocalTemplate);
+    let (port, shutdown_tx, server) = start_daemon_with_store(&path, AiGatewayConfig::Unconfigured);
     let run = http_json_get(port, "/v1/runs/preseeded-running");
     let events = http_json_get(port, "/v1/runs/preseeded-running/events");
     assert_eq!(run["status"], "failed");
     assert_eq!(run["error"]["code"], "daemon_restarted");
-    assert_eq!(run["input"]["goal"], "recover me");
+    assert_eq!(run["input"]["prompt"], "recover me");
     assert_eq!(events["events"].as_array().expect("events").len(), 2);
     assert_eq!(events["events"][1]["kind"], "run_interrupted");
     assert_eq!(events["events"][1]["error"]["code"], "daemon_restarted");
@@ -403,7 +366,7 @@ fn run_store_failure_returns_safe_http_error_without_stopping_daemon() {
         "POST",
         "/v1/invoke",
         Some(
-            r#"{"requestId":"run-store-failure","caller":"hook","capability":"brain.plan","input":{"goal":"fail store"}}"#,
+            r#"{"requestId":"run-store-failure","caller":"hook","capability":"loom.runtime.probe.v1","input":{"label":"fail store"}}"#,
         ),
     );
     assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));

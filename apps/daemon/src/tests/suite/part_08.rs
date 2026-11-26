@@ -240,74 +240,112 @@ fn release_test_gate(gate: &Arc<(Mutex<bool>, Condvar)>) {
     gate_signal.notify_all();
 }
 
-struct BlockingBrainPlanner {
+struct BlockingAiGateway {
     entered: Arc<(Mutex<bool>, Condvar)>,
     release: Arc<(Mutex<bool>, Condvar)>,
 }
 
-impl brain_plan::BrainPlanner for BlockingBrainPlanner {
-    fn plan(
+impl AiGatewayService for BlockingAiGateway {
+    fn chat_completion(
         &self,
-        _request: BrainPlanRequest,
-    ) -> std::result::Result<brain_plan::BrainPlanResult, brain_plan::BrainPlannerError> {
+        _request: Value,
+    ) -> std::result::Result<AiChatCompletionOutcome, AiGatewayRelayError> {
         let (entered_lock, entered_signal) = &*self.entered;
-        *entered_lock.lock().expect("enter planner") = true;
+        *entered_lock.lock().expect("enter AI Gateway") = true;
         entered_signal.notify_all();
         if !wait_for_test_gate(&self.release, CONCURRENCY_GATE_TIMEOUT) {
-            return Err(brain_plan::BrainPlannerError::InvalidModelOutput(
+            return Err(AiGatewayRelayError::InvalidRequest(
                 "fixture release timed out".to_owned(),
             ));
         }
-        Ok(brain_plan::BrainPlanResult {
-            summary: "concurrent plan".to_owned(),
-            steps: vec!["complete".to_owned()],
-            source: brain_plan::BrainPlanSource::Gateway,
-            model: Some("fixture-model".to_owned()),
+        Ok(AiChatCompletionOutcome {
+            response: json!({
+                "id": "cmpl-fixture",
+                "model": "fixture-model",
+                "choices": [{"message": {"role": "assistant", "content": "concurrent reply"}}]
+            }),
+            model: "fixture-model".to_owned(),
+            content: "concurrent reply".to_owned(),
+            request_id: Some("req-fixture".to_owned()),
         })
     }
 
-    fn status(&self) -> BrainPlannerStatus {
-        BrainPlannerStatus {
+    fn list_models(&self) -> std::result::Result<Value, AiGatewayRelayError> {
+        Ok(json!({ "object": "list", "data": [] }))
+    }
+
+    fn update_config(
+        &self,
+        _update: AiGatewayConfigUpdate,
+        _control_plane_root: &Path,
+    ) -> std::result::Result<AiGatewayStatus, AiGatewayRelayError> {
+        Ok(self.status())
+    }
+
+    fn status(&self) -> AiGatewayStatus {
+        AiGatewayStatus {
             mode: "gateway",
             configured: true,
+            origin_kind: Some("loopback"),
+            base_url: Some("http://127.0.0.1:4200".to_owned()),
             model: Some("fixture-model".to_owned()),
             timeout_seconds: Some(30),
+            has_token: false,
         }
     }
 }
 
-struct CountingBlockingBrainPlanner {
+struct CountingBlockingAiGateway {
     entered: Arc<(Mutex<usize>, Condvar)>,
     release: Arc<(Mutex<bool>, Condvar)>,
 }
 
-impl brain_plan::BrainPlanner for CountingBlockingBrainPlanner {
-    fn plan(
+impl AiGatewayService for CountingBlockingAiGateway {
+    fn chat_completion(
         &self,
-        _request: BrainPlanRequest,
-    ) -> std::result::Result<brain_plan::BrainPlanResult, brain_plan::BrainPlannerError> {
+        _request: Value,
+    ) -> std::result::Result<AiChatCompletionOutcome, AiGatewayRelayError> {
         let (entered_lock, entered_signal) = &*self.entered;
-        *entered_lock.lock().expect("count planner entry") += 1;
+        *entered_lock.lock().expect("count AI Gateway entry") += 1;
         entered_signal.notify_all();
         if !wait_for_test_gate(&self.release, CONCURRENCY_GATE_TIMEOUT) {
-            return Err(brain_plan::BrainPlannerError::InvalidModelOutput(
+            return Err(AiGatewayRelayError::InvalidRequest(
                 "fixture release timed out".to_owned(),
             ));
         }
-        Ok(brain_plan::BrainPlanResult {
-            summary: "concurrent plan".to_owned(),
-            steps: vec!["complete".to_owned()],
-            source: brain_plan::BrainPlanSource::Gateway,
-            model: Some("fixture-model".to_owned()),
+        Ok(AiChatCompletionOutcome {
+            response: json!({
+                "id": "cmpl-fixture",
+                "model": "fixture-model",
+                "choices": [{"message": {"role": "assistant", "content": "concurrent reply"}}]
+            }),
+            model: "fixture-model".to_owned(),
+            content: "concurrent reply".to_owned(),
+            request_id: Some("req-fixture".to_owned()),
         })
     }
 
-    fn status(&self) -> BrainPlannerStatus {
-        BrainPlannerStatus {
+    fn list_models(&self) -> std::result::Result<Value, AiGatewayRelayError> {
+        Ok(json!({ "object": "list", "data": [] }))
+    }
+
+    fn update_config(
+        &self,
+        _update: AiGatewayConfigUpdate,
+        _control_plane_root: &Path,
+    ) -> std::result::Result<AiGatewayStatus, AiGatewayRelayError> {
+        Ok(self.status())
+    }
+
+    fn status(&self) -> AiGatewayStatus {
+        AiGatewayStatus {
             mode: "gateway",
             configured: true,
+            origin_kind: Some("loopback"),
+            base_url: Some("http://127.0.0.1:4200".to_owned()),
             model: Some("fixture-model".to_owned()),
             timeout_seconds: Some(30),
+            has_token: false,
         }
     }
 }

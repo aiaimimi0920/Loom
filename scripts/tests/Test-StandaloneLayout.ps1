@@ -43,12 +43,10 @@ $requiredPaths = @(
     "apps\daemon",
     "apps\daemon\tests\fixtures\local-capability\loom-manifest.json",
     "apps\daemon\tests\fixtures\local-capability\loom-invoke-request.json",
-    "apps\daemon\tests\fixtures\tea-brain-provider\decompose-request.example.json",
     "apps\cli",
     "apps\desktop",
     "crates",
     "docs\README.md",
-    "examples",
     "resources",
     "scripts"
 )

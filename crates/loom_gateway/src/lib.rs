@@ -1,57 +1,27 @@
-//! Client contracts for the external Neuro Gateway.
+//! Client contracts for the external Neuro Gateway (local loopback, LAN, and remote HTTPS).
+
+mod origin;
+#[cfg(test)]
+mod tests;
 
 use std::io::Read;
-use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
 use reqwest::{Proxy, Url};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use thiserror::Error;
+
+pub use origin::{classify_gateway_origin, configure_runtime_proxy, GatewayOriginKind};
+use origin::{parse_validated_origin, runtime_proxy_store, RuntimeProxy};
 
 /// Version of the Gateway integration crate.
 pub const LOOM_GATEWAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const DEFAULT_GATEWAY_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_GATEWAY_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_GATEWAY_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 512;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum RuntimeProxy {
-    System,
-    Disabled,
-    Custom(String),
-}
-
-impl Default for RuntimeProxy {
-    fn default() -> Self {
-        Self::System
-    }
-}
-
-static RUNTIME_PROXY: OnceLock<RwLock<RuntimeProxy>> = OnceLock::new();
-
-fn runtime_proxy_store() -> &'static RwLock<RuntimeProxy> {
-    RUNTIME_PROXY.get_or_init(|| RwLock::new(RuntimeProxy::System))
-}
-
-pub fn configure_runtime_proxy(mode: &str, protocol: &str, address: &str) -> Result<(), String> {
-    let proxy = match mode {
-        "system" => RuntimeProxy::System,
-        "disabled" => RuntimeProxy::Disabled,
-        "custom" => {
-            let url = format!("{}://{}", protocol.trim(), address.trim());
-            Proxy::all(&url).map_err(|error| format!("invalid Gateway proxy: {error}"))?;
-            RuntimeProxy::Custom(url)
-        }
-        _ => return Err(format!("unsupported Gateway proxy mode `{mode}`")),
-    };
-    *runtime_proxy_store()
-        .write()
-        .map_err(|_| "lock Gateway proxy settings".to_owned())? = proxy;
-    Ok(())
-}
 
 /// Gateway client errors.
 #[derive(Debug, Error)]
@@ -62,7 +32,7 @@ pub enum GatewayError {
     UnsupportedScheme,
     #[error("Gateway URL must not contain credentials")]
     CredentialsInUrl,
-    #[error("Gateway requires HTTPS except for a direct IP-loopback HTTP origin")]
+    #[error("Gateway requires HTTPS except for direct loopback or private LAN IP origins")]
     InsecureTransport,
     #[error("Gateway HTTP client error: {0}")]
     Http(#[from] reqwest::Error),
@@ -85,7 +55,7 @@ pub enum GatewayError {
 /// Result alias for Gateway client operations.
 pub type GatewayResult<T> = Result<T, GatewayError>;
 
-/// Configuration for a local or hosted Gateway HTTP client.
+/// Configuration for a local, LAN, or hosted Gateway HTTP client.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayClientConfig {
     base_url: String,
@@ -95,7 +65,6 @@ pub struct GatewayClientConfig {
 }
 
 impl GatewayClientConfig {
-    /// Create a client configuration with the bounded default timeout.
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -109,38 +78,15 @@ impl GatewayClientConfig {
     /// Create a client configuration restricted to an IP loopback origin.
     pub fn new_loopback(base_url: impl Into<String>) -> GatewayResult<Self> {
         let raw = base_url.into();
-        let url = Url::parse(raw.trim())
-            .map_err(|error| GatewayError::InvalidBaseUrl(error.to_string()))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(GatewayError::UnsupportedScheme);
-        }
-        let host = url
-            .host_str()
-            .ok_or_else(|| GatewayError::InvalidBaseUrl("loopback host is missing".to_owned()))?;
-        let address = host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| GatewayError::InvalidBaseUrl("loopback host must be an IP".to_owned()))?;
-        if !address.is_loopback() {
+        let (_, kind) = parse_validated_origin(&raw)?;
+        if kind != GatewayOriginKind::Loopback {
             return Err(GatewayError::InvalidBaseUrl(
                 "base URL host must be an IP loopback address".to_owned(),
-            ));
-        }
-        if url.username() != ""
-            || url.password().is_some()
-            || (url.path() != "" && url.path() != "/")
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(GatewayError::InvalidBaseUrl(
-                "loopback base URL must be an origin without credentials or path".to_owned(),
             ));
         }
         Ok(Self::new(raw))
     }
 
-    /// Attach an optional serving API bearer token.
     #[must_use]
     pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
         let token = token.into();
@@ -148,14 +94,12 @@ impl GatewayClientConfig {
         self
     }
 
-    /// Override the request timeout.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Disable the process-wide proxy for a provider that is required to stay on loopback.
     #[must_use]
     pub fn without_proxy(mut self) -> Self {
         self.disable_proxy = true;
@@ -164,7 +108,7 @@ impl GatewayClientConfig {
 }
 
 /// OpenAI-compatible chat message forwarded to Gateway.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GatewayChatMessage {
     pub role: String,
     pub content: String,
@@ -208,57 +152,35 @@ pub struct GatewayChatResponse {
     pub request_id: Option<String>,
 }
 
-/// Minimal HTTP client for the external Gateway.
+/// Validated HTTP client for the external AI Gateway.
 #[derive(Clone, Debug)]
 pub struct GatewayClient {
     http: Client,
     chat_url: Url,
+    models_url: Url,
+    origin_kind: GatewayOriginKind,
     auth_token: Option<String>,
 }
 
 impl GatewayClient {
     /// Build a validated client from an origin URL.
     pub fn new(config: GatewayClientConfig) -> GatewayResult<Self> {
-        let mut base_url = Url::parse(config.base_url.trim())
-            .map_err(|error| GatewayError::InvalidBaseUrl(error.to_string()))?;
-        if !matches!(base_url.scheme(), "http" | "https") {
-            return Err(GatewayError::UnsupportedScheme);
-        }
-        if !base_url.username().is_empty() || base_url.password().is_some() {
-            return Err(GatewayError::CredentialsInUrl);
-        }
-        if base_url.path() != "" && base_url.path() != "/" {
-            return Err(GatewayError::InvalidBaseUrl(
-                "base URL must be an origin without a path".to_owned(),
-            ));
-        }
-        if base_url.query().is_some() || base_url.fragment().is_some() {
-            return Err(GatewayError::InvalidBaseUrl(
-                "base URL must not contain a query or fragment".to_owned(),
-            ));
-        }
+        let (base_url, origin_kind) = parse_validated_origin(&config.base_url)?;
+        let mut chat_url = base_url.clone();
+        chat_url.set_path("/v1/chat/completions");
+        let mut models_url = base_url;
+        models_url.set_path("/v1/models");
 
-        // Cleartext is a local development exception, never a DNS or proxy route.
-        // Apply this even without a token: prompts are also confidential.
-        let cleartext = base_url.scheme() == "http";
-        let loopback = base_url
-            .host_str()
-            .and_then(|host| {
-                host.trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-            })
-            .is_some_and(|ip| ip.to_canonical().is_loopback());
-        if cleartext && !loopback {
-            return Err(GatewayError::InsecureTransport);
-        }
-        base_url.set_path("/v1/chat/completions");
-        // A Gateway response cannot authorize another destination for private chat data.
-        // Refuse even same-origin redirects; the configured canonical endpoint is final.
+        // Loopback and private LAN traffic must bypass system/custom Internet proxies.
+        let bypass_proxy = config.disable_proxy
+            || matches!(
+                origin_kind,
+                GatewayOriginKind::Loopback | GatewayOriginKind::PrivateLan
+            );
         let builder = Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none());
-        let builder = if config.disable_proxy || cleartext {
+        let builder = if bypass_proxy {
             builder.no_proxy()
         } else {
             match runtime_proxy_store()
@@ -274,39 +196,81 @@ impl GatewayClient {
         let http = builder.build()?;
         Ok(Self {
             http,
-            chat_url: base_url,
+            chat_url,
+            models_url,
+            origin_kind,
             auth_token: config.auth_token,
         })
     }
 
-    /// Send one bounded, non-streaming chat request.
+    #[must_use]
+    pub fn origin_kind(&self) -> GatewayOriginKind {
+        self.origin_kind
+    }
+
+    /// Query `GET /v1/models` from the configured Gateway.
+    pub fn list_models(&self) -> GatewayResult<Value> {
+        let mut builder = self.http.get(self.models_url.clone());
+        if let Some(token) = self.auth_token.as_deref() {
+            builder = builder.bearer_auth(token);
+        }
+        let (body, _) = send_bounded(builder)?;
+        serde_json::from_slice(&body)
+            .map_err(|error| GatewayError::MalformedResponse(error.to_string()))
+    }
+
+    /// Forward an OpenAI-compatible non-streaming JSON chat payload to `/v1/chat/completions`.
+    pub fn chat_completion(&self, payload: &Value) -> GatewayResult<(Value, Option<String>)> {
+        let mut object = payload.as_object().cloned().ok_or_else(|| {
+            GatewayError::MalformedResponse("chat request must be an object".into())
+        })?;
+        object.insert("stream".to_owned(), json!(false));
+        let mut builder = self
+            .http
+            .post(self.chat_url.clone())
+            .json(&Value::Object(object));
+        if let Some(token) = self.auth_token.as_deref() {
+            builder = builder.bearer_auth(token);
+        }
+        let (body, request_id) = send_bounded(builder)?;
+        let parsed: Value = serde_json::from_slice(&body)
+            .map_err(|error| GatewayError::MalformedResponse(error.to_string()))?;
+        Ok((parsed, request_id))
+    }
+
+    /// Send one bounded, non-streaming typed chat request.
     pub fn chat(&self, request: GatewayChatRequest) -> GatewayResult<GatewayChatResponse> {
         let mut builder = self.http.post(self.chat_url.clone()).json(&request);
         if let Some(token) = self.auth_token.as_deref() {
             builder = builder.bearer_auth(token);
         }
-
-        let mut response = builder.send()?;
-        let status = response.status();
-        let request_id = response
-            .headers()
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let mut body = Vec::new();
-        response
-            .by_ref()
-            .take((MAX_GATEWAY_RESPONSE_BYTES + 1) as u64)
-            .read_to_end(&mut body)?;
-        if body.len() > MAX_GATEWAY_RESPONSE_BYTES {
-            return Err(GatewayError::ResponseTooLarge(body.len()));
-        }
-        if !status.is_success() {
-            return Err(parse_gateway_http_error(status.as_u16(), &body));
-        }
-
+        let (body, request_id) = send_bounded(builder)?;
         parse_chat_response(&body, &request.model, request_id)
     }
+}
+
+fn send_bounded(
+    builder: reqwest::blocking::RequestBuilder,
+) -> GatewayResult<(Vec<u8>, Option<String>)> {
+    let mut response = builder.send()?;
+    let status = response.status();
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let mut body = Vec::new();
+    response
+        .by_ref()
+        .take((MAX_GATEWAY_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut body)?;
+    if body.len() > MAX_GATEWAY_RESPONSE_BYTES {
+        return Err(GatewayError::ResponseTooLarge(body.len()));
+    }
+    if !status.is_success() {
+        return Err(parse_gateway_http_error(status.as_u16(), &body));
+    }
+    Ok((body, request_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,196 +344,4 @@ fn parse_gateway_http_error(status: u16, body: &[u8]) -> GatewayError {
 
 fn truncate_message(message: &str) -> String {
     message.chars().take(MAX_ERROR_MESSAGE_CHARS).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
-    fn request(model: &str) -> GatewayChatRequest {
-        GatewayChatRequest {
-            model: model.to_owned(),
-            messages: vec![
-                GatewayChatMessage::system("return JSON"),
-                GatewayChatMessage::user("hello"),
-            ],
-            stream: false,
-            temperature: None,
-            response_format: None,
-        }
-    }
-
-    fn read_request(socket: &mut std::net::TcpStream) -> String {
-        socket
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set mock read timeout");
-        let mut buffer = Vec::new();
-        let mut chunk = [0_u8; 1024];
-        let header_end;
-        loop {
-            let bytes = socket.read(&mut chunk).expect("read request");
-            assert!(bytes > 0, "mock request ended before headers");
-            buffer.extend_from_slice(&chunk[..bytes]);
-            if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-                header_end = index + 4;
-                break;
-            }
-        }
-
-        let headers = String::from_utf8_lossy(&buffer[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().expect("content length"))
-            })
-            .expect("content-length header");
-        while buffer.len() < header_end + content_length {
-            let bytes = socket.read(&mut chunk).expect("read request body");
-            assert!(bytes > 0, "mock request ended before body");
-            buffer.extend_from_slice(&chunk[..bytes]);
-        }
-        String::from_utf8(buffer).expect("request is UTF-8")
-    }
-
-    fn write_response(mut socket: std::net::TcpStream, status: &str, body: &str) {
-        socket
-            .write_all(
-                format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Request-Id: request-test\r\n\r\n{body}",
-                    body.len()
-                )
-                .as_bytes(),
-            )
-            .expect("write mock response");
-    }
-
-    #[test]
-    fn gateway_client_posts_openai_chat_request_with_auth_header() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept request");
-            let request = read_request(&mut socket);
-            let request_lower = request.to_ascii_lowercase();
-
-            assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
-            assert!(request_lower.contains("authorization: bearer test-token"));
-            assert!(request.contains("\"model\":\"gpt-test\""));
-            assert!(request.contains("\"role\":\"system\""));
-            assert!(request.contains("\"role\":\"user\""));
-            assert!(request.contains("\"stream\":false"));
-            assert!(request.contains("\"temperature\":0.2"));
-
-            let body = r#"{
-                "id":"chatcmpl-test",
-                "model":"gpt-test-resolved",
-                "choices":[{
-                    "index":0,
-                    "message":{
-                        "role":"assistant",
-                        "content":"{\"summary\":\"mock response\",\"steps\":[\"one\"]}"
-                    },
-                    "finish_reason":"stop"
-                }]
-            }"#;
-            write_response(socket, "200 OK", body);
-        });
-
-        let client = GatewayClient::new(
-            GatewayClientConfig::new(format!("http://{address}")).with_auth_token("test-token"),
-        )
-        .expect("create client");
-
-        let mut chat_request = request("gpt-test");
-        chat_request.temperature =
-            Some(serde_json::Number::from_f64(0.2).expect("finite temperature"));
-        let response = client.chat(chat_request).expect("chat response");
-
-        assert_eq!(
-            response.content,
-            r#"{"summary":"mock response","steps":["one"]}"#
-        );
-        assert_eq!(response.model, "gpt-test-resolved");
-        assert_eq!(response.request_id.as_deref(), Some("request-test"));
-        server.join().expect("mock server");
-    }
-
-    #[test]
-    fn gateway_client_maps_non_success_response() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept request");
-            let _ = read_request(&mut socket);
-            write_response(
-                socket,
-                "503 Service Unavailable",
-                r#"{"error":{"code":"provider_unavailable","message":"no route"}}"#,
-            );
-        });
-
-        let client = GatewayClient::new(GatewayClientConfig::new(format!("http://{address}")))
-            .expect("create client");
-        let error = client
-            .chat(request("gpt-test"))
-            .expect_err("expected Gateway error");
-
-        assert!(matches!(
-            error,
-            GatewayError::HttpStatus {
-                status: 503,
-                code: Some(ref code),
-                ..
-            } if code == "provider_unavailable"
-        ));
-        server.join().expect("mock server");
-    }
-
-    #[test]
-    fn gateway_client_rejects_empty_choices() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept request");
-            let _ = read_request(&mut socket);
-            write_response(socket, "200 OK", r#"{"model":"gpt-test","choices":[]}"#);
-        });
-
-        let client = GatewayClient::new(GatewayClientConfig::new(format!("http://{address}")))
-            .expect("create client");
-        let error = client
-            .chat(request("gpt-test"))
-            .expect_err("expected malformed response");
-
-        assert!(
-            matches!(error, GatewayError::MalformedResponse(message) if message == "choices is empty")
-        );
-        server.join().expect("mock server");
-    }
-
-    #[test]
-    fn gateway_client_rejects_urls_with_credentials_or_paths() {
-        assert!(matches!(
-            GatewayClient::new(GatewayClientConfig::new("http://user:pass@127.0.0.1:4200")),
-            Err(GatewayError::CredentialsInUrl)
-        ));
-        assert!(matches!(
-            GatewayClient::new(GatewayClientConfig::new("http://127.0.0.1:4200/api")),
-            Err(GatewayError::InvalidBaseUrl(_))
-        ));
-    }
-
-    #[test]
-    fn loopback_config_rejects_non_loopback_hosts() {
-        assert!(GatewayClientConfig::new_loopback("http://127.0.0.1:4200").is_ok());
-        assert!(GatewayClientConfig::new_loopback("http://[::1]:4200").is_ok());
-        assert!(GatewayClientConfig::new_loopback("http://10.0.0.2:4200").is_err());
-        assert!(GatewayClientConfig::new_loopback("http://127.0.0.1:4200/api").is_err());
-        assert!(GatewayClientConfig::new_loopback("ftp://127.0.0.1:4200").is_err());
-    }
 }

@@ -10,7 +10,6 @@ on:
       - Cargo.lock
       - apps/**
       - crates/**
-      - examples/**
   pull_request:
     paths:
       - .github/workflows/docker.yml
@@ -20,7 +19,6 @@ on:
       - Cargo.lock
       - apps/**
       - crates/**
-      - examples/**
   workflow_dispatch:
 
 concurrency:

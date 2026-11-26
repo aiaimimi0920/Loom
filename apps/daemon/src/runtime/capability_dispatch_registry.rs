@@ -1,8 +1,8 @@
-// Unified ownership lookup for core and dynamically installed capability commands.
+// Unified ownership lookup for core hub capabilities and dynamically installed Capability Plugins.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoreCapabilityHandler {
-    BrainPlan,
-    TeaTicketDecompose,
+    AiChat,
+    RuntimeProbe,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,10 +22,10 @@ impl CapabilityDispatchRegistry {
             core_commands: HashMap::new(),
             plugin_runtime,
         };
-        registry.register_core(CAPABILITY_BRAIN_PLAN, CoreCapabilityHandler::BrainPlan);
+        registry.register_core(CAPABILITY_AI_CHAT, CoreCapabilityHandler::AiChat);
         registry.register_core(
-            CAPABILITY_TEA_TICKET_DECOMPOSE,
-            CoreCapabilityHandler::TeaTicketDecompose,
+            CAPABILITY_RUNTIME_PROBE,
+            CoreCapabilityHandler::RuntimeProbe,
         );
         registry
     }
@@ -38,8 +38,10 @@ impl CapabilityDispatchRegistry {
     fn resolve(
         &self,
         command_id: &str,
-    ) -> std::result::Result<Option<CapabilityCommandOwner>, loom_capability_runtime::CapabilityHostError>
-    {
+    ) -> std::result::Result<
+        Option<CapabilityCommandOwner>,
+        loom_capability_runtime::CapabilityHostError,
+    > {
         if let Some(handler) = self.core_commands.get(command_id) {
             return Ok(Some(CapabilityCommandOwner::Core(*handler)));
         }

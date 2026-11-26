@@ -11,13 +11,13 @@ Implementation, configuration and executable tests remain the source of truth.
   approved receiver, inspect its reported language, and confirm the exact request
   without an offline queue or a separate Loom-side language override.
 - [Architecture](ARCHITECTURE.md): runtime ownership, package boundaries,
-  durable events, memory and workflow contracts.
+  durable run evidence, and workflow contracts.
 - [Development manual](DEVELOPMENT.md) and [contribution guide](../CONTRIBUTING.md):
   module size, hardening, formatting, testing and release requirements.
-- [Agent definitions](AGENT_DEFINITIONS.md) and [workflow contract](WORKFLOW_CONTRACT.md).
+- [Workflow contract](WORKFLOW_CONTRACT.md).
 - [Otter canvas](HOOK_CANVAS.md): live projection, workflow actions, event refresh
   and daemon-owned image preview authorization.
-- [Gateway integration](GATEWAY_INTEGRATION.md): model access and planner behavior.
+- [Gateway integration](GATEWAY_INTEGRATION.md): global AI Gateway relay (`/v1/ai/*`) and `ai.chat.v1` invocation.
 - [Asset Library integration](ASSET_LIBRARY_INTEGRATION.md).
 
 ## Plugins and integrations

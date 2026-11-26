@@ -12,10 +12,8 @@ const MAX_PYTHON_SOURCE_BYTES: u64 = 512 * 1024;
 const MAX_ART_JSON_BYTES: u64 = 512 * 1024;
 const MAX_SURFACE_SCENE_BYTES: u64 = 1024 * 1024;
 const MAX_SURFACE_JAVASCRIPT_BYTES: u64 = 512 * 1024;
-const CAPABILITY_BRAIN_PLAN: &str = "brain.plan";
-const CAPABILITY_TEA_TICKET_DECOMPOSE: &str = "tea.ticket.decompose.v1";
-const CAPABILITY_TEA_TICKET_EXECUTE: &str = "tea.ticket.execute.v1";
-const CAPABILITY_TEA_TICKET_REVIEW: &str = "tea.ticket.review.v1";
+const CAPABILITY_AI_CHAT: &str = "ai.chat.v1";
+const CAPABILITY_RUNTIME_PROBE: &str = "loom.runtime.probe.v1";
 const DEFAULT_MCP_REGISTRY_ENDPOINT: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const MAX_REGISTRY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MCP_REGISTRY_CACHE_SCHEMA_VERSION: u32 = 1;
@@ -36,13 +34,8 @@ const ADMIN_AUTH_COOKIE_NAME: &str = "loom_admin";
 #[cfg(test)]
 const TEST_DAEMON_AUTH_TOKEN: &str = "loom-daemon-test-admin";
 
-fn invokable_capability_ids() -> [&'static str; 4] {
-    [
-        CAPABILITY_BRAIN_PLAN,
-        CAPABILITY_TEA_TICKET_DECOMPOSE,
-        CAPABILITY_TEA_TICKET_EXECUTE,
-        CAPABILITY_TEA_TICKET_REVIEW,
-    ]
+fn invokable_capability_ids() -> [&'static str; 2] {
+    [CAPABILITY_AI_CHAT, CAPABILITY_RUNTIME_PROBE]
 }
 
 pub fn daemon_help_text() -> &'static str {
@@ -65,8 +58,8 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_CAPABILITY_MANIFEST_DIR  Directory for loom.json discovery manifest\n",
         "  LOOM_RUN_STORE_PATH  SQLite run evidence path [default: <control-plane>\\runs\\loom-runs.sqlite3]\n",
         "  LOOM_MCP_REGISTRY_ENDPOINT  MCP Registry endpoint override\n",
-        "  LOOM_GATEWAY_MODEL     Enable Gateway-backed brain.plan with this model\n",
-        "  LOOM_GATEWAY_BASE_URL  Gateway origin [default: http://127.0.0.1:4200]\n",
+        "  LOOM_GATEWAY_MODEL     Default AI Gateway model for global AI relay\n",
+        "  LOOM_GATEWAY_BASE_URL  Gateway origin (loopback/LAN HTTP or remote HTTPS) [default: http://127.0.0.1:4200]\n",
         "  LOOM_GATEWAY_TOKEN     Optional Gateway bearer token\n",
         "  LOOM_GATEWAY_TIMEOUT_SECS  Gateway request timeout [default: 60]\n",
         "  LOOM_TRANSLATION_MODE  Translation backend: gateway, local, or auto\n",
@@ -78,6 +71,11 @@ pub fn daemon_help_text() -> &'static str {
         "  GET  /health\n",
         "  GET  /status\n",
         "  GET  /v1/capabilities\n",
+        "  GET  /v1/ai/status\n",
+        "  GET  /v1/ai/config\n",
+        "  PUT  /v1/ai/config\n",
+        "  GET  /v1/ai/models\n",
+        "  POST /v1/ai/chat/completions\n",
         "  GET  /v1/surfaces/instances\n",
         "  POST /v1/surfaces/instances\n",
         "  POST /v1/surfaces/attach\n",
@@ -172,12 +170,11 @@ enum RunStoreConfig {
 pub struct DaemonConfig {
     host: String,
     port: u16,
-    hook_settings: HookSettings,
     auth_token: Option<String>,
     tls_terminated: bool,
     manifest_dir: Option<PathBuf>,
     mcp_registry_endpoint: String,
-    brain_planner: BrainPlannerConfig,
+    ai_gateway: AiGatewayConfig,
     run_store: RunStoreConfig,
     request_executor: RequestExecutorConfig,
     bundled_art_sha256_allowlist: BTreeSet<String>,
@@ -192,7 +189,6 @@ impl DaemonConfig {
         Self {
             host: host.into(),
             port,
-            hook_settings: HookSettings::default(),
             auth_token: {
                 #[cfg(test)]
                 {
@@ -210,7 +206,7 @@ impl DaemonConfig {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| DEFAULT_MCP_REGISTRY_ENDPOINT.to_owned()),
-            brain_planner: BrainPlannerConfig::LocalTemplate,
+            ai_gateway: AiGatewayConfig::Unconfigured,
             run_store: RunStoreConfig::Memory,
             request_executor: RequestExecutorConfig::Inline,
             bundled_art_sha256_allowlist: BTreeSet::new(),
@@ -223,12 +219,6 @@ impl DaemonConfig {
     #[must_use]
     pub fn localhost(port: u16) -> Self {
         Self::bind_host("127.0.0.1", port)
-    }
-
-    #[must_use]
-    pub fn with_hook_settings(mut self, hook_settings: HookSettings) -> Self {
-        self.hook_settings = hook_settings;
-        self
     }
 
     #[must_use]
@@ -270,15 +260,15 @@ impl DaemonConfig {
     }
 
     #[must_use]
-    pub(crate) fn with_brain_planner(mut self, brain_planner: BrainPlannerConfig) -> Self {
-        self.brain_planner = brain_planner;
+    pub(crate) fn with_ai_gateway(mut self, ai_gateway: AiGatewayConfig) -> Self {
+        self.ai_gateway = ai_gateway;
         self
     }
 
-    pub fn with_brain_planner_from_env(self) -> Result<Self> {
-        let brain_planner =
-            BrainPlannerConfig::from_env().map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        Ok(self.with_brain_planner(brain_planner))
+    pub fn with_ai_gateway_from_env(self) -> Result<Self> {
+        let ai_gateway =
+            AiGatewayConfig::from_env().map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok(self.with_ai_gateway(ai_gateway))
     }
 
     #[must_use]
@@ -360,7 +350,6 @@ struct DaemonRuntime {
     local_art_tasks: local_art::Tasks,
     offline_peers: offline_peers::OfflinePeers,
     projection_owner: ProjectionOwner,
-    hook_settings: HookSettings,
     run_store: SharedRunStore,
     auth_token: String,
     config_registry: Arc<ConfigRegistry>,
@@ -388,7 +377,7 @@ struct DaemonRuntime {
     shared_images: SharedImageStoreHandle,
     settings_base_url: String,
     mcp_registry_endpoint: String,
-    brain_planner: SharedBrainPlanner,
+    ai_gateway: SharedAiGateway,
     capability_runtime: SharedCapabilityRuntime,
     capability_dispatch: SharedCapabilityDispatchRegistry,
     run_store_status: RunStoreStatus,

@@ -46,7 +46,6 @@ impl LoomDaemon {
                 config.host
             );
         }
-        let brain_planner = build_brain_planner(config.brain_planner)?;
         let listener = TcpListener::bind((config.host.as_str(), config.port))
             .with_context(|| format!("bind loom daemon to {}:{}", config.host, config.port))?;
         listener
@@ -80,11 +79,8 @@ impl LoomDaemon {
             }
         });
         #[cfg(not(test))]
-        {
-            let framework_runtime_root = control_plane_root.join("frameworks");
-            std::env::set_var("LOOM_CONTROL_PLANE_ROOT", &control_plane_root);
-            std::env::set_var("LOOM_FRAMEWORK_PACKAGES_DIR", &framework_runtime_root);
-        }
+        loom_tool_registry::set_default_control_plane_root(&control_plane_root);
+        let ai_gateway = build_ai_gateway(config.ai_gateway, Some(&control_plane_root))?;
         repair_legacy_control_plane_permissions(&control_plane_root).with_context(|| {
             format!(
                 "repair Loom control-plane permissions in {}",
@@ -187,7 +183,6 @@ impl LoomDaemon {
             local_art_tasks: local_art::Tasks::default(),
             offline_peers,
             projection_owner: ProjectionOwner::new(control_plane_root.to_path_buf())?,
-            hook_settings: config.hook_settings,
             run_store: Arc::new(Mutex::new(run_store)),
             auth_token,
             config_registry: Arc::new(built_in_registry()),
@@ -218,7 +213,7 @@ impl LoomDaemon {
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             settings_base_url,
             mcp_registry_endpoint: config.mcp_registry_endpoint,
-            brain_planner,
+            ai_gateway,
             capability_runtime,
             capability_dispatch,
             run_store_status,
@@ -236,12 +231,15 @@ impl LoomDaemon {
             maintenance_observer: None,
         };
         let runtime = Arc::new(runtime);
-        runtime
-            .device_registry
-            .lock()
-            .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?
-            .lan
-            .bind_runtime(Arc::downgrade(&runtime))?;
+        {
+            let store = runtime
+                .device_registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?;
+            if store.lan.endpoint().is_some() {
+                store.lan.bind_runtime(Arc::downgrade(&runtime))?;
+            }
+        }
         Ok(Self {
             listener,
             runtime,
@@ -254,6 +252,12 @@ impl LoomDaemon {
     }
 
     pub fn serve_until(self, shutdown: Receiver<()>) -> Result<()> {
+        self.runtime
+            .device_registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?
+            .lan
+            .bind_runtime(Arc::downgrade(&self.runtime))?;
         let _discovery =
             connection_discovery::Announcer::start(Arc::clone(&self.runtime.device_registry))?;
         let worker_runtime = Arc::clone(&self.runtime);

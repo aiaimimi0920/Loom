@@ -1,271 +1,117 @@
 # Loom Gateway Integration
 
-Loom calls the external Neuro Gateway through the `loom_gateway` crate. The
-Gateway remains the owner of provider routing, credential selection and
-refresh, model/provider implementation, browser-worker execution, request
-auditing, and quota/health policy. For this integration, Loom owns the planner
-request shape, validation, local run evidence, and local daemon request
-scheduling; Gateway owns provider routing and provider execution.
+Loom calls an external OpenAI-compatible AI Gateway (such as Neuro Gateway) through
+the `loom_gateway` crate and exposes a centralized AI relay bus so managed apps,
+Capability Plugins, Arts, and paired LAN devices can share one configured AI origin.
+
+Gateway remains the owner of hosted-provider routing, credential selection and
+refresh, model/provider implementation, browser-worker execution, request auditing,
+and quota/health policy. Loom owns local configuration persistence, CredentialStore
+token isolation, request validation, local run evidence, and bounded daemon request
+scheduling.
 
 ## Configuration
 
-Gateway-backed `brain.plan` is opt-in. `LOOM_GATEWAY_MODEL` must be a
-non-empty string; when it is absent or blank, Loom uses its deterministic
-local template planner and does not contact Gateway.
+AI Gateway relay can be configured either via environment variables on startup or
+dynamically at runtime via `PUT /v1/ai/config` (persisted in
+`<control-plane-root>/settings/ai-gateway.json` with the bearer token isolated in
+Loom's `CredentialStore` under `loom.ai_gateway/bearer_token`).
 
 | Environment variable | Meaning |
 | --- | --- |
-| `LOOM_GATEWAY_MODEL` | Model or alias passed to Gateway. Enables Gateway mode. |
-| `LOOM_GATEWAY_BASE_URL` | Gateway origin. Defaults to `http://127.0.0.1:4200`. |
-| `LOOM_GATEWAY_TOKEN` | Optional bearer token sent only in the HTTP Authorization header. |
+| `LOOM_GATEWAY_MODEL` | Default model or alias passed to Gateway when a caller omits `model`. Enables env-configured Gateway mode when paired with `LOOM_GATEWAY_BASE_URL`. |
+| `LOOM_GATEWAY_BASE_URL` | Gateway origin (`http://` or `https://`). Defaults to `http://127.0.0.1:4200` when `LOOM_GATEWAY_MODEL` is set. |
+| `LOOM_GATEWAY_TOKEN` | Optional bearer token sent only in the outbound HTTP `Authorization` header. |
 | `LOOM_GATEWAY_TIMEOUT_SECS` | Blocking request timeout, default 60 seconds, bounded to 1 through 300. |
 
-The base URL must be an origin without credentials, a path, query, or fragment.
-Remote Gateway origins require HTTPS, even without a bearer token: prompts are
-also confidential. Cleartext HTTP is allowed only for literal IP loopback hosts
-(including IPv4-mapped loopback IPv6) and always bypasses proxies to stay local.
-Use `127.0.0.1` or `[::1]` rather than `localhost` for local HTTP development;
-DNS names are not an HTTP exception. Existing remote HTTP configurations must
-move to a TLS-enabled Gateway origin, not drop the token or disable verification.
-HTTPS keeps the configured system/custom proxy and normal certificate validation.
-The transport limits a response body to 1 MiB. These limits apply before planner
-output validation.
+### Origin security rules
 
-HTTP redirects are never followed, including same-origin redirects. Configure
-the final serving origin directly. Every 3xx response is a typed HTTP status
-error; neither bearer credentials nor private chat payloads are replayed to a
-`Location` destination. This applies to hosted Gateway and local loopback
-adapter clients alike.
+The base URL must be an origin without embedded credentials, a path, query, or
+fragment:
 
-## Transport contract
+- **Loopback (`GatewayOriginKind::Loopback`)**: Literal IP loopback hosts
+  (`127.0.0.1`, `[::1]`, IPv4-mapped loopback IPv6) allow cleartext `http://` or
+  `https://` and always bypass system proxies (`.no_proxy()`).
+- **Private LAN (`GatewayOriginKind::PrivateLan`)**: Literal RFC1918 IPv4
+  (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and IPv6 ULA (`fc00::/7`)
+  addresses allow cleartext `http://` or `https://` for home/intranet Gateway
+  deployments and always bypass system proxies (`.no_proxy()`).
+- **Remote TLS (`GatewayOriginKind::RemoteTls`)**: Public IP addresses and all DNS
+  hostnames strictly require `https://` with standard certificate validation.
 
-`GatewayClient` sends one non-streaming OpenAI-compatible request:
+HTTP redirects are never followed, including same-origin redirects. Every 3xx
+response is a typed HTTP status error so bearer credentials and chat payloads are
+never replayed to a `Location` destination. Response bodies are bounded to 1 MiB.
+
+## Relay and capability endpoints
+
+`loom-daemon` exposes direct relay endpoints (available to admin callers and, for
+`status`/`models`/`chat/completions`, to paired LAN device sessions):
 
 ```http
-POST /v1/chat/completions
-Authorization: Bearer <LOOM_GATEWAY_TOKEN>
-Content-Type: application/json
+GET  /v1/ai/status
+GET  /v1/ai/config
+PUT  /v1/ai/config
+GET  /v1/ai/models
+POST /v1/ai/chat/completions
 ```
 
-The JSON body contains:
+It also exposes unified capability invocation with durable run evidence:
 
-```json
-{
-  "model": "planner-model",
-  "messages": [
-    {"role": "system", "content": "..."},
-    {"role": "user", "content": "{\"goal\":...}"}
-  ],
-  "stream": false
-}
+```http
+POST /v1/invoke
 ```
 
-Loom accepts the first assistant message from the standard response shape and
-uses the response model when present, falling back to the requested model.
-Non-2xx responses, empty choices, empty assistant content, oversized bodies,
-and malformed JSON become typed transport errors. The bearer token is never
-included in those error strings.
+- `ai.chat.v1`: forwards `{ "messages": [...], "model": "...", "temperature": ... }`
+  to the configured Gateway `/v1/chat/completions` endpoint and records durable
+  `run_started` -> `capability_completed` / `capability_failed` evidence. When no
+  Gateway is configured, returns HTTP `503` with `ai_gateway_not_configured` (never
+  faking AI responses).
+- `loom.runtime.probe.v1`: deterministic local hub capability used to verify
+  `/v1/invoke`, concurrent worker scheduling, and `SqliteRunEvidenceStore`
+  transitions without requiring an external Gateway.
 
-## Planner contract
-
-The Gateway assistant content must be exactly one JSON object with this shape:
-
-```json
-{
-  "summary": "short plan summary",
-  "steps": ["first executable step", "second executable step"]
-}
-```
-
-Loom trims and validates the summary and steps. There must be one through
-twelve non-empty step strings. Prose, Markdown fences, empty summaries, and
-invalid JSON are rejected; Loom does not extract a plan from arbitrary prose.
-The user message is a JSON serialization of `goal`, string `constraints`, and
-optional `context`. Gateway configuration values are not included in that
-user payload.
-
-## Runtime behavior
-
-When Gateway mode is disabled, the current local response remains stable:
-
-```json
-{
-  "summary": "Plan prepared for <goal>",
-  "steps": [
-    "clarify objective",
-    "identify constraints",
-    "return minimal executable plan"
-  ],
-  "planner": {"source": "local_template", "model": null}
-}
-```
-
-When Gateway mode is enabled, a successful response carries the same
-`summary`, `steps`, `runId`, and `run` fields plus:
-
-```json
-{
-  "planner": {
-    "source": "gateway",
-    "model": "resolved-model"
-  }
-}
-```
-
-For every valid `brain.plan` request, the daemon first stores a `running` run
-and a `run_started` event. It releases the run-store lock before making the
-blocking Gateway call. Success updates that same run to `succeeded` and adds
-one `capability_completed` event. Gateway or model-output failure updates it
-to `failed` and adds one `capability_failed` event. Each run transition and its
-event commit atomically.
-
-Gateway failure is explicit and does not silently fall back to the local
-template. The invoke response is HTTP `502 Bad Gateway` with this stable
-public error category:
-
-```json
-{
-  "status": "failed",
-  "error": {
-    "code": "gateway_planner_failed",
-    "message": "Gateway-backed planning failed",
-    "capability": "brain.plan",
-    "runId": "<failed run id>"
-  }
-}
-```
-
-The failed run retains only a truncated diagnostic and safe planner metadata.
-Tokens, complete prompts, and raw request bodies are not written to runs,
-events, responses, or status output.
-
-The packaged daemon stores this evidence in bundled SQLite. Gateway-backed
-success and failure runs remain queryable after daemon restart. A process
-interruption leaves the call terminal: on the next startup, a stale `running`
-run becomes `failed` with `daemon_restarted` and receives `run_interrupted`.
-Loom does not replay the Gateway request.
-
-`GET /status` adds an additive `brain_planner` object with `mode`,
-`configured`, optional `model`, and timeout metadata. Status does not probe
-Gateway and never exposes `LOOM_GATEWAY_TOKEN`. It also reports safe
-`run_store.mode` and `run_store.persistent` metadata without exposing the
-database path. For the packaged production daemon, it also reports the
-request executor shape:
-
-```json
-{
-  "requestExecutor": {
-    "mode": "bounded_workers",
-    "workers": 4,
-    "queueCapacity": 32
-  }
-}
-```
-
-The packaged daemon runs the Gateway call on a bounded worker. A blocked
-`brain.plan` request therefore does not block `/health` or `/status`, because
-those reserved probes bypass the normal request queue. Another approved
-concurrent capability can proceed when worker capacity remains. Queue saturation is
-reported as HTTP 503 `daemon_busy` with `retryable: true`; the rejected request
-has not entered route execution and creates no run or event. If shutdown arrives
-while an already accepted request is still being read, it receives
-`daemon_shutting_down` with the same retryable 503 contract. Windows console
-control events request this graceful shutdown; accepted work drains and workers
-join without forced cancellation.
-
-Probe queue bypass does not bypass authentication: `/health` remains public and
-`/status` retains the configured authorization rules. Route panics/errors return
-the generic HTTP 500 `request_worker_failed` when the connection is writable;
-internal diagnostics are not copied into the public response, and workers remain
-available for later jobs. Per-socket reads have a 2-second timeout and writes a
-30-second timeout; a per-read limit is not a whole-request latency guarantee.
-Current route admission and parser budgets are owned by
-`apps/daemon/src/runtime/connection_dispatch.rs`; use the current allowlist rather
-than the original design's narrower set of concurrent routes.
+`GET /status` reports an additive `ai_gateway` object (`enabled`, `configured`,
+`source`, `origin_kind`, `default_model`, `timeout_secs`, `has_token`) without
+probing Gateway or exposing the bearer token.
 
 ## Durable evidence storage
 
 The packaged daemon uses `LOOM_RUN_STORE_PATH` when configured, otherwise
-`<control-plane-root>/runs/loom-runs.sqlite3`. Library fixtures can use the separate
+`<control-plane-root>/runs/loom-runs.sqlite3`. Library fixtures can use the
 in-memory store. Selecting persistent storage never silently falls back to memory
-after an open, schema or integrity error. This synchronous `RunEvidenceStore`
-remains separate from the typed workflow `EventStore`.
+after an open, schema, or integrity error.
 
 Schema v1 is defined in `crates/loom_durable/src/run_store/sqlite.rs`: `runs`
-stores the indexed ID/status, canonical JSON and creation/update timestamps;
-`run_events` stores an autoincrementing sequence, run ID, kind and object fields.
-A foreign key cascades run deletion and the `(run_id, sequence)` index supports
-ordered event reads. Sequence, kind and run ID are store-owned metadata, not
-caller-controlled fields. The connection requires WAL, foreign keys, FULL
-synchronous writes and a 5-second busy timeout.
-
-Opening validates the schema, `PRAGMA quick_check`, indexed identity/status and
-bounded JSON records before serving. Interrupted-run recovery is one transaction;
-it retains the original input/events, fails stale running records and appends
-`run_interrupted` without replay. Malformed records abort startup rather than
-being discarded. Run creation and terminal transitions commit their events
-atomically; request-time storage failures report `run_store_failed` without
-claiming execution success. Stop/retry use canonical stored fields rather than
-accepting replacement run contents from the caller.
-
-The database contains user run input/context and is local application data,
-without application-level encryption at rest. Protect it with the OS account and
-filesystem boundary; a shared/network filesystem is outside the supported local
-storage boundary. Public responses must not expose SQL, storage paths or raw
-database errors. Unknown future schema versions fail explicitly; consult the
-current store implementation before any migration or recovery operation.
+stores the indexed ID/status, canonical JSON, and creation/update timestamps;
+`run_events` stores an autoincrementing sequence, run ID, kind, and object fields.
+Opening validates the schema, `PRAGMA quick_check`, indexed identity/status, and
+bounded JSON records before serving. Interrupted-run recovery marks stale `running`
+records as `failed` with `daemon_restarted` and appends `run_interrupted` without
+replay.
 
 ## Verification
 
-Targeted Rust gates:
+Targeted gates:
 
 ```powershell
-$env:CARGO_TARGET_DIR = "C:\t\loom-gateway-brain-plan"
 cargo fmt --all -- --check
 cargo test --locked -p loom_gateway
 cargo test --locked -p loom-daemon
 ```
 
-The packaged planner smoke resolves the CLI from the separate CLI ZIP and the
-daemon from `runtime\loom-daemon.exe`; it does not depend on a root-level CLI
-inside the desktop package:
+Packaged smokes:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1 `
   -PackageDir .\release\Loom\<versionId>
-```
 
-It starts an isolated loopback mock Gateway, verifies the chat-completions
-request and bearer header, exercises the packaged daemon and CLI artifact,
-checks the stored run/events, and writes redacted UTF-8 evidence below
-`target\runtime-smoke` by default.
-
-The packaged restart smoke verifies that local planning evidence survives two
-daemon instances and remains available through the desktop-started sibling
-daemon:
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Invoke-LoomRunPersistenceSmoke.ps1 `
   -PackageDir .\release\Loom\<versionId>
-```
 
-The packaged concurrency smoke holds the first Gateway request open, then
-proves that health/status and `tea.ticket.decompose.v1` complete before the
-Gateway release:
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\Invoke-LoomDaemonConcurrencySmoke.ps1 `
   -PackageDir .\release\Loom\<versionId>
 ```
-
-## Explicit boundaries
-
-Durable run/event evidence and bounded daemon request execution now exist, but
-this phase does not claim automatic replay, forced cancellation, a Gateway
-provider routing layer inside Loom, or a desktop-owned Gateway credential flow.
-Provider routing, credential selection, relay behavior, and provider/runtime
-details remain Gateway-owned. Loom must not copy implementation from
-`Gateway/` to satisfy them.

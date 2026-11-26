@@ -96,5 +96,5 @@ pub(crate) fn control_plane_root_for_tool(tool: &ToolDefinition) -> Option<PathB
                     .flatten()
             })
         })
-        .or_else(|| std::env::var_os("LOOM_CONTROL_PLANE_ROOT").map(PathBuf::from))
+        .or_else(crate::framework_process::configured_control_plane_root)
 }

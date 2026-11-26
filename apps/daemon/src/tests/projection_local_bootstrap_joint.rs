@@ -7,7 +7,7 @@ pub(super) fn manifest(root: &Path, port: u16) -> PathBuf {
         "schemaVersion":1, "appId":"loom", "displayName":"Loom", "version":"0.2.2",
         "pid":std::process::id(), "startedAt":unix_time_millis(),
         "transport": {"type":"http", "baseUrl":format!("http://127.0.0.1:{port}"), "auth":"bearer", "authToken":token},
-        "capabilities":["brain.plan"]
+        "capabilities":["ai.chat.v1","loom.runtime.probe.v1"]
     });
     write_once(&path, &serde_json::to_vec(&value).unwrap());
     path

@@ -564,6 +564,7 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
+        ("GET", "/v1/ai/status" | "/v1/ai/models") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/mcp/registry") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,
         // A Surface stream long-poll parks for up to five seconds waiting for something to
@@ -584,7 +585,10 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         ("GET", path) if run_path_id(path).is_some() || run_events_path_id(path).is_some() => {
             RequestConcurrencyClass::Concurrent
         }
-        ("POST", "/v1/runs") => RequestConcurrencyClass::Concurrent,
+        ("POST", "/v1/ai/chat/completions") => RequestConcurrencyClass::Concurrent,
+        ("POST", "/v1/asset-library/download" | "/v1/asset-library/download-control") => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("POST", path)
             if run_action_path_id(path, "stop").is_some()
                 || run_action_path_id(path, "retry").is_some() =>
@@ -596,15 +600,15 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
             RequestConcurrencyClass::Concurrent
         }
         ("POST", "/v1/invoke") => {
-            let capability = serde_json::from_str::<Value>(&request.body)
+            let valid_capability = serde_json::from_str::<Value>(&request.body)
                 .ok()
                 .and_then(|body| body.get("capability").cloned())
-                .and_then(|capability| capability.as_str().map(str::to_owned));
-            match capability.as_deref() {
-                Some(CAPABILITY_BRAIN_PLAN | CAPABILITY_TEA_TICKET_DECOMPOSE) => {
-                    RequestConcurrencyClass::Concurrent
-                }
-                _ => RequestConcurrencyClass::Serialized,
+                .and_then(|capability| capability.as_str().map(str::to_owned))
+                .is_some_and(|capability| !capability.trim().is_empty());
+            if valid_capability {
+                RequestConcurrencyClass::Concurrent
+            } else {
+                RequestConcurrencyClass::Serialized
             }
         }
         _ => RequestConcurrencyClass::Serialized,

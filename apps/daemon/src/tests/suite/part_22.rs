@@ -42,24 +42,12 @@ fn daemon_writes_local_capability_manifest_when_configured() {
     assert!(manifest["capabilities"]
         .as_array()
         .expect("capabilities")
-        .contains(&serde_json::Value::String("brain.plan".to_owned())));
+        .contains(&serde_json::Value::String("ai.chat.v1".to_owned())));
     assert!(manifest["capabilities"]
         .as_array()
         .expect("capabilities")
         .contains(&serde_json::Value::String(
-            "tea.ticket.decompose.v1".to_owned()
-        )));
-    assert!(manifest["capabilities"]
-        .as_array()
-        .expect("capabilities")
-        .contains(&serde_json::Value::String(
-            "tea.ticket.execute.v1".to_owned()
-        )));
-    assert!(manifest["capabilities"]
-        .as_array()
-        .expect("capabilities")
-        .contains(&serde_json::Value::String(
-            "tea.ticket.review.v1".to_owned()
+            "loom.runtime.probe.v1".to_owned()
         )));
     assert!(manifest["startedAt"].as_u64().is_some() || manifest["startedAt"].is_string());
     assert_eq!(
@@ -160,12 +148,12 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     assert!(manifest["capabilities"]
         .as_array()
         .expect("capabilities")
-        .contains(&serde_json::Value::String("brain.plan".to_owned())));
+        .contains(&serde_json::Value::String("ai.chat.v1".to_owned())));
     assert!(manifest["capabilities"]
         .as_array()
         .expect("capabilities")
         .contains(&serde_json::Value::String(
-            "tea.ticket.decompose.v1".to_owned()
+            "loom.runtime.probe.v1".to_owned()
         )));
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
@@ -206,8 +194,8 @@ fn daemon_writes_bearer_local_capability_manifest_and_requires_auth_when_configu
     let invoke_body = r#"{
             "requestId":"loom-bearer-manifest-1",
             "caller":"hook",
-            "capability":"brain.plan",
-            "input":{"goal":"token protected manifest"}
+            "capability":"loom.runtime.probe.v1",
+            "input":{"label":"token protected manifest"}
         }"#;
     let unauthorized_invoke =
         http_request_without_auth(address.port(), "POST", "/v1/invoke", Some(invoke_body));
@@ -256,10 +244,8 @@ fn root_contract_loom_manifest_fixture_matches_current_invokable_capabilities() 
     assert_eq!(
         capabilities,
         vec![
-            "brain.plan".to_owned(),
-            "tea.ticket.decompose.v1".to_owned(),
-            "tea.ticket.execute.v1".to_owned(),
-            "tea.ticket.review.v1".to_owned(),
+            "ai.chat.v1".to_owned(),
+            "loom.runtime.probe.v1".to_owned(),
         ]
     );
 }

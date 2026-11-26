@@ -39,14 +39,12 @@ fn remote_cleartext_is_rejected_even_without_a_bearer_token() {
         "example.test",
         "localhost",
         "localhost.",
-        "10.0.0.2",
-        "192.168.1.1",
         "169.254.169.254",
         "0.0.0.0",
         "8.8.8.8",
         "[::]",
         "[2001:db8::1]",
-        "[::ffff:10.0.0.2]",
+        "[::ffff:8.8.8.8]",
     ] {
         for token in ["", "private-token"] {
             let result = GatewayClient::new(
@@ -66,6 +64,10 @@ fn remote_cleartext_is_rejected_even_without_a_bearer_token() {
         "http://127.0.0.2:4200",
         "http://[::1]:4200",
         "http://[::ffff:127.0.0.1]:4200",
+        "http://10.0.0.2:4200",
+        "http://192.168.1.1:4200",
+        "http://[::ffff:10.0.0.2]:4200",
+        "http://[fd12:3456::1]:4200",
     ] {
         assert!(GatewayClient::new(GatewayClientConfig::new(origin).without_proxy()).is_ok());
     }

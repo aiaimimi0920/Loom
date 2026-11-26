@@ -157,7 +157,7 @@ fn daemon_binary_writes_local_capability_manifest_from_cli_arg() {
     assert!(manifest["capabilities"]
         .as_array()
         .expect("capabilities")
-        .contains(&serde_json::Value::String("brain.plan".to_owned())));
+        .contains(&serde_json::Value::String("ai.chat.v1".to_owned())));
 }
 
 #[test]
@@ -193,8 +193,8 @@ fn daemon_binary_writes_local_capability_manifest_from_env_var() {
 }
 
 #[test]
-fn daemon_binary_starts_with_gateway_planner_configuration() {
-    let temp_dir = unique_temp_dir("gateway-planner");
+fn daemon_binary_starts_with_ai_gateway_configuration() {
+    let temp_dir = unique_temp_dir("ai-gateway");
     let manifest_dir = temp_dir.join("capabilities");
     let exe = env!("CARGO_BIN_EXE_loom-daemon");
     let child = ChildGuard::new(

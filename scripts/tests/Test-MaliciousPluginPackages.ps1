@@ -96,7 +96,6 @@ switch ($Case) {
     "process" {
         Invoke-CargoTest @("-p", "loom_process")
         Invoke-CargoTest @("-p", "loom_mcp", "mcp::tests::stdio::stdio_client_times_out_and_terminates_hung_server")
-        Invoke-CargoTest @("-p", "loom_sandbox")
         Invoke-CargoTest @("-p", "loom_tool_registry", "framework::tests::policy::permission_modes_audit_by_default_and_strictly_reject_unenforced_capabilities")
     }
     "lifecycle" {

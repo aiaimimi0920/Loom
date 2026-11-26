@@ -32,6 +32,14 @@ impl Drop for Task {
     }
 }
 impl Task {
+    #[cfg(any(not(windows), test))]
+    pub(super) fn from_parts(state: Arc<State>, result: mpsc::Receiver<i32>) -> Self {
+        Self {
+            state,
+            result,
+            settled: false,
+        }
+    }
     #[cfg(test)]
     pub fn progress(&self) -> (u64, u64, u64) {
         (
@@ -295,6 +303,8 @@ mod windows {
 pub(super) fn shutdown() {
     #[cfg(windows)]
     windows::shutdown();
+    #[cfg(not(windows))]
+    super::aria2_portable::shutdown();
 }
 
 pub(super) fn start(url: String, directory: PathBuf, expected: u64) -> Result<Task> {
@@ -313,7 +323,6 @@ pub(super) fn start_controlled(
     }
     #[cfg(not(windows))]
     {
-        let _ = (url, directory, expected, state);
-        Err(error(503, "asset_library_engine_platform_unsupported"))
+        super::aria2_portable::start(url, directory, expected, state)
     }
 }

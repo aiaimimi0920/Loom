@@ -31,65 +31,6 @@ fn get_run_events(run_id: &str, run_store: &SharedRunStore) -> Result<(u16, Stri
     ))
 }
 
-fn start_tea_run(body: &str, run_store: &SharedRunStore) -> Result<(u16, String)> {
-    let Ok(request) = serde_json::from_str::<StartRunRequest>(body) else {
-        return bad_request("invalid run request");
-    };
-    let ticket = request.ticket;
-    let run = json!({
-        "id": loom_core::RunId::new().to_string(),
-        "ticket_id": ticket.id,
-        "loom_session_id": loom_core::SessionId::new().to_string(),
-        "status": "succeeded",
-        "evidence": {
-            "summary": format!(
-                "loom daemon run completed for {}",
-                ticket.title
-                    .as_deref()
-                    .filter(|title| !title.trim().is_empty())
-                    .unwrap_or("Tea ticket")
-            ),
-            "commands": [],
-            "artifacts": [
-                "loom-daemon:http-run-contract"
-            ],
-            "risks": ticket
-                .description
-                .as_deref()
-                .filter(|description| !description.trim().is_empty())
-                .map(|description| vec![format!("request context length: {} bytes", description.len())])
-                .unwrap_or_default()
-        }
-    });
-    let events = match (
-        RunEventDraft::new(
-            "run_started",
-            json!({
-                "source": "tea",
-                "status": "running",
-            }),
-        ),
-        RunEventDraft::new(
-            "run_finished",
-            json!({
-                "source": "tea",
-                "status": "succeeded",
-            }),
-        ),
-    ) {
-        (Ok(started), Ok(finished)) => vec![started, finished],
-        (Err(error), _) | (_, Err(error)) => return run_store_failed(error),
-    };
-    let mut store = match lock_run_store(run_store) {
-        Ok(store) => store,
-        Err(error) => return run_store_failed(error),
-    };
-    if let Err(error) = store.insert_run(run.clone(), events) {
-        return run_store_failed(error);
-    }
-    Ok((200, serde_json::to_string(&run)?))
-}
-
 fn run_action(
     path_run_id: &str,
     body: &str,
@@ -323,33 +264,33 @@ fn module_statuses() -> Vec<ModuleStatus> {
             initialized: true,
         },
         ModuleStatus {
-            name: "agent",
-            version: loom_agent::LOOM_AGENT_VERSION,
-            initialized: true,
-        },
-        ModuleStatus {
-            name: "workflow",
-            version: loom_workflow::LOOM_WORKFLOW_VERSION,
-            initialized: true,
-        },
-        ModuleStatus {
-            name: "memory",
-            version: loom_memory::LOOM_MEMORY_VERSION,
-            initialized: true,
-        },
-        ModuleStatus {
-            name: "sandbox",
-            version: loom_sandbox::LOOM_SANDBOX_VERSION,
-            initialized: true,
-        },
-        ModuleStatus {
             name: "gateway",
             version: loom_gateway::LOOM_GATEWAY_VERSION,
             initialized: true,
         },
         ModuleStatus {
-            name: "hooks",
-            version: loom_hooks::LOOM_HOOKS_VERSION,
+            name: "mcp",
+            version: env!("CARGO_PKG_VERSION"),
+            initialized: true,
+        },
+        ModuleStatus {
+            name: "tool_registry",
+            version: env!("CARGO_PKG_VERSION"),
+            initialized: true,
+        },
+        ModuleStatus {
+            name: "workflow_runtime",
+            version: env!("CARGO_PKG_VERSION"),
+            initialized: true,
+        },
+        ModuleStatus {
+            name: "capability_runtime",
+            version: env!("CARGO_PKG_VERSION"),
+            initialized: true,
+        },
+        ModuleStatus {
+            name: "otter_bridge",
+            version: env!("CARGO_PKG_VERSION"),
             initialized: true,
         },
     ]

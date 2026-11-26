@@ -125,7 +125,7 @@ fn art_doctor(
 
 fn support_bundle(
     path: &str,
-    hook_settings: &HookSettings,
+    ai_gateway: &SharedAiGateway,
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
     tool_registry: &ToolRegistry,
@@ -178,7 +178,7 @@ fn support_bundle(
             "version": env!("CARGO_PKG_VERSION"),
             "pid": std::process::id(),
             "modules": module_statuses(),
-            "hooks": hook_settings.summary(),
+            "aiGateway": ai_gateway.status(),
             "runStore": run_store_status,
         },
         "frameworks": framework_registry.statuses(),

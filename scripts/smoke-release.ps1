@@ -16,7 +16,7 @@ if (-not (Test-Path -LiteralPath $PackageDir -PathType Container)) {
 }
 $VersionId = Split-Path -Leaf $PackageDir
 $resolvedApps = @("Loom")
-$ExpectedLoomCapabilityIds = "brain.plan,tea.ticket.decompose.v1,tea.ticket.execute.v1,tea.ticket.review.v1"
+$ExpectedLoomCapabilityIds = "ai.chat.v1,loom.runtime.probe.v1"
 $script:SmokeEvidenceRunId = ""
 $script:SmokeEvidenceRunDir = ""
 $script:DaemonAuthHeaders = @{}

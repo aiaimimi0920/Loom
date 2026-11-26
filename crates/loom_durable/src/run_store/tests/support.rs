@@ -10,10 +10,10 @@ use crate::run_store::{RunEventDraft, RunEvidenceStore};
 pub(super) fn sample_run(id: &str, status: &str) -> serde_json::Value {
     json!({
         "id": id,
-        "capability": "brain.plan",
+        "capability": "ai.chat.v1",
         "loom_session_id": "session-test",
         "status": status,
-        "input": { "goal": "persist evidence" }
+        "input": { "prompt": "persist evidence" }
     })
 }
 
@@ -21,7 +21,7 @@ pub(super) fn started_event() -> RunEventDraft {
     RunEventDraft::new(
         "run_started",
         json!({
-            "capability": "brain.plan",
+            "capability": "ai.chat.v1",
             "status": "running"
         }),
     )

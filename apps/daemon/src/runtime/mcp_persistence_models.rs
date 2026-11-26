@@ -174,8 +174,7 @@ struct StatusResponse {
     #[serde(rename = "executablePath")]
     executable_path: String,
     modules: Vec<ModuleStatus>,
-    hooks: HookSettingsSummary,
-    brain_planner: BrainPlannerStatus,
+    ai_gateway: AiGatewayStatus,
     run_store: RunStoreStatus,
     #[serde(rename = "requestExecutor")]
     request_executor: RequestExecutorStatus,
@@ -188,18 +187,6 @@ struct ModuleStatus {
     name: &'static str,
     version: &'static str,
     initialized: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct StartRunRequest {
-    ticket: TicketRequest,
-}
-
-#[derive(Debug, Deserialize)]
-struct TicketRequest {
-    id: String,
-    title: Option<String>,
-    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

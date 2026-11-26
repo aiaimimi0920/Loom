@@ -384,17 +384,16 @@ nodes:
         $invoke = Invoke-JsonPost -Uri "$baseUrl/v1/invoke" -Body @{
             requestId = "release-loom-1"
             caller = "hook"
-            capability = "brain.plan"
+            capability = "loom.runtime.probe.v1"
             input = @{
-                goal = "release smoke"
-                constraints = @("Otter Talk Loom")
+                label = "release smoke"
             }
         }
         Assert-Equal "succeeded" $invoke.status "Loom invoke status mismatch."
 
         $runId = [string]$invoke.output.runId
         $run = Invoke-JsonGet -Uri "$baseUrl/v1/runs/$runId"
-        Assert-Equal "brain.plan" $run.capability "Loom run capability mismatch."
+        Assert-Equal "loom.runtime.probe.v1" $run.capability "Loom run capability mismatch."
 
         $events = Invoke-JsonGet -Uri "$baseUrl/v1/runs/$runId/events"
         $eventKinds = @($events.events | ForEach-Object { $_.kind }) -join ","

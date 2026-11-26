@@ -244,11 +244,10 @@ try {
     $firstRequest = [ordered]@{
         requestId = "loom-concurrency-gateway"
         caller = "packaged-concurrency-smoke"
-        capability = "brain.plan"
+        capability = "ai.chat.v1"
         input = [ordered]@{
-            goal = "Verify bounded packaged Gateway concurrency"
-            constraints = @("keep the first Gateway call blocked", "preserve run evidence")
-            context = [ordered]@{ source = "loom-concurrency-smoke" }
+            prompt = "Verify bounded packaged Gateway concurrency"
+            system = "Return concise JSON."
         }
     }
     $firstRequestJson = $firstRequest | ConvertTo-Json -Depth 30 -Compress
@@ -290,13 +289,9 @@ try {
     $secondRequest = [ordered]@{
         requestId = "loom-concurrency-second"
         caller = "packaged-concurrency-smoke"
-        capability = "tea.ticket.decompose.v1"
+        capability = "loom.runtime.probe.v1"
         input = [ordered]@{
-            ticket = [ordered]@{
-                id = "loom-concurrency-ticket"
-                title = "Bounded daemon concurrency smoke"
-                description = "Verify an approved capability completes while Gateway planning is blocked."
-            }
+            label = "Verify an approved capability completes while Gateway chat is blocked."
         }
     }
     $secondInvoke = Invoke-JsonPost `
@@ -322,10 +317,9 @@ try {
     Remove-Job -Job $invokeJob -Force -ErrorAction SilentlyContinue
     $invokeJobStopped = $true
 
-    Assert-Equal "succeeded" ([string]$gatewayInvoke.status) "Gateway brain.plan did not succeed after release."
-    Assert-Equal "gateway" ([string]$gatewayInvoke.output.planner.source) "Gateway planner source mismatch."
-    Assert-Equal "concurrency-smoke-resolved" ([string]$gatewayInvoke.output.planner.model) "Gateway planner model mismatch."
-    Assert-Equal 2 @($gatewayInvoke.output.steps).Count "Gateway planner step count mismatch."
+    Assert-Equal "succeeded" ([string]$gatewayInvoke.status) "Gateway ai.chat.v1 did not succeed after release."
+    Assert-Equal "gateway" ([string]$gatewayInvoke.output.gateway.source) "Gateway source mismatch."
+    Assert-Equal "concurrency-smoke-resolved" ([string]$gatewayInvoke.output.gateway.model) "Gateway model mismatch."
     $gatewayRunId = [string]$gatewayInvoke.output.runId
     Assert-True (-not [string]::IsNullOrWhiteSpace($gatewayRunId)) "Gateway invoke did not return a run id."
     Write-JsonEvidence -Path (Join-Path $evidenceRunDir "gateway-invoke.json") -Value $gatewayInvoke

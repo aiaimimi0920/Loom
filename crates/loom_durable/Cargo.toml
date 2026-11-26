@@ -5,10 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Loom durable event and actor runtime"
+description = "Loom durable SQLite and in-memory run evidence store"
 
 [dependencies]
-async-trait.workspace = true
 chrono.workspace = true
 loom_core.workspace = true
 loom_plugin_security.workspace = true
@@ -17,4 +16,3 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true

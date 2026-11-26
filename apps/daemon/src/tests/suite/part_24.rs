@@ -1,49 +1,20 @@
 // Loom daemon tests fragment 24; included into the shared crate test module.
 #[test]
-fn daemon_invokes_tea_ticket_decompose_capability() {
+fn daemon_rejects_unconfigured_ai_gateway_chat_cleanly() {
     let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
     let address = daemon.local_addr().expect("local address");
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-    let input: serde_json::Value = serde_json::from_str(&shared_tea_brain_provider_example(
-        "decompose-request.example.json",
-    ))
-    .expect("decompose request fixture json");
-    let request = serde_json::json!({
-        "requestId": "loom-tea-decompose-1",
-        "caller": "tea",
-        "capability": "tea.ticket.decompose.v1",
-        "input": input
-    });
 
-    let invoke = http_json_post(address.port(), "/v1/invoke", &request.to_string());
-
-    assert_eq!(invoke["requestId"], "loom-tea-decompose-1");
-    assert_eq!(invoke["status"], "succeeded");
-    assert_eq!(
-        invoke["output"]["run"]["capability"],
-        "tea.ticket.decompose.v1"
+    let response = http_request(
+        address.port(),
+        "POST",
+        "/v1/ai/chat/completions",
+        Some(r#"{"model":"qwen-home","messages":[{"role":"user","content":"hello"}]}"#),
     );
-    assert_eq!(
-        invoke["output"]["proposal"]["analysis"]["intent"],
-        "engineering_work_order"
-    );
-    assert_eq!(
-        invoke["output"]["proposal"]["analysis"]["recommended_workflow"],
-        "loom.tea_ticket_decompose.v1"
-    );
-    assert!(
-        invoke["output"]["proposal"]["plan"]["steps"]
-            .as_array()
-            .expect("plan steps")
-            .len()
-            >= 3
-    );
-    assert_eq!(invoke["output"]["proposal"]["requires_human_review"], true);
-    assert!(invoke["output"]["summary"]
-        .as_str()
-        .expect("summary")
-        .contains("Release smoke matrix includes Tea"));
+    assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
+    let body = response_json_body(&response);
+    assert_eq!(body["error"]["code"], "ai_gateway_not_configured");
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");
@@ -69,8 +40,8 @@ fn daemon_accepts_root_contract_local_capability_invoke_fixture() {
     let invoke = response_json_body(&response);
     assert_eq!(invoke["requestId"], "loom-request-1");
     assert_eq!(invoke["status"], "succeeded");
-    assert_eq!(invoke["output"]["run"]["capability"], "brain.plan");
-    assert_eq!(invoke["output"]["run"]["input"]["goal"], "release smoke");
+    assert_eq!(invoke["output"]["run"]["capability"], "loom.runtime.probe.v1");
+    assert_eq!(invoke["output"]["run"]["input"]["label"], "release smoke");
     assert_eq!(
         invoke["output"]["run"]["input"]["constraints"][0],
         "Otter Talk Loom"
@@ -130,18 +101,18 @@ fn daemon_returns_structured_errors_for_invalid_invoke_goal_and_missing_route() 
         "POST",
         "/v1/invoke",
         Some(
-            r#"{"requestId":"loom-request-missing-goal","caller":"hook","capability":"brain.plan","input":{}}"#,
+            r#"{"requestId":"loom-request-missing-prompt","caller":"hook","capability":"ai.chat.v1","input":{}}"#,
         ),
     );
     assert!(missing_goal.starts_with("HTTP/1.1 400 Bad Request"));
     let missing_goal_body = response_json_body(&missing_goal);
-    assert_eq!(missing_goal_body["requestId"], "loom-request-missing-goal");
+    assert_eq!(missing_goal_body["requestId"], "loom-request-missing-prompt");
     assert_eq!(missing_goal_body["status"], "failed");
     assert_eq!(missing_goal_body["error"]["code"], "invalid_input");
     assert!(missing_goal_body["error"]["message"]
         .as_str()
         .expect("message")
-        .contains("goal"));
+        .contains("prompt"));
 
     let not_found = http_request(address.port(), "GET", "/v1/does-not-exist", None);
     assert!(not_found.starts_with("HTTP/1.1 404 Not Found"));
@@ -162,7 +133,7 @@ fn daemon_validates_stop_and_retry_path_run_ids() {
     let invoke = http_json_post(
         address.port(),
         "/v1/invoke",
-        r#"{"requestId":"loom-request-run-action","caller":"hook","capability":"brain.plan","input":{"goal":"validate run id"}}"#,
+        r#"{"requestId":"loom-request-run-action","caller":"hook","capability":"loom.runtime.probe.v1","input":{"label":"validate run id"}}"#,
     );
     let run_id = invoke["output"]["runId"].as_str().expect("run id");
     let run = invoke["output"]["run"].clone();
@@ -207,7 +178,7 @@ fn daemon_validates_stop_and_retry_path_run_ids() {
         "run": {
             "id": run_id,
             "status": "succeeded",
-            "input": { "goal": "forged" },
+            "input": { "label": "forged" },
             "output": { "summary": "forged" }
         }
     });
@@ -217,7 +188,7 @@ fn daemon_validates_stop_and_retry_path_run_ids() {
         &forged.to_string(),
     );
     assert_eq!(stopped["status"], "stopped");
-    assert_eq!(stopped["input"]["goal"], "validate run id");
+    assert_eq!(stopped["input"]["label"], "validate run id");
     assert_ne!(stopped["output"]["summary"], "forged");
 
     let retry_body = format!(r#"{{"run":{stopped}}}"#);

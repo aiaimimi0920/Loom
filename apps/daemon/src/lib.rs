@@ -32,7 +32,6 @@ use loom_durable::{
     InMemoryRunEvidenceStore, RunEventDraft, RunEvidenceStore, RunStoreError, RunStoreStatus,
     SqliteRunEvidenceStore,
 };
-use loom_hooks::{HookSettings, HookSettingsSummary};
 use loom_mcp::package::{uninstall_server_package, McpPackageError, MAX_MCP_SERVER_PACKAGE_BYTES};
 use loom_mcp::{McpClient, McpServerConfig, McpTransport};
 use loom_otter_bridge::{
@@ -105,7 +104,7 @@ mod local_art;
 pub fn shutdown_download_engine() {
     asset_library::shutdown_download_engine();
 }
-mod brain_plan;
+mod ai_gateway;
 mod capability_resources;
 mod http_body_admission;
 mod http_request;
@@ -122,10 +121,12 @@ mod wall_store;
 
 use wall_store::{SharedWallStore, WallStore, WallStoreError};
 
-use brain_plan::{
-    build_brain_planner, BrainPlanRequest, BrainPlannerConfig, BrainPlannerStatus,
-    SharedBrainPlanner,
+use ai_gateway::{
+    build_ai_gateway, AiGatewayConfig, AiGatewayConfigUpdate, AiGatewayRelayError, AiGatewayStatus,
+    SharedAiGateway,
 };
+#[cfg(test)]
+use ai_gateway::{AiChatCompletionOutcome, AiGatewayEndpointConfig, AiGatewayService};
 use capability_resources::{
     CapabilityResourceBroker, CapabilityResourceError, SharedCapabilityResourceBroker,
 };
@@ -220,6 +221,7 @@ include!("runtime/wall_media_encoding.rs");
 include!("runtime/wall_png_cache.rs");
 include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
+include!("runtime/ai_gateway_routes.rs");
 include!("runtime/asset_library_install.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");

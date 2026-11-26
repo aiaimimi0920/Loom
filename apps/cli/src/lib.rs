@@ -1,15 +1,17 @@
+//! Lightweight HTTP command-line client for a local or remote `loom-daemon` hub.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use loom_agent::{AgentCatalog, AgentSpec};
-use loom_core::{ActorId, RunStatus, SessionId};
-use loom_durable::InMemoryEventStore;
-use loom_workflow::{StepOutcome, WorkflowAction, WorkflowExecutor, WorkflowGraph};
+use serde_json::Value;
 
 const DAEMON_AUTH_TOKEN_FILE: &str = "daemon-token";
+const DEFAULT_CLI_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CLI_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn run_cli_with_writer<I, S, W>(args: I, writer: &mut W) -> Result<()>
 where
@@ -31,7 +33,6 @@ where
     }
 
     let options = CliOptions::parse(&args)?;
-
     let command: Vec<&str> = options.command.iter().map(String::as_str).collect();
     match command.as_slice() {
         ["status"] => {
@@ -42,35 +43,103 @@ where
             )?;
             writeln!(writer, "{response}")?;
         }
-        ["agents", "list"] => {
-            let catalog = load_agent_catalog(&options.examples_dir)?;
-            for agent in catalog.effective_agents() {
-                writeln!(writer, "{}\t{}", agent.id, agent.name)?;
+        ["health"] => {
+            let response = http_get(&options.daemon_url, "/health", None)?;
+            writeln!(writer, "{response}")?;
+        }
+        ["frameworks", "list"] => {
+            let body = http_get(
+                &options.daemon_url,
+                "/v1/frameworks",
+                options.daemon_token.as_deref(),
+            )?;
+            if options.raw_json {
+                writeln!(writer, "{body}")?;
+            } else {
+                let parsed: Value =
+                    serde_json::from_str(&body).context("parse /v1/frameworks JSON")?;
+                if let Some(items) = parsed.get("frameworks").and_then(Value::as_array) {
+                    for item in items {
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let version = item.get("version").and_then(Value::as_str).unwrap_or("-");
+                        let ready = item.get("ready").and_then(Value::as_bool).unwrap_or(false);
+                        writeln!(writer, "{id}\t{version}\tready={ready}")?;
+                    }
+                }
+            }
+        }
+        ["arts", "list"] => {
+            let body = http_get(
+                &options.daemon_url,
+                "/v1/tools",
+                options.daemon_token.as_deref(),
+            )?;
+            if options.raw_json {
+                writeln!(writer, "{body}")?;
+            } else {
+                let parsed: Value = serde_json::from_str(&body).context("parse /v1/tools JSON")?;
+                if let Some(items) = parsed.get("tools").and_then(Value::as_array) {
+                    for item in items {
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let name = item.get("name").and_then(Value::as_str).unwrap_or(id);
+                        let enabled = item
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        writeln!(writer, "{id}\t{name}\tenabled={enabled}")?;
+                    }
+                }
             }
         }
         ["workflows", "list"] => {
-            for graph in load_workflows(&options.examples_dir)? {
-                writeln!(writer, "{}", graph.id.as_str())?;
+            let body = http_get(
+                &options.daemon_url,
+                "/v1/workflows",
+                options.daemon_token.as_deref(),
+            )?;
+            if options.raw_json {
+                writeln!(writer, "{body}")?;
+            } else {
+                let parsed: Value =
+                    serde_json::from_str(&body).context("parse /v1/workflows JSON")?;
+                if let Some(items) = parsed.get("workflows").and_then(Value::as_array) {
+                    for item in items {
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                        writeln!(writer, "{id}")?;
+                    }
+                }
             }
         }
-        ["run", workflow_id] => {
-            let graph = load_workflows(&options.examples_dir)?
-                .into_iter()
-                .find(|graph| graph.id.as_str() == *workflow_id)
-                .ok_or_else(|| anyhow!("workflow `{workflow_id}` was not found"))?;
-            let summary = run_workflow(&graph)?;
-            writeln!(
-                writer,
-                "{}\t{}",
-                match summary.status {
-                    RunStatus::Succeeded => "succeeded",
-                    RunStatus::Failed => "failed",
-                    RunStatus::Pending => "pending",
-                    RunStatus::Running => "running",
-                    RunStatus::Cancelled => "cancelled",
-                },
-                summary.completed_nodes.join(",")
+        ["mcp", "list"] => {
+            let body = http_get(
+                &options.daemon_url,
+                "/v1/mcp/servers",
+                options.daemon_token.as_deref(),
             )?;
+            if options.raw_json {
+                writeln!(writer, "{body}")?;
+            } else {
+                let parsed: Value =
+                    serde_json::from_str(&body).context("parse /v1/mcp/servers JSON")?;
+                if let Some(items) = parsed.get("servers").and_then(Value::as_array) {
+                    for item in items {
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let enabled = item
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        writeln!(writer, "{id}\tenabled={enabled}")?;
+                    }
+                }
+            }
+        }
+        ["ai", "status"] => {
+            let response = http_get(
+                &options.daemon_url,
+                "/v1/ai/status",
+                options.daemon_token.as_deref(),
+            )?;
+            writeln!(writer, "{response}")?;
         }
         [] => bail!("missing command"),
         command => bail!("unsupported command `{}`", command.join(" ")),
@@ -88,15 +157,18 @@ fn cli_help_text() -> &'static str {
         "Usage: loom <COMMAND> [OPTIONS]\n",
         "\n",
         "Commands:\n",
-        "  status                 Read loom-daemon status\n",
-        "  agents list            List example agents\n",
-        "  workflows list         List example workflows\n",
-        "  run <workflow-id>      Run an example workflow locally\n",
+        "  status                 Read loom-daemon runtime status\n",
+        "  health                 Read public loom-daemon health probe\n",
+        "  frameworks list        List installed Art execution frameworks\n",
+        "  arts list              List registered Arts\n",
+        "  workflows list         List stored Otter/Art workflows\n",
+        "  mcp list               List configured MCP servers\n",
+        "  ai status              Read global AI Gateway relay status\n",
         "\n",
         "Options:\n",
-        "  --daemon-url <URL>     Daemon URL for status [default: http://127.0.0.1:8765]\n",
+        "  --daemon-url <URL>     Daemon URL [default: LOOM_DAEMON_URL or http://127.0.0.1:8765]\n",
         "  --daemon-token <TOKEN> Bearer token [default: LOOM_DAEMON_TOKEN or control-plane token file]\n",
-        "  --examples-dir <DIR>   Examples directory [default: examples]\n",
+        "  --json                 Print raw JSON response for list commands\n",
         "  -h, --help             Print help\n",
         "  -V, --version          Print version\n",
     )
@@ -107,7 +179,7 @@ struct CliOptions {
     command: Vec<String>,
     daemon_url: String,
     daemon_token: Option<String>,
-    examples_dir: PathBuf,
+    raw_json: bool,
 }
 
 fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<String> {
@@ -155,9 +227,13 @@ fn default_daemon_auth_token() -> Result<Option<String>> {
 impl CliOptions {
     fn parse(args: &[String]) -> Result<Self> {
         let mut command = Vec::new();
-        let mut daemon_url = "http://127.0.0.1:8765".to_owned();
+        let mut daemon_url = std::env::var("LOOM_DAEMON_URL")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
         let mut daemon_token = default_daemon_auth_token()?;
-        let mut examples_dir = PathBuf::from("examples");
+        let mut raw_json = false;
         let mut index = 1;
 
         while index < args.len() {
@@ -171,20 +247,17 @@ impl CliOptions {
                 }
                 "--daemon-token" => {
                     index += 1;
-                    daemon_token = Some(
-                        args.get(index)
-                            .ok_or_else(|| anyhow!("--daemon-token requires a value"))?
-                            .trim()
-                            .to_owned(),
-                    )
-                    .filter(|token| !token.is_empty());
+                    let raw = args
+                        .get(index)
+                        .ok_or_else(|| anyhow!("--daemon-token requires a value"))?;
+                    daemon_token = if raw.trim().is_empty() {
+                        None
+                    } else {
+                        Some(normalize_daemon_auth_token(raw, "--daemon-token")?)
+                    };
                 }
-                "--examples-dir" => {
-                    index += 1;
-                    examples_dir = PathBuf::from(
-                        args.get(index)
-                            .ok_or_else(|| anyhow!("--examples-dir requires a value"))?,
-                    );
+                "--json" => {
+                    raw_json = true;
                 }
                 value => command.push(value.to_owned()),
             }
@@ -195,7 +268,7 @@ impl CliOptions {
             command,
             daemon_url,
             daemon_token,
-            examples_dir,
+            raw_json,
         })
     }
 }
@@ -204,18 +277,30 @@ fn http_get(base_url: &str, path: &str, bearer_token: Option<&str>) -> Result<St
     let endpoint = parse_http_url(base_url)?;
     let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
         .with_context(|| format!("connect daemon at {base_url}"))?;
+    stream.set_read_timeout(Some(DEFAULT_CLI_TIMEOUT))?;
+    stream.set_write_timeout(Some(DEFAULT_CLI_TIMEOUT))?;
     let auth_header = bearer_token
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
+    let host_header = if endpoint.host.contains(':') && !endpoint.host.starts_with('[') {
+        format!("[{}]:{}", endpoint.host, endpoint.port)
+    } else {
+        format!("{}:{}", endpoint.host, endpoint.port)
+    };
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {}:{}\r\n{auth_header}Connection: close\r\n\r\n",
-        endpoint.host, endpoint.port
+        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\n{auth_header}Connection: close\r\n\r\n",
     )?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    let mut response_bytes = Vec::new();
+    stream
+        .take((MAX_CLI_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut response_bytes)?;
+    if response_bytes.len() > MAX_CLI_RESPONSE_BYTES {
+        bail!("daemon response exceeded {MAX_CLI_RESPONSE_BYTES} bytes");
+    }
+    let response = String::from_utf8(response_bytes).context("daemon response is not UTF-8")?;
     let (head, body) = response
         .split_once("\r\n\r\n")
         .ok_or_else(|| anyhow!("malformed daemon response"))?;
@@ -232,108 +317,53 @@ struct HttpEndpoint {
 
 fn parse_http_url(base_url: &str) -> Result<HttpEndpoint> {
     let authority = base_url
+        .trim()
         .strip_prefix("http://")
         .ok_or_else(|| anyhow!("daemon URL must use http://"))?
         .split('/')
         .next()
         .ok_or_else(|| anyhow!("daemon URL is missing authority"))?;
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, rest) = bracketed
+            .split_once(']')
+            .ok_or_else(|| anyhow!("invalid IPv6 daemon authority"))?;
+        let port = match rest.strip_prefix(':') {
+            Some(port) => port.parse::<u16>()?,
+            None if rest.is_empty() => 80,
+            None => bail!("invalid IPv6 daemon port"),
+        };
+        return Ok(HttpEndpoint {
+            host: host.to_owned(),
+            port,
+        });
+    }
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (host.to_owned(), port.parse::<u16>()?),
         None => (authority.to_owned(), 80),
     };
+    if host.trim().is_empty() {
+        bail!("daemon URL host is empty");
+    }
     Ok(HttpEndpoint { host, port })
-}
-
-fn load_agent_catalog(examples_dir: &Path) -> Result<AgentCatalog> {
-    let mut catalog = AgentCatalog::default();
-    let agents_dir = examples_dir.join("agents");
-    if !agents_dir.exists() {
-        return Ok(catalog);
-    }
-
-    for entry in fs::read_dir(&agents_dir).with_context(|| format!("read {agents_dir:?}"))? {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("md") {
-            continue;
-        }
-        let markdown = fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
-        let spec =
-            AgentSpec::from_markdown(&markdown).with_context(|| format!("parse {path:?}"))?;
-        catalog.add(spec).with_context(|| format!("add {path:?}"))?;
-    }
-    Ok(catalog)
-}
-
-fn load_workflows(examples_dir: &Path) -> Result<Vec<WorkflowGraph>> {
-    let workflows_dir = examples_dir.join("workflows");
-    if !workflows_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut workflows = Vec::new();
-    for entry in fs::read_dir(&workflows_dir).with_context(|| format!("read {workflows_dir:?}"))? {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("yaml") {
-            continue;
-        }
-        let yaml = fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
-        let graph: WorkflowGraph =
-            serde_yaml::from_str(&yaml).with_context(|| format!("parse {path:?}"))?;
-        graph
-            .validate()
-            .with_context(|| format!("validate {path:?}"))?;
-        workflows.push(graph);
-    }
-    workflows.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(workflows)
-}
-
-fn run_workflow(graph: &WorkflowGraph) -> Result<loom_workflow::WorkflowRunSummary> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("create CLI workflow runtime")?;
-    runtime.block_on(async {
-        let store = InMemoryEventStore::default();
-        let mut executor = WorkflowExecutor::new(&store);
-        for actor_id in workflow_actor_ids(graph) {
-            executor = executor.with_actor(actor_id, StepOutcome::succeed("sample complete"));
-        }
-        executor
-            .run(SessionId::new(), graph)
-            .await
-            .context("execute workflow")
-    })
-}
-
-fn workflow_actor_ids(graph: &WorkflowGraph) -> Vec<ActorId> {
-    let mut actor_ids = Vec::new();
-    for node in graph.nodes.values() {
-        let WorkflowAction::Agent { actor_id } = &node.action;
-        if !actor_ids.contains(actor_id) {
-            actor_ids.push(actor_id.clone());
-        }
-    }
-    actor_ids
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
 
     #[test]
-    fn help_and_version_do_not_require_a_daemon_or_examples() {
+    fn help_and_version_do_not_require_a_daemon() {
         let mut help = Vec::new();
         run_cli_with_writer(["loom", "--help"], &mut help).expect("help command");
         let help = String::from_utf8(help).expect("help utf8");
         assert!(help.contains("Usage: loom"));
-        assert!(help.contains("agents list"));
+        assert!(help.contains("frameworks list"));
+        assert!(help.contains("arts list"));
         assert!(help.contains("workflows list"));
-        assert!(help.contains("run <workflow-id>"));
+        assert!(help.contains("ai status"));
 
         let mut version = Vec::new();
         run_cli_with_writer(["loom", "--version"], &mut version).expect("version command");
@@ -421,107 +451,56 @@ mod tests {
     }
 
     #[test]
-    fn agents_and_workflows_list_and_run_examples() {
-        let examples = temp_examples_dir();
-        fs::create_dir_all(examples.join("agents")).expect("agents dir");
-        fs::create_dir_all(examples.join("workflows")).expect("workflows dir");
-        fs::write(
-            examples.join("agents").join("planner.md"),
-            r#"---
-id: planner
-name: Planner
-scope: project
-tools:
-  allow: []
-  deny: []
----
-Plan the work.
-"#,
-        )
-        .expect("write agent");
-        fs::write(
-            examples.join("workflows").join("three-node-success.yaml"),
-            r#"id: sample.three_node
-entry_node: start
-nodes:
-  start:
-    id: start
-    action:
-      type: agent
-      actor_id: planner
-edges: []
-"#,
-        )
-        .expect("write workflow");
+    fn list_commands_query_daemon_control_plane_endpoints() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock daemon");
+        let address = listener.local_addr().expect("mock address");
+        let server = thread::spawn(move || {
+            for (expected_path, body) in [
+                (
+                    "GET /v1/frameworks HTTP/1.1",
+                    r#"{"frameworks":[{"id":"process","version":"1.0.0","ready":true}]}"#,
+                ),
+                (
+                    "GET /v1/workflows HTTP/1.1",
+                    r#"{"workflows":[{"id":"image-blend-workflow"}]}"#,
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().expect("accept list request");
+                let request = read_http_request(&mut socket);
+                assert!(request.starts_with(expected_path), "got {request:?}");
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .expect("write list response");
+            }
+        });
 
-        let examples_arg = examples.to_string_lossy().to_string();
-
-        let mut agents_output = Vec::new();
+        let url = format!("http://{address}");
+        let mut frameworks_out = Vec::new();
         run_cli_with_writer(
-            ["loom", "agents", "list", "--examples-dir", &examples_arg],
-            &mut agents_output,
+            ["loom", "frameworks", "list", "--daemon-url", &url],
+            &mut frameworks_out,
         )
-        .expect("agents list");
-        assert!(String::from_utf8(agents_output)
-            .expect("agents utf8")
-            .contains("planner"));
+        .expect("frameworks list");
+        assert!(String::from_utf8(frameworks_out)
+            .expect("utf8")
+            .contains("process\t1.0.0\tready=true"));
 
-        let mut workflows_output = Vec::new();
+        let mut workflows_out = Vec::new();
         run_cli_with_writer(
-            ["loom", "workflows", "list", "--examples-dir", &examples_arg],
-            &mut workflows_output,
+            ["loom", "workflows", "list", "--daemon-url", &url],
+            &mut workflows_out,
         )
         .expect("workflows list");
-        assert!(String::from_utf8(workflows_output)
-            .expect("workflows utf8")
-            .contains("sample.three_node"));
+        assert_eq!(
+            String::from_utf8(workflows_out).expect("utf8").trim(),
+            "image-blend-workflow"
+        );
 
-        let mut run_output = Vec::new();
-        run_cli_with_writer(
-            [
-                "loom",
-                "run",
-                "sample.three_node",
-                "--examples-dir",
-                &examples_arg,
-            ],
-            &mut run_output,
-        )
-        .expect("workflow run");
-        let run_output = String::from_utf8(run_output).expect("run utf8");
-        assert!(run_output.contains("succeeded"));
-        assert!(run_output.contains("start"));
-
-        fs::remove_dir_all(examples).expect("cleanup examples");
-    }
-
-    #[test]
-    fn workflows_list_reads_repo_example_fixture() {
-        let mut output = Vec::new();
-        let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let examples_arg = examples.to_string_lossy().to_string();
-
-        run_cli_with_writer(
-            ["loom", "workflows", "list", "--examples-dir", &examples_arg],
-            &mut output,
-        )
-        .expect("workflows list from repo examples");
-
-        assert!(String::from_utf8(output)
-            .expect("workflow output utf8")
-            .contains("sample.three_node"));
-    }
-
-    fn temp_examples_dir() -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "loom-cli-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        path
+        server.join().expect("mock server");
     }
 
     fn read_http_request(socket: &mut impl Read) -> String {

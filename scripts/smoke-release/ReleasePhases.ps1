@@ -167,8 +167,8 @@ function Invoke-LoomTokenizedReleaseSmoke {
         Assert-HttpStatus -Uri "$baseUrl/v1/invoke" -Method "Post" -ExpectedStatus 401 -Body @{
             requestId = "release-loom-token-unauthorized"
             caller = "hook"
-            capability = "brain.plan"
-            input = @{ goal = "tokenized release smoke unauthorized" }
+            capability = "loom.runtime.probe.v1"
+            input = @{ label = "tokenized release smoke unauthorized" }
         }
 
         $headers = @{ Authorization = "Bearer $tokenValue" }
@@ -184,8 +184,8 @@ function Invoke-LoomTokenizedReleaseSmoke {
         $invoke = Invoke-JsonPost -Uri "$baseUrl/v1/invoke" -Headers $headers -Body @{
             requestId = "release-loom-token-1"
             caller = "hook"
-            capability = "brain.plan"
-            input = @{ goal = "tokenized release smoke" }
+            capability = "loom.runtime.probe.v1"
+            input = @{ label = "tokenized release smoke" }
         }
         Assert-Equal "succeeded" $invoke.status "Tokenized Loom invoke status mismatch."
 

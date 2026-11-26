@@ -124,6 +124,8 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
     if method == "GET" {
         return path == "/v1/otter/connection-info"
             || path == "/v1/capabilities"
+            || path == "/v1/ai/status"
+            || path == "/v1/ai/models"
             || path == "/v1/surfaces/stream"
             || path.starts_with("/v1/surfaces/resources/")
             || path == "/v1/live/sessions"
@@ -133,7 +135,8 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
     if method != "POST" {
         return false;
     }
-    path == "/v1/surfaces/actions/cancel"
+    path == "/v1/ai/chat/completions"
+        || path == "/v1/surfaces/actions/cancel"
         || path == "/v1/live/sessions"
         || path.starts_with("/v1/live/sessions/")
         || path == "/v1/surfaces/attach"

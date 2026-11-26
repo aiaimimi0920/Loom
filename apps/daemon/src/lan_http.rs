@@ -25,9 +25,15 @@ fn allowed(method: &str, path: &str) -> bool {
         return true;
     }
     match (method, path) {
-        ("GET", "/v1/otter/identity" | "/v1/otter/connection-info" | "/v1/art/local/issuer") => {
-            true
-        }
+        (
+            "GET",
+            "/v1/otter/identity"
+            | "/v1/otter/connection-info"
+            | "/v1/art/local/issuer"
+            | "/v1/ai/status"
+            | "/v1/ai/models",
+        ) => true,
+        ("POST", "/v1/ai/chat/completions") => true,
         (
             "POST",
             "/v1/otter/connections/request"
@@ -275,16 +281,49 @@ fn read_request(stream: &mut impl Read, host: &str) -> Result<Request> {
     Ok(request)
 }
 
+fn loopback_forward_client(long_running: bool) -> Result<&'static reqwest::blocking::Client> {
+    static SHORT_CLIENT: std::sync::OnceLock<reqwest::blocking::Client> =
+        std::sync::OnceLock::new();
+    static LONG_CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    if long_running {
+        if let Some(client) = LONG_CLIENT.get() {
+            return Ok(client);
+        }
+        let built = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(65))
+            .build()?;
+        let _ = LONG_CLIENT.set(built);
+        Ok(LONG_CLIENT.get().expect("initialized LAN long client"))
+    } else {
+        if let Some(client) = SHORT_CLIENT.get() {
+            return Ok(client);
+        }
+        let built = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(8))
+            .build()?;
+        let _ = SHORT_CLIENT.set(built);
+        Ok(SHORT_CLIENT.get().expect("initialized LAN short client"))
+    }
+}
+
 fn forward(request: Request, backend: SocketAddr, ingress: &str) -> Result<(u16, Vec<u8>)> {
     ensure!(
         backend.ip().is_loopback(),
         "LAN backend must remain loopback"
     );
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(8))
-        .build()?;
+    let route_path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
+    let long_running = route_path == "/v1/ai/chat/completions"
+        || route_path == "/v1/surfaces/stream"
+        || route_path.ends_with("/events");
+    let client = loopback_forward_client(long_running)?;
     let mut call = client
         .request(
             request.method.parse()?,

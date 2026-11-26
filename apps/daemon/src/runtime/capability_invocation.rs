@@ -1,48 +1,30 @@
-// Core Brain and Tea handlers remain in-process registrations behind the shared dispatcher.
-fn invoke_brain_plan(
+// Core in-process capability handlers for Global AI Gateway relay and hub runtime probes.
+fn invoke_ai_chat(
     request: InvokeCapabilityRequest,
     run_store: &SharedRunStore,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
 ) -> Result<(u16, String)> {
     let InvokeCapabilityRequest {
         request_id, input, ..
     } = request;
-    let run_id = loom_core::RunId::new().to_string();
-    let goal = input
-        .get("goal")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let Some(goal) = goal else {
-        return invoke_error(
-            400,
-            Some(&request_id),
-            "invalid_input",
-            "brain.plan input.goal is required",
-            json!({
-                "capability": CAPABILITY_BRAIN_PLAN,
-            }),
-        );
+    let chat_payload = match build_ai_chat_payload(&input) {
+        Ok(payload) => payload,
+        Err(message) => {
+            return invoke_error(
+                400,
+                Some(&request_id),
+                "invalid_input",
+                &message,
+                json!({ "capability": CAPABILITY_AI_CHAT }),
+            )
+        }
     };
 
-    let constraints = input
-        .get("constraints")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let context = input.get("context").cloned();
+    let run_id = loom_core::RunId::new().to_string();
     let session_id = loom_core::SessionId::new().to_string();
     let mut run = json!({
         "id": run_id,
-        "capability": CAPABILITY_BRAIN_PLAN,
+        "capability": CAPABILITY_AI_CHAT,
         "loom_session_id": session_id,
         "status": "running",
         "input": input,
@@ -51,7 +33,7 @@ fn invoke_brain_plan(
     let started = match RunEventDraft::new(
         "run_started",
         json!({
-            "capability": CAPABILITY_BRAIN_PLAN,
+            "capability": CAPABILITY_AI_CHAT,
             "status": "running",
         }),
     ) {
@@ -68,21 +50,18 @@ fn invoke_brain_plan(
         }
     }
 
-    let planning = brain_planner.plan(BrainPlanRequest {
-        goal: goal.to_owned(),
-        constraints,
-        context,
-    });
-    match planning {
-        Ok(result) => {
-            let planner = json!({
-                "source": result.source.as_str(),
-                "model": result.model,
+    match ai_gateway.chat_completion(chat_payload) {
+        Ok(outcome) => {
+            let gateway_meta = json!({
+                "source": "gateway",
+                "model": outcome.model,
+                "requestId": outcome.request_id,
             });
             let output = json!({
-                "summary": result.summary,
-                "steps": result.steps,
-                "planner": planner,
+                "content": outcome.content,
+                "model": outcome.model,
+                "gateway": gateway_meta,
+                "response": outcome.response,
             });
             run["status"] = json!("succeeded");
             run["output"] = output.clone();
@@ -90,9 +69,9 @@ fn invoke_brain_plan(
             let completed = match RunEventDraft::new(
                 "capability_completed",
                 json!({
-                    "capability": CAPABILITY_BRAIN_PLAN,
+                    "capability": CAPABILITY_AI_CHAT,
                     "status": "succeeded",
-                    "planner": planner,
+                    "gateway": gateway_meta,
                 }),
             ) {
                 Ok(event) => event,
@@ -113,56 +92,68 @@ fn invoke_brain_plan(
                     "output": {
                         "runId": run_id,
                         "run": run,
-                        "summary": output["summary"].clone(),
-                        "steps": output["steps"].clone(),
-                        "planner": output["planner"].clone(),
+                        "content": output["content"].clone(),
+                        "model": output["model"].clone(),
+                        "gateway": output["gateway"].clone(),
+                        "response": output["response"].clone(),
                     }
                 }))?,
             ))
         }
         Err(error) => {
-            let planner_status: BrainPlannerStatus = brain_planner.status();
-            let planner = json!({
-                "source": planner_status.mode,
-                "model": planner_status.model,
+            let status_snapshot = ai_gateway.status();
+            let (http_status, code, public_message) = match &error {
+                AiGatewayRelayError::NotConfigured => (
+                    503,
+                    "ai_gateway_not_configured",
+                    "AI Gateway is not configured",
+                ),
+                AiGatewayRelayError::InvalidRequest(_) => (
+                    400,
+                    "invalid_input",
+                    "AI Gateway rejected the chat input",
+                ),
+                _ => (502, "ai_gateway_failed", "AI Gateway chat relay failed"),
+            };
+            let gateway_meta = json!({
+                "source": status_snapshot.mode,
+                "model": status_snapshot.model,
             });
             let run_error = json!({
-                "code": "gateway_planner_failed",
-                "message": "Gateway-backed planning failed",
+                "code": code,
+                "message": public_message,
                 "diagnostic": truncate_diagnostic(error.to_string(), 512),
             });
             run["status"] = json!("failed");
-            run["planner"] = planner.clone();
-            run["error"] = run_error.clone();
+            run["gateway"] = gateway_meta.clone();
+            run["error"] = run_error;
 
             let failed = match RunEventDraft::new(
                 "capability_failed",
                 json!({
-                    "capability": CAPABILITY_BRAIN_PLAN,
+                    "capability": CAPABILITY_AI_CHAT,
                     "status": "failed",
-                    "planner": planner,
-                    "error": {
-                        "code": "gateway_planner_failed",
-                    },
+                    "gateway": gateway_meta,
+                    "error": { "code": code },
                 }),
             ) {
                 Ok(event) => event,
-                Err(error) => return run_store_failed(error),
+                Err(store_err) => return run_store_failed(store_err),
             };
             let mut store = match lock_run_store(run_store) {
                 Ok(store) => store,
-                Err(error) => return run_store_failed(error),
+                Err(store_err) => return run_store_failed(store_err),
             };
-            if let Err(error) = store.transition_run(run, failed) {
-                return run_store_failed(error);
+            if let Err(store_err) = store.transition_run(run, failed) {
+                return run_store_failed(store_err);
             }
             invoke_error(
-                502,
+                http_status,
                 Some(&request_id),
-                "gateway_planner_failed",
-                "Gateway-backed planning failed",
+                code,
+                public_message,
                 json!({
-                    "capability": CAPABILITY_BRAIN_PLAN,
+                    "capability": CAPABILITY_AI_CHAT,
                     "runId": run_id,
                 }),
             )
@@ -170,120 +161,99 @@ fn invoke_brain_plan(
     }
 }
 
-fn invoke_tea_ticket_decompose(
+fn build_ai_chat_payload(input: &Value) -> std::result::Result<Value, String> {
+    let Some(object) = input.as_object() else {
+        return Err("ai.chat.v1 input must be a JSON object".to_owned());
+    };
+    let mut payload = serde_json::Map::new();
+    if let Some(model) = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        payload.insert("model".to_owned(), json!(model));
+    }
+    if let Some(messages) = object.get("messages").and_then(Value::as_array) {
+        if messages.is_empty() {
+            return Err("ai.chat.v1 input.messages must not be empty".to_owned());
+        }
+        payload.insert("messages".to_owned(), Value::Array(messages.clone()));
+    } else if let Some(prompt) = object
+        .get("prompt")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let system = object
+            .get("system")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("You are a helpful assistant connected through Loom.");
+        payload.insert(
+            "messages".to_owned(),
+            json!([
+                { "role": "system", "content": system },
+                { "role": "user", "content": prompt }
+            ]),
+        );
+    } else {
+        return Err("ai.chat.v1 requires input.prompt or input.messages".to_owned());
+    }
+    if let Some(temperature) = object.get("temperature") {
+        payload.insert("temperature".to_owned(), temperature.clone());
+    }
+    if let Some(response_format) = object.get("response_format") {
+        payload.insert("response_format".to_owned(), response_format.clone());
+    }
+    Ok(Value::Object(payload))
+}
+
+fn invoke_runtime_probe(
     request: InvokeCapabilityRequest,
     run_store: &SharedRunStore,
 ) -> Result<(u16, String)> {
-    let Some(ticket) = request.input.get("ticket").and_then(Value::as_object) else {
+    let label = request
+        .input
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(label) = label else {
         return invoke_error(
             400,
             Some(&request.request_id),
             "invalid_input",
-            "tea.ticket.decompose.v1 input.ticket is required",
-            json!({
-                "capability": CAPABILITY_TEA_TICKET_DECOMPOSE,
-            }),
+            "loom.runtime.probe.v1 input.label is required",
+            json!({ "capability": CAPABILITY_RUNTIME_PROBE }),
         );
     };
-    let ticket_title = ticket
-        .get("title")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("Tea ticket");
-    let ticket_description = ticket
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default();
-    let risk = if ticket_description.len() > 240 {
-        "high"
-    } else if ticket_description.len() < 12 {
-        "medium"
-    } else {
-        "medium"
-    };
-    let proposal_id = loom_core::RunId::new().to_string();
-    let proposal = json!({
-        "schema_version": 1,
-        "proposal_id": proposal_id,
-        "analysis": {
-            "intent": "engineering_work_order",
-            "target_components": ["Tea"],
-            "target_paths": [],
-            "constraints": [
-                "Loom must not mutate Tea ticket state directly",
-                "Tea validates, stores, and governs decomposition records"
-            ],
-            "acceptance_criteria": [
-                "analysis and plan are returned as a proposal",
-                "Tea commits accepted records into its own timeline",
-                "verification evidence is attached before human acceptance"
-            ],
-            "missing_context": if ticket_description.is_empty() {
-                json!(["ticket description is empty"])
-            } else {
-                json!([])
-            },
-            "risk_assessment": risk,
-            "confidence": 0.82,
-            "recommended_policy": "human_before_execute",
-            "recommended_workflow": "loom.tea_ticket_decompose.v1"
-        },
-        "plan": {
-            "summary": format!("Decompose Tea work order: {ticket_title}"),
-            "steps": [
-                {
-                    "id": "inspect-context",
-                    "title": "Inspect context",
-                    "description": "Read the Tea ticket snapshot, comments, policy, and available workspace context."
-                },
-                {
-                    "id": "propose-plan",
-                    "title": "Propose plan",
-                    "description": "Generate a bounded plan that Tea can validate and store before execution."
-                },
-                {
-                    "id": "validate",
-                    "title": "Validate",
-                    "description": "Define concrete verification commands and evidence requirements for human review."
-                }
-            ],
-            "required_tools": ["loom.run"],
-            "expected_artifacts": ["Tea analysis record", "Tea plan record", "Loom run evidence"],
-            "validation_strategy": ["Tea stores the returned analysis and plan", "Loom does not write Tea state directly"],
-            "rollback_strategy": ["leave the Tea ticket blocked with proposal evidence"],
-            "requires_approval_before_execute": true
-        },
-        "requires_human_review": true,
-        "notes": []
-    });
     let run_id = loom_core::RunId::new().to_string();
     let output = json!({
-        "proposal": proposal,
-        "summary": format!("Tea decomposition proposal prepared for {ticket_title}")
+        "summary": format!("Loom runtime probe completed for {label}"),
+        "label": label,
     });
     let run = json!({
         "id": run_id,
-        "capability": CAPABILITY_TEA_TICKET_DECOMPOSE,
+        "capability": CAPABILITY_RUNTIME_PROBE,
         "loom_session_id": loom_core::SessionId::new().to_string(),
         "status": "succeeded",
         "input": request.input,
-        "output": output.clone()
+        "output": output.clone(),
     });
-
     let events = match (
         RunEventDraft::new(
             "run_started",
             json!({
-                "capability": CAPABILITY_TEA_TICKET_DECOMPOSE,
+                "capability": CAPABILITY_RUNTIME_PROBE,
                 "status": "running",
             }),
         ),
         RunEventDraft::new(
             "capability_completed",
             json!({
-                "capability": CAPABILITY_TEA_TICKET_DECOMPOSE,
+                "capability": CAPABILITY_RUNTIME_PROBE,
                 "status": "succeeded",
             }),
         ),
@@ -306,8 +276,8 @@ fn invoke_tea_ticket_decompose(
             "output": {
                 "runId": run_id,
                 "run": run,
-                "proposal": output["proposal"].clone(),
                 "summary": output["summary"].clone(),
+                "label": output["label"].clone(),
             }
         }))?,
     ))

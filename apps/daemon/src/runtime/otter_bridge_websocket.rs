@@ -364,36 +364,65 @@ fn handle_otter_bridge_websocket_connection(
                     }
                     continue;
                 }
-                let mut intermediate_send_failed = false;
                 let mut recovery_channels: Option<Vec<String>> = None;
-                let mut emit_intermediate = |message: String| {
-                    if send_otter_bridge_message(
+                let result = if is_otter_art_execute_message(&text) {
+                    let Some(result) = wait_otter_art_execute(
                         &mut websocket,
-                        tungstenite::Message::Text(message),
-                    )
-                    .is_err()
-                    {
-                        intermediate_send_failed = true;
+                        &cancelled,
+                        &mut deferred,
+                        &shared_images,
+                        |emit_intermediate| {
+                            handle_otter_bridge_websocket_text_with_intermediate(
+                                &text,
+                                &mcp_servers,
+                                &tool_registry,
+                                &workflow_store,
+                                &settings,
+                                &shared_images,
+                                &framework_registry,
+                                &control_plane_root,
+                                &workflow_root,
+                                &run_store,
+                                Some(&surface_actions),
+                                emit_intermediate,
+                            )
+                        },
+                    ) else {
+                        break;
+                    };
+                    result
+                } else {
+                    let mut intermediate_send_failed = false;
+                    let mut emit_intermediate = |message: String| {
+                        if send_otter_bridge_message(
+                            &mut websocket,
+                            tungstenite::Message::Text(message),
+                        )
+                        .is_err()
+                        {
+                            intermediate_send_failed = true;
+                        }
+                    };
+                    let result = handle_otter_bridge_websocket_text_with_intermediate(
+                        &text,
+                        &mcp_servers,
+                        &tool_registry,
+                        &workflow_store,
+                        &settings,
+                        &shared_images,
+                        &framework_registry,
+                        &control_plane_root,
+                        &workflow_root,
+                        &run_store,
+                        Some(&surface_actions),
+                        &mut emit_intermediate,
+                    );
+                    if intermediate_send_failed {
+                        break;
                     }
+                    result
                 };
-                let result = handle_otter_bridge_websocket_text_with_intermediate(
-                    &text,
-                    &mcp_servers,
-                    &tool_registry,
-                    &workflow_store,
-                    &settings,
-                    &shared_images,
-                    &framework_registry,
-                    &control_plane_root,
-                    &workflow_root,
-                    &run_store,
-                    Some(&surface_actions),
-                    &mut emit_intermediate,
-                );
                 liveness.received(std::time::Instant::now());
-                if intermediate_send_failed {
-                    break;
-                }
                 if serde_json::from_str::<Value>(&text)
                     .ok()
                     .and_then(|value| {

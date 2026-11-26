@@ -19,7 +19,7 @@ fn cloud_actions_have_bounded_network_budget_without_extending_local_routes() {
         Duration::from_secs(120)
     );
     for path in [
-        "/v1/runs",
+        "/v1/workflows",
         "/v1/asset-library/download/other",
         "/v1/asset-library/install/other",
         "/v1/naccount/unknown",

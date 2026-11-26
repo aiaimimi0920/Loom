@@ -330,9 +330,11 @@ fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
     let tools = ToolRegistry::new(root.join("tools"));
     let frameworks = FrameworkRegistry::new(&root);
 
+    let ai_gateway = build_ai_gateway(AiGatewayConfig::Unconfigured, None).unwrap();
+
     let (status, body) = support_bundle(
         "/v1/support-bundle?runId=run-support",
-        &HookSettings::default(),
+        &ai_gateway,
         &run_store,
         run_store_status,
         &tools,
@@ -366,7 +368,7 @@ fn diagnostics_and_support_bundle_redact_secrets_and_require_existing_runs() {
 
     let (status, missing) = support_bundle(
         "/v1/support-bundle?runId=missing-run",
-        &HookSettings::default(),
+        &ai_gateway,
         &run_store,
         run_store_status,
         &tools,

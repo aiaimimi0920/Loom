@@ -1,6 +1,6 @@
 // Loom daemon tests fragment 11; included into the shared crate test module.
 #[test]
-fn daemon_serves_probes_while_brain_plan_is_blocked() {
+fn daemon_serves_probes_while_ai_gateway_is_blocked() {
     let entered = Arc::new((Mutex::new(false), Condvar::new()));
     let release = Arc::new((Mutex::new(false), Condvar::new()));
     let mut daemon =
@@ -8,7 +8,7 @@ fn daemon_serves_probes_while_brain_plan_is_blocked() {
             .expect("bind daemon");
     Arc::get_mut(&mut daemon.runtime)
         .expect("exclusive daemon runtime")
-        .brain_planner = Arc::new(BlockingBrainPlanner {
+        .ai_gateway = Arc::new(BlockingAiGateway {
         entered: Arc::clone(&entered),
         release: Arc::clone(&release),
     });
@@ -24,13 +24,13 @@ fn daemon_serves_probes_while_brain_plan_is_blocked() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"concurrent-plan","caller":"test","capability":"brain.plan","input":{"goal":"block planner"}}"#,
+                    r#"{"requestId":"concurrent-ai","caller":"test","capability":"ai.chat.v1","input":{"prompt":"block gateway"}}"#,
                 ),
             )
         });
     assert!(
         wait_for_test_gate(&entered, Duration::from_millis(750)),
-        "planner did not enter before the deadline"
+        "AI Gateway did not enter before the deadline"
     );
 
     let probes_rx = fixture.spawn_client(move || {
@@ -53,7 +53,7 @@ fn daemon_serves_probes_while_brain_plan_is_blocked() {
     fixture.finish().expect("serve");
     assert!(
         probes_returned_while_blocked,
-        "health and status did not return while planning was blocked"
+        "health and status did not return while AI Gateway was blocked"
     );
     assert!(health.starts_with("HTTP/1.1 200 OK"));
     assert!(status.starts_with("HTTP/1.1 200 OK"));
@@ -69,7 +69,7 @@ fn daemon_runs_approved_capabilities_concurrently() {
             .expect("bind daemon");
     Arc::get_mut(&mut daemon.runtime)
         .expect("exclusive daemon runtime")
-        .brain_planner = Arc::new(CountingBlockingBrainPlanner {
+        .ai_gateway = Arc::new(CountingBlockingAiGateway {
         entered: Arc::clone(&entered),
         release: Arc::clone(&release),
     });
@@ -85,7 +85,7 @@ fn daemon_runs_approved_capabilities_concurrently() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"overlap-first","caller":"test","capability":"brain.plan","input":{"goal":"overlap first"}}"#,
+                    r#"{"requestId":"overlap-first","caller":"test","capability":"ai.chat.v1","input":{"prompt":"overlap first"}}"#,
                 ),
             )
         });
@@ -95,18 +95,18 @@ fn daemon_runs_approved_capabilities_concurrently() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"overlap-second","caller":"test","capability":"brain.plan","input":{"goal":"overlap second"}}"#,
+                    r#"{"requestId":"overlap-second","caller":"test","capability":"ai.chat.v1","input":{"prompt":"overlap second"}}"#,
                 ),
             )
         });
 
     let (entered_lock, entered_signal) = &*entered;
-    let entered_count = entered_lock.lock().expect("read planner entries");
+    let entered_count = entered_lock.lock().expect("read gateway entries");
     let (entered_count, _) = entered_signal
         .wait_timeout_while(entered_count, Duration::from_millis(750), |count| {
             *count < 2
         })
-        .expect("wait planner entries");
+        .expect("wait gateway entries");
     let overlapped = *entered_count >= 2;
     drop(entered_count);
 
@@ -133,7 +133,7 @@ fn daemon_returns_busy_when_request_queue_is_full() {
             .expect("bind daemon");
     let inserted_runs = Arc::new(AtomicUsize::new(0));
     let runtime = Arc::get_mut(&mut daemon.runtime).expect("exclusive daemon runtime");
-    runtime.brain_planner = Arc::new(BlockingBrainPlanner {
+    runtime.ai_gateway = Arc::new(BlockingAiGateway {
         entered: Arc::clone(&entered),
         release: Arc::clone(&release),
     });
@@ -148,17 +148,17 @@ fn daemon_returns_busy_when_request_queue_is_full() {
     fixture.add_release_gate(Arc::clone(&release));
 
     let first_body =
-            r#"{"requestId":"queue-first","caller":"test","capability":"brain.plan","input":{"goal":"queue first"}}"#
+            r#"{"requestId":"queue-first","caller":"test","capability":"ai.chat.v1","input":{"prompt":"queue first"}}"#
                 .to_owned();
     let first_rx =
         fixture.spawn_client(move || http_request(port, "POST", "/v1/invoke", Some(&first_body)));
     assert!(
         wait_for_test_gate(&entered, Duration::from_millis(750)),
-        "planner did not enter before the deadline"
+        "AI Gateway did not enter before the deadline"
     );
 
     let second_body =
-            r#"{"requestId":"queue-second","caller":"test","capability":"brain.plan","input":{"goal":"queue second"}}"#
+            r#"{"requestId":"queue-second","caller":"test","capability":"ai.chat.v1","input":{"prompt":"queue second"}}"#
                 .to_owned();
     let second_rx =
         fixture.spawn_client(move || http_request(port, "POST", "/v1/invoke", Some(&second_body)));
@@ -170,7 +170,7 @@ fn daemon_returns_busy_when_request_queue_is_full() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"queue-third","caller":"test","capability":"brain.plan","input":{"goal":"queue third"}}"#,
+                    r#"{"requestId":"queue-third","caller":"test","capability":"ai.chat.v1","input":{"prompt":"queue third"}}"#,
                 ),
             )
         });
@@ -228,7 +228,7 @@ fn daemon_shutdown_drains_active_and_queued_requests() {
         LoomDaemon::bind(DaemonConfig::localhost(0).with_bounded_request_executor(1, 1))
             .expect("bind daemon");
     let runtime = Arc::get_mut(&mut daemon.runtime).expect("exclusive daemon runtime");
-    runtime.brain_planner = Arc::new(BlockingBrainPlanner {
+    runtime.ai_gateway = Arc::new(BlockingAiGateway {
         entered: Arc::clone(&entered),
         release: Arc::clone(&release),
     });
@@ -251,13 +251,13 @@ fn daemon_shutdown_drains_active_and_queued_requests() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"drain-first","caller":"test","capability":"brain.plan","input":{"goal":"drain first"}}"#,
+                    r#"{"requestId":"drain-first","caller":"test","capability":"ai.chat.v1","input":{"prompt":"drain first"}}"#,
                 ),
             )
         });
     assert!(
         wait_for_test_gate(&entered, Duration::from_millis(750)),
-        "planner did not enter before the deadline"
+        "AI Gateway did not enter before the deadline"
     );
 
     let second_rx = fixture.spawn_client(move || {
@@ -266,7 +266,7 @@ fn daemon_shutdown_drains_active_and_queued_requests() {
                 "POST",
                 "/v1/invoke",
                 Some(
-                    r#"{"requestId":"drain-second","caller":"test","capability":"brain.plan","input":{"goal":"drain second"}}"#,
+                    r#"{"requestId":"drain-second","caller":"test","capability":"ai.chat.v1","input":{"prompt":"drain second"}}"#,
                 ),
             )
         });
@@ -313,7 +313,7 @@ fn daemon_returns_shutting_down_for_request_accepted_before_shutdown() {
     client
         .set_read_timeout(Some(Duration::from_secs(3)))
         .expect("set client timeout");
-    let body = r#"{"requestId":"shutdown-race","caller":"test","capability":"brain.plan","input":{"goal":"shutdown race"}}"#;
+    let body = r#"{"requestId":"shutdown-race","caller":"test","capability":"loom.runtime.probe.v1","input":{"label":"shutdown race"}}"#;
     write!(
             client,
             "POST /v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TEST_DAEMON_AUTH_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

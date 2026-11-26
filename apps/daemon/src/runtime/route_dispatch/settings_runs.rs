@@ -2,10 +2,9 @@
 #[allow(clippy::too_many_arguments, unused_variables)]
 fn route_settings_runs(
     request: &ParsedHttpRequest,
-    hook_settings: &HookSettings,
     run_store: &SharedRunStore,
     run_store_status: RunStoreStatus,
-    brain_planner: &SharedBrainPlanner,
+    ai_gateway: &SharedAiGateway,
     config_registry: &ConfigRegistry,
     config_store: &FileDocumentStore,
     mcp_servers: &SharedMcpServerStore,
@@ -140,7 +139,6 @@ fn route_settings_runs(
             surface_actions,
         ),
         ("POST", "/v1/hook-bridge/stop") => stop_otter_bridge(hook_bridge, shared_images),
-        ("POST", "/v1/runs") => start_tea_run(&request.body, run_store),
         ("GET", path) if execution_diagnostics_path_id(path).is_some() => execution_diagnostics(
             execution_diagnostics_path_id(path).expect("checked path"),
             run_store,

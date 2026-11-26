@@ -1,9 +1,9 @@
 {
   "requestId": "loom-request-1",
   "caller": "hook",
-  "capability": "brain.plan",
+  "capability": "loom.runtime.probe.v1",
   "input": {
-    "goal": "release smoke",
+    "label": "release smoke",
     "constraints": [
       "Otter Talk Loom"
     ]

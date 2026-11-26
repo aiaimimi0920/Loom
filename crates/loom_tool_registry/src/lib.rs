@@ -23,6 +23,7 @@ mod private_store;
 mod test_support;
 mod tool_registry;
 
+pub use framework_process::set_default_control_plane_root;
 pub use tool_registry::{
     execute_tool, execute_tool_with_timeout, execute_tool_with_timeout_and_cancellation,
     prepare_tool_arguments, ToolDefinition, ToolExecution, ToolRegistry, ToolRegistryError,

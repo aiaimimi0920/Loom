@@ -105,14 +105,21 @@ fn request_concurrency_classification_is_conservative() {
         ("GET", "/health", None),
         ("GET", "/status", None),
         ("GET", "/v1/capabilities", None),
+        ("GET", "/v1/ai/status", None),
+        ("GET", "/v1/ai/models", None),
         ("GET", "/v1/hook-bridge/canvas", None),
         ("GET", "/v1/hook-bridge/canvas/nodes/capture/preview", None),
         ("GET", "/v1/surfaces/stream", None),
         ("GET", "/v1/surfaces/stream?since=7", None),
+        ("GET", "/v1/live/sessions/session-1/events", None),
         ("GET", "/v1/runs/run-1", None),
         ("GET", "/v1/runs/run-1/events", None),
-        ("POST", "/v1/invoke", Some("brain.plan")),
-        ("POST", "/v1/invoke", Some("tea.ticket.decompose.v1")),
+        ("POST", "/v1/ai/chat/completions", None),
+        ("POST", "/v1/asset-library/download", None),
+        ("POST", "/v1/asset-library/download-control", None),
+        ("POST", "/v1/invoke", Some("ai.chat.v1")),
+        ("POST", "/v1/invoke", Some("loom.runtime.probe.v1")),
+        ("POST", "/v1/invoke", Some("ocr.recognize.v1")),
     ];
     for (method, path, capability) in concurrent {
         assert_eq!(
@@ -126,7 +133,6 @@ fn request_concurrency_classification_is_conservative() {
         ("GET", "/v1/workflows", None),
         ("PUT", "/v1/workflows/workflow-1", None),
         ("POST", "/v1/tools/tool-1/execute", None),
-        ("POST", "/v1/invoke", Some("future.capability")),
     ];
     for (method, path, capability) in serialized {
         assert_eq!(
@@ -187,27 +193,29 @@ fn daemon_reports_explicit_sqlite_run_store() {
 }
 
 #[test]
-fn daemon_reports_configured_gateway_brain_planner_without_auth_token() {
-    let config = DaemonConfig::localhost(0).with_brain_planner(
-        brain_plan::BrainPlannerConfig::Gateway(brain_plan::GatewayPlannerConfig {
-            base_url: "http://127.0.0.1:4200".to_owned(),
+fn daemon_reports_configured_ai_gateway_without_auth_token() {
+    let config = DaemonConfig::localhost(0).with_ai_gateway(AiGatewayConfig::Gateway(
+        AiGatewayEndpointConfig {
+            base_url: "http://192.168.1.50:4200".to_owned(),
             auth_token: Some("do-not-expose".to_owned()),
-            model: "test-model".to_owned(),
+            default_model: Some("test-model".to_owned()),
             timeout: Duration::from_secs(12),
-        }),
-    );
-    let root = unique_temp_dir("status-gateway-brain-planner");
+        },
+    ));
+    let root = unique_temp_dir("status-ai-gateway");
     let runtime = test_daemon_runtime_from_config(&root, config);
     let status = expect_json_text_route_response(
         route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
         200,
     );
 
-    assert_eq!(status["brain_planner"]["mode"], "gateway");
-    assert_eq!(status["brain_planner"]["configured"], true);
-    assert_eq!(status["brain_planner"]["model"], "test-model");
-    assert_eq!(status["brain_planner"]["timeout_seconds"], 12);
-    assert!(status["brain_planner"].get("auth_token").is_none());
+    assert_eq!(status["ai_gateway"]["mode"], "gateway");
+    assert_eq!(status["ai_gateway"]["configured"], true);
+    assert_eq!(status["ai_gateway"]["origin_kind"], "lan");
+    assert_eq!(status["ai_gateway"]["model"], "test-model");
+    assert_eq!(status["ai_gateway"]["timeout_seconds"], 12);
+    assert_eq!(status["ai_gateway"]["has_token"], true);
+    assert!(status["ai_gateway"].get("auth_token").is_none());
     assert!(!status.to_string().contains("do-not-expose"));
     fs::remove_dir_all(root).expect("cleanup");
 }
@@ -218,12 +226,12 @@ fn daemon_rejects_invalid_gateway_timeout_configuration() {
     values.insert("LOOM_GATEWAY_MODEL".to_owned(), "test-model".to_owned());
     values.insert("LOOM_GATEWAY_TIMEOUT_SECS".to_owned(), "301".to_owned());
 
-    let error = brain_plan::BrainPlannerConfig::from_lookup(|name| values.get(name).cloned())
+    let error = ai_gateway::AiGatewayConfig::from_lookup(|name| values.get(name).cloned())
         .expect_err("invalid timeout must be rejected");
 
     assert_eq!(
         error,
-        brain_plan::BrainPlannerConfigError::TimeoutOutOfRange(301)
+        ai_gateway::AiGatewayConfigError::TimeoutOutOfRange(301)
     );
 }
 
@@ -245,78 +253,114 @@ fn daemon_ignores_empty_probe_before_serving_real_request() {
 }
 
 #[test]
-fn status_reports_otter_settings_summary() {
-    let hook_settings = loom_hooks::HookSettings::enabled(vec![
-        loom_hooks::HookRule::new(loom_hooks::HookEventKind::RunStarted)
-            .with_target(loom_hooks::HookTarget::memory("runs")),
-        loom_hooks::HookRule::new(loom_hooks::HookEventKind::RunStopped)
-            .with_target(loom_hooks::HookTarget::memory("finished")),
-    ]);
-    let root = unique_temp_dir("status-otter-settings-summary");
-    let runtime = test_daemon_runtime_from_config(
-        &root,
-        DaemonConfig::localhost(0).with_hook_settings(hook_settings),
+fn live_session_event_long_polls_do_not_starve_request_workers() {
+    let _guard = lock_ignoring_poison(&ENV_LOCK);
+    let root = unique_temp_dir("live-long-poll-executor-isolation");
+    let daemon = LoomDaemon::bind(
+        DaemonConfig::localhost(0)
+            .with_bounded_request_executor(1, 2)
+            .with_control_plane_root(&root),
+    )
+    .expect("bind daemon");
+    let port = daemon.local_addr().expect("address").port();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
+
+    let created = http_json_post(
+        port,
+        "/v1/live/sessions",
+        r#"{"sourceDeviceId":"source-dev","viewerDeviceId":"viewer-dev"}"#,
     );
-    let status = expect_json_text_route_response(
-        route_request(&runtime, &parsed_request("GET", "/status", &[], None)),
+    let session_id = created["session"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    let s1 = session_id.clone();
+    let s2 = session_id.clone();
+    let poll_one = thread::spawn(move || {
+        http_get(
+            port,
+            &format!("/v1/live/sessions/{s1}/events?after=1&timeoutMs=2500"),
+        )
+    });
+    let poll_two = thread::spawn(move || {
+        http_get(
+            port,
+            &format!("/v1/live/sessions/{s2}/events?after=1&timeoutMs=2500"),
+        )
+    });
+    thread::sleep(Duration::from_millis(200));
+
+    let started = Instant::now();
+    let workflows = http_get(port, "/v1/workflows");
+    let waited = started.elapsed();
+
+    let r1 = poll_one.join().expect("poll one");
+    let r2 = poll_two.join().expect("poll two");
+    shutdown_tx.send(()).expect("shutdown");
+    server.join().expect("server").expect("serve");
+    let _ = fs::remove_dir_all(root);
+
+    assert!(workflows.starts_with("HTTP/1.1 200 OK"));
+    assert!(r1.starts_with("HTTP/1.1 200 OK"));
+    assert!(r2.starts_with("HTTP/1.1 200 OK"));
+    assert!(
+        waited < Duration::from_millis(1_200),
+        "ordinary request waited {waited:?} behind parked Live event long-polls"
+    );
+}
+
+#[test]
+fn ai_gateway_config_hot_reloads_and_persists_token_privately() {
+    let root = unique_temp_dir("ai-gateway-hot-reload");
+    let runtime = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+
+    let updated = expect_json_text_route_response(
+        route_request(
+            &runtime,
+            &parsed_request(
+                "PUT",
+                "/v1/ai/config",
+                &[],
+                Some(
+                    r#"{
+                        "enabled": true,
+                        "baseUrl": "http://192.168.1.88:4200",
+                        "defaultModel": "qwen-lan",
+                        "timeoutSeconds": 25,
+                        "authToken": "lan-gateway-secret-token"
+                    }"#,
+                ),
+            ),
+        ),
         200,
     );
+    assert_eq!(updated["configured"], true);
+    assert_eq!(updated["origin_kind"], "lan");
+    assert_eq!(updated["model"], "qwen-lan");
+    assert_eq!(updated["has_token"], true);
+    assert!(!updated.to_string().contains("lan-gateway-secret-token"));
 
-    assert_eq!(status["hooks"]["enabled"], true);
-    assert_eq!(status["hooks"]["ruleCount"], 2);
-    assert_eq!(status["hooks"]["targetCount"], 2);
-    fs::remove_dir_all(root).expect("cleanup");
+    let persisted_settings =
+        fs::read_to_string(root.join("settings").join("ai-gateway.json")).expect("settings json");
+    assert!(!persisted_settings.contains("lan-gateway-secret-token"));
+
+    drop(runtime);
+    let reloaded = test_daemon_runtime_from_config(&root, DaemonConfig::localhost(0));
+    let status = expect_json_text_route_response(
+        route_request(&reloaded, &parsed_request("GET", "/v1/ai/status", &[], None)),
+        200,
+    );
+    assert_eq!(status["configured"], true);
+    assert_eq!(status["origin_kind"], "lan");
+    assert_eq!(status["has_token"], true);
+    drop(reloaded);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn daemon_serves_tea_run_contract() {
-    let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
-    let address = daemon.local_addr().expect("local address");
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let server = thread::spawn(move || daemon.serve_until(shutdown_rx).expect("serve daemon"));
-
-    let ticket_id = "11111111-1111-4111-8111-111111111111";
-    let run_body = http_post(
-        address.port(),
-        "/v1/runs",
-        &format!(
-            r#"{{
-                    "ticket": {{
-                        "id": "{ticket_id}",
-                        "title": "Tea integration smoke",
-                        "description": "Run a Tea-created work order through Loom."
-                    }}
-                }}"#
-        ),
-    );
-    assert!(run_body.contains("\"ticket_id\":\"11111111-1111-4111-8111-111111111111\""));
-    assert!(run_body.contains("\"status\":\"succeeded\""));
-    assert!(run_body.contains("\"loom_session_id\""));
-    assert!(run_body.contains("loom daemon run completed"));
-
-    let run: serde_json::Value = serde_json::from_str(&run_body).expect("run json");
-    let run_id = run["id"].as_str().expect("run id");
-
-    let stopped = http_post(
-        address.port(),
-        &format!("/v1/runs/{run_id}/stop"),
-        &format!(r#"{{"run":{run_body}}}"#),
-    );
-    assert!(stopped.contains("\"status\":\"stopped\""));
-
-    let retrying = http_post(
-        address.port(),
-        &format!("/v1/runs/{run_id}/retry"),
-        &format!(r#"{{"run":{run_body}}}"#),
-    );
-    assert!(retrying.contains("\"status\":\"retrying\""));
-
-    shutdown_tx.send(()).expect("shutdown");
-    server.join().expect("server thread");
-}
-
-#[test]
-fn daemon_lists_brain_plan_capability() {
+fn daemon_lists_core_capabilities() {
     let daemon = LoomDaemon::bind(DaemonConfig::localhost(0)).expect("bind daemon");
     let address = daemon.local_addr().expect("local address");
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
@@ -324,22 +368,16 @@ fn daemon_lists_brain_plan_capability() {
 
     let response = http_json_get(address.port(), "/v1/capabilities");
 
-    assert_eq!(response["capabilities"][0]["id"], "brain.plan");
+    assert_eq!(response["capabilities"][0]["id"], "ai.chat.v1");
     assert_eq!(response["capabilities"][0]["mode"], "run");
-    assert!(response["capabilities"][0]["description"]
-        .as_str()
-        .expect("description")
-        .contains("plan"));
     let capability_ids = response["capabilities"]
         .as_array()
         .expect("capabilities")
         .iter()
         .map(|capability| capability["id"].as_str().expect("capability id").to_owned())
         .collect::<Vec<_>>();
-    assert!(capability_ids.contains(&"brain.plan".to_owned()));
-    assert!(capability_ids.contains(&"tea.ticket.decompose.v1".to_owned()));
-    assert!(capability_ids.contains(&"tea.ticket.execute.v1".to_owned()));
-    assert!(capability_ids.contains(&"tea.ticket.review.v1".to_owned()));
+    assert!(capability_ids.contains(&"ai.chat.v1".to_owned()));
+    assert!(capability_ids.contains(&"loom.runtime.probe.v1".to_owned()));
 
     shutdown_tx.send(()).expect("shutdown");
     server.join().expect("server thread");

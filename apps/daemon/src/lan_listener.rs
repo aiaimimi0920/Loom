@@ -43,6 +43,8 @@ pub(crate) struct View {
     error: Option<String>,
 }
 
+const MAX_LAN_WORKERS: usize = 32;
+
 pub(crate) struct Server {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -90,11 +92,15 @@ impl Server {
                         }
                     }
                     match listener.accept() {
-                        Ok((tcp, peer)) if workers.len() < 4 && peer.ip().is_ipv4() => {
+                        Ok((tcp, peer)) if peer.ip().is_ipv4() => {
                             let std::net::IpAddr::V4(ip) = peer.ip() else {
                                 continue;
                             };
                             if !ip.is_private() && !ip.is_loopback() {
+                                continue;
+                            }
+                            if workers.len() >= MAX_LAN_WORKERS {
+                                let _ = tcp.shutdown(Shutdown::Both);
                                 continue;
                             }
                             let Ok(interrupt) = tcp.try_clone() else {
@@ -200,9 +206,8 @@ impl Manager {
 
     // Registry owns Manager. A strong runtime here would create a permanent ownership cycle.
     pub fn bind_runtime(&self, runtime: Weak<crate::DaemonRuntime>) -> Result<()> {
-        self.runtime
-            .set(runtime)
-            .map_err(|_| anyhow::anyhow!("LAN runtime already bound"))
+        let _ = self.runtime.set(runtime);
+        Ok(())
     }
 
     pub fn endpoint(&self) -> Option<String> {

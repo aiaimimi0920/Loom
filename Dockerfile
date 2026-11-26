@@ -9,7 +9,6 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY apps ./apps
 COPY crates ./crates
-COPY examples ./examples
 COPY protocol ./protocol
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

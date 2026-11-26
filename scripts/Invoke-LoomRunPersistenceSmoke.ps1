@@ -340,13 +340,12 @@ try {
     $invoke = Invoke-JsonPost -Uri "$firstBaseUrl/v1/invoke" -Body ([ordered]@{
         requestId = "run-persistence-smoke"
         caller = "release-smoke"
-        capability = "brain.plan"
+        capability = "loom.runtime.probe.v1"
         input = [ordered]@{
-            goal = "Persist packaged Loom run evidence across daemon restart"
-            constraints = @("do not replay interrupted side effects")
+            label = "Persist packaged Loom run evidence across daemon restart"
         }
     })
-    Assert-Equal "succeeded" ([string]$invoke.status) "Daemon A brain.plan invoke failed."
+    Assert-Equal "succeeded" ([string]$invoke.status) "Daemon A runtime probe invoke failed."
     $runId = [string]$invoke.output.runId
     Assert-True (-not [string]::IsNullOrWhiteSpace($runId)) "Daemon A invoke returned no runId."
     $firstRun = Invoke-JsonGet -Uri "$firstBaseUrl/v1/runs/$runId"
