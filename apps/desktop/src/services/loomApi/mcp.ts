@@ -1,4 +1,5 @@
 // MCP server lifecycle, registry, test, and call clients.
+import { uiText } from "../../i18n/index.ts";
 import type { McpRegistryResponse } from "../mcpMarketplace.ts";
 import type {
   LoomMcpCallToolResponse,
@@ -27,7 +28,7 @@ export async function installMcpServerPackage(
   const response = await postJson<{ server?: LoomMcpServer }>(baseUrl, "/v1/mcp/servers/install", {
     zipBase64,
   });
-  if (!response.server) throw new Error("Loom 本地服务没有返回已安装的 MCP 服务。");
+  if (!response.server) throw new Error(uiText("mcp.api.missingInstalledServer"));
   return response.server;
 }
 
@@ -41,7 +42,7 @@ export async function setMcpServerEnabled(
     `/v1/mcp/servers/${encodeURIComponent(serverId)}/enabled`,
     { enabled },
   );
-  if (!response.server) throw new Error("Loom 本地服务没有返回 MCP 服务状态。");
+  if (!response.server) throw new Error(uiText("mcp.api.missingServerStatus"));
   return response.server;
 }
 
@@ -56,7 +57,7 @@ export async function updateMcpServerCredentials(
     `/v1/mcp/servers/${encodeURIComponent(serverId)}/credentials`,
     { values, clear },
   );
-  if (!response.server) throw new Error("Loom 本地服务没有返回 MCP 凭据状态。");
+  if (!response.server) throw new Error(uiText("mcp.api.missingCredentialStatus"));
   return response.server;
 }
 

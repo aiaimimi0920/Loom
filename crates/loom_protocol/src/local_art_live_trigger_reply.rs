@@ -1,4 +1,4 @@
-//! 单次领取回执；Acknowledged 仅是宿主报告，不等价于 canonical 保存或远端呈现。
+//! Single-claim delivery receipt; `Acknowledged` is only a host report and is not equivalent to canonical persistence or remote presentation.
 use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -66,6 +66,6 @@ pub struct Reply {
     pub reason: Option<StopReason>,
     pub delivery_id: Option<String>,
     pub receipt: Option<Receipt>,
-    /// 只有第一次 Claim 可返回；Inspect/重复 Claim/ACK 从不重新交付 payload。
+    /// Returned only on the first `Claim`; `Inspect`, duplicate `Claim`, and `Ack` never redeliver the payload.
     pub delivery: Option<Delivery>,
 }

@@ -1,4 +1,4 @@
-// 只声明当前原生Canvas绘制子集；drawImage只收宿主已安装的不可伪造图片句柄。
+// Declares only the supported native Canvas 2D subset; drawImage accepts exclusively host-installed unforgeable ArtImage handles.
 import type { ArtCanvas, ArtImage } from "./native-dom";
 export interface ArtCanvasContext {
     readonly canvas: ArtCanvas;

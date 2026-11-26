@@ -1,7 +1,7 @@
 // End-to-end Milestone M4 integration tests:
 // 1. Outbound Loom MCP Server (`POST /mcp`) + Scoped MCP Share Tokens + Public/Tunnel Host support
 // 2. Two-level Host -> App Sessions Device Hierarchy (`GET /v1/devices/hierarchy`)
-// 3. Multi-device `Otter 同步` live state + Workflow History Archive & Restore
+// 3. Multi-device Otter Sync live state + Workflow History Archive & Restore
 // 4. NAccount 3-tier Internet Cloud Relay (`Otter -> Loom 1 -> Cloud Relay -> Loom 2 -> Otter` + MCP tunnel)
 // 5. Schema-driven Companion App Settings Hub (`/v1/configuration/companion-apps/*`)
 

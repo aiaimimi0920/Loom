@@ -152,7 +152,7 @@ pub(super) fn daemon_path_mismatch_warning(current_exe: &Path, status: &Value) -
         return None;
     }
     Some(format!(
-        "检测到 127.0.0.1:8765 上运行的 Loom daemon 不是当前包自带的版本：当前 Loom 期望 `{}`, 但实际连接到 `{}`。这会让执行请求仍然落到旧 daemon 上，请先关闭旧 daemon 再重启当前包。",
+        "Detected a Loom daemon on 127.0.0.1:8765 that does not match the bundled version: Loom expected `{}`, but connected to `{}`. Execution requests would still hit the stale daemon; stop the stale daemon and restart this package.",
         expected.display(),
         actual.display()
     ))

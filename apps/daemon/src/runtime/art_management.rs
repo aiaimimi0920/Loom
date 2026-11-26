@@ -65,7 +65,7 @@ fn build_art_management_response(
     let tool = tool_registry
         .get_tool(art_id)
         .map_err(|error| (500, "tool_registry", error.to_string()))?
-        .ok_or_else(|| (404, "tool_not_found", format!("Art `{art_id}` 不存在")))?;
+        .ok_or_else(|| (404, "tool_not_found", format!("Art `{art_id}` does not exist")))?;
     let identity = tool.qualified_id();
     let mut settings = ArtSettingsStore::new(control_plane_root)
         .get(&identity)
@@ -165,7 +165,7 @@ fn put_art_management_settings(
         Ok(None) => {
             return structured_error(
                 404,
-                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` 不存在") }),
+                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` does not exist") }),
             )
         }
         Err(error) => return tool_registry_error_response(error),
@@ -186,7 +186,7 @@ fn put_art_management_settings(
             403,
             json!({
                 "code": "art_identity_read_only",
-                "message": "其他发布者的 Art 名称和描述不可修改",
+                "message": "Name and description of Arts from other publishers cannot be modified",
             }),
         );
     }
@@ -217,7 +217,7 @@ fn put_art_management_settings(
             .find(|id| secret_parameters.contains(id.as_str()))
         {
             return invalid_request(format!(
-                "机密参数 `{secret}` 必须引用机密或使用专用机密输入，不能保存到普通默认值"
+                "Secret parameter `{secret}` must reference a credential or use dedicated secret input; it cannot be saved in plain defaults"
             ));
         }
         settings.defaults = defaults;
@@ -230,10 +230,10 @@ fn put_art_management_settings(
     }
     for (alias, value) in &request.secret_values {
         if !secret_parameters.contains(alias) {
-            return invalid_request(format!("Art 不包含机密参数 `{alias}`"));
+            return invalid_request(format!("Art does not contain secret parameter `{alias}`"));
         }
         if value.trim().is_empty() {
-            return invalid_request(format!("机密参数 `{alias}` 的值不能为空"));
+            return invalid_request(format!("Secret parameter `{alias}` value cannot be empty"));
         }
     }
     let pending_art_credentials = request
@@ -252,7 +252,7 @@ fn put_art_management_settings(
         if let Some(name) = request.name {
             let name = name.trim();
             if name.is_empty() {
-                return invalid_request("Art 名称不能为空");
+                return invalid_request("Art name cannot be empty");
             }
             settings.name = Some(name.to_owned());
         }
@@ -336,28 +336,28 @@ fn validate_art_management_settings(
         .chain(settings.credential_bindings.keys())
         .find(|id| !parameter_ids.contains(id.as_str()))
     {
-        return Err(format!("Art 不包含参数 `{unknown}`"));
+        return Err(format!("Art does not contain parameter `{unknown}`"));
     }
     if let Some(overlap) = settings
         .defaults
         .keys()
         .find(|id| settings.value_bindings.contains_key(*id))
     {
-        return Err(format!("参数 `{overlap}` 不能同时保存默认值和全局值引用"));
+        return Err(format!("Parameter `{overlap}` cannot save both a default value and a global value binding"));
     }
     for parameter in &parameters {
         if parameter.secret {
             if settings.defaults.contains_key(&parameter.id) {
                 return Err(format!(
-                    "机密参数 `{}` 不能保存到普通默认值",
+                    "Secret parameter `{}` cannot be saved in plain defaults",
                     parameter.label
                 ));
             }
             if settings.value_bindings.contains_key(&parameter.id) {
-                return Err(format!("机密参数 `{}` 必须使用机密引用", parameter.label));
+                return Err(format!("Secret parameter `{}` must use a credential binding", parameter.label));
             }
         } else if settings.credential_bindings.contains_key(&parameter.id) {
-            return Err(format!("普通参数 `{}` 必须使用全局值引用", parameter.label));
+            return Err(format!("Regular parameter `{}` must use a global value binding", parameter.label));
         }
         if let Some(value) = settings.defaults.get(&parameter.id) {
             validate_parameter_value(parameter, value)?;
@@ -371,10 +371,10 @@ fn validate_art_management_settings(
         let parameter = parameters
             .iter()
             .find(|parameter| parameter.id == *id)
-            .ok_or_else(|| format!("Art 不包含参数 `{id}`"))?;
+            .ok_or_else(|| format!("Art does not contain parameter `{id}`"))?;
         if !credential_value_type_matches_parameter(parameter, resolved.value_type) {
             return Err(format!(
-                "全局值 `{}` 的类型与参数 `{}` 不匹配",
+                "Global value `{}` type does not match parameter `{}`",
                 settings
                     .value_bindings
                     .get(id)
@@ -390,7 +390,7 @@ fn validate_art_management_settings(
         if parameter.required {
             if parameter.secret {
                 if !settings.credential_bindings.contains_key(&parameter.id) {
-                    return Err(format!("必须为 `{}` 引用机密或直接填写", parameter.label));
+                    return Err(format!("Must bind a credential or enter a value directly for `{}`", parameter.label));
                 }
                 continue;
             }
@@ -402,7 +402,7 @@ fn validate_art_management_settings(
                 .get(&parameter.id)
                 .or(parameter.default.as_ref());
             if !value.is_some_and(art_setting_value_present) {
-                return Err(format!("必须填写参数 `{}`", parameter.label));
+                return Err(format!("Parameter `{}` is required", parameter.label));
             }
         }
     }
@@ -424,9 +424,9 @@ fn validate_art_management_settings(
         let parameter = parameters
             .iter()
             .find(|parameter| parameter.id == *alias)
-            .ok_or_else(|| format!("Art 不包含参数 `{alias}`"))?;
+            .ok_or_else(|| format!("Art does not contain parameter `{alias}`"))?;
         if !parameter.secret {
-            return Err(format!("普通参数 `{}` 不能使用机密引用", parameter.label));
+            return Err(format!("Regular parameter `{}` cannot use a credential binding", parameter.label));
         }
         if pending_credentials.contains(credential_name) {
             continue;
@@ -435,9 +435,9 @@ fn validate_art_management_settings(
             .iter()
             .filter(|credential| credential.name == *credential_name)
             .max_by_key(|credential| usize::from(credential.scope.art_id.is_some()))
-            .ok_or_else(|| format!("机密 `{credential_name}` 不存在或不适用于当前 Art"))?;
+            .ok_or_else(|| format!("Credential `{credential_name}` does not exist or is not scoped to this Art"))?;
         if credential.value_type != CredentialValueType::String {
-            return Err(format!("机密 `{credential_name}` 必须是文本类型"));
+            return Err(format!("Credential `{credential_name}` must have string value type"));
         }
     }
     Ok(())

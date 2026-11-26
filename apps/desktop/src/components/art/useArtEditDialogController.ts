@@ -1,5 +1,6 @@
 // Owns editor hydration, per-parameter drafts and atomic save/update submission.
 import { useEffect, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { artDisplayIdentity } from "../../services/artHubUi";
 import { buildArtEditSettings, type ArtEditDialogProps, type ArtSecretDraft } from "./artEditModel";
 
@@ -11,6 +12,7 @@ export function useArtEditDialogController({
   onSave,
   onUpdate,
 }: ArtEditDialogProps) {
+  const { t, language } = useUiText();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [autoUpdate, setAutoUpdate] = useState(true);
@@ -23,13 +25,7 @@ export function useArtEditDialogController({
   const busy = busyAction !== null;
   useEffect(() => {
     if (!management) return;
-    const identity = tool
-      ? artDisplayIdentity(
-          tool,
-          management.artId,
-          typeof document === "undefined" ? "zh-CN" : document.documentElement.lang || window.navigator.language,
-        )
-      : null;
+    const identity = tool ? artDisplayIdentity(tool, management.artId, language) : null;
     setName(
       management.canEditIdentity
         ? management.name || tool?.name || ""
@@ -95,7 +91,7 @@ export function useArtEditDialogController({
       ),
     );
     setFormError(null);
-  }, [management, tool]);
+  }, [language, management, tool]);
   const requiredParameters =
     management?.parameters.filter((parameter) => parameter.required && !parameter.secret) ?? [];
   const optionalParameters =
@@ -124,7 +120,7 @@ export function useArtEditDialogController({
         await onSave(input);
       }
     } catch (submitError) {
-      setFormError(submitError instanceof Error ? submitError.message : "无法保存 Art 设置。");
+      setFormError(submitError instanceof Error ? submitError.message : t("art.edit.error.saveFailed"));
     }
   };
   return {

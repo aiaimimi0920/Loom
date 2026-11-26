@@ -69,7 +69,7 @@ fn load_surface_javascript_source_limited(
             "JavaScript Surface source descriptor exceeds {MAX_SURFACE_JAVASCRIPT_DESCRIPTOR_BYTES} bytes"
         );
     }
-    // metadata后文件可能被同用户替换；读取本身也必须有界，而不只依赖先前长度。
+    // A same-user actor may replace the file after metadata inspection; the read itself must also be bounded rather than trusting the prior length.
     let mut descriptor_bytes = Vec::new();
     fs::File::open(&descriptor_path)?
         .take(MAX_SURFACE_JAVASCRIPT_DESCRIPTOR_BYTES + 1)

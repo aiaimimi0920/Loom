@@ -72,7 +72,7 @@ fn source_native_joint(mode: u8) {
         interactive
     );
     if interactive {
-        // 仅控制侧fixture直接用原权威store；Source接收仍走真实LAN HTTPS，不冒充viewer公共HTTP/UI。
+        // Only the controller fixture uses the authoritative store directly; Source reception still goes over real LAN HTTPS without spoofing viewer public HTTP/UI.
         let (viewer, _) = pair(f.port, "Input joint controller");
         let envelope = |sequence, kind: &str, payload: Value| {
             serde_json::from_value(json!({"protocolVersion":"loom.live.v1","sessionId":session,"epoch":1,"sequence":sequence,"messageType":kind,"payload":payload})).unwrap()
@@ -124,7 +124,7 @@ fn source_native_joint(mode: u8) {
                 .unwrap()
                 .unwrap();
             assert_eq!(&latest.bytes[64..], &[17, 83, 211, 255].repeat(4));
-            // 恢复不重获旧控制；只有新的显式acquire及新输入才再次到达同一自有窗口。
+            // Recovery does not regain prior control; only a fresh explicit acquire and new input reach the owned window again.
             f.live_sessions.change_controller(&viewer,session,&serde_json::from_value(json!({"protocolVersion":"loom.live.v1","action":"acquire","epoch":1,"sequence":5})).unwrap()).unwrap();
             for (input_sequence, kind) in [
                 (

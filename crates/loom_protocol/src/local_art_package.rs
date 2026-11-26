@@ -1,4 +1,4 @@
-//! 包资源证明独立于旧grant/resume；只有显式设备公钥才委托同期限内的新宿主绑定。
+//! Package resource proof independent of legacy `grant`/`resume`; only an explicit device public key delegates new host bindings within the same lifetime.
 use super::{digest, Error, Grant};
 use serde::{Deserialize, Serialize};
 #[path = "local_art_ports.rs"]

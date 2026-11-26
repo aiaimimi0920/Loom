@@ -11,7 +11,7 @@ impl CapabilityRuntimeHost {
     ) -> HostResult<CapabilityInvocationOutput> {
         self.invoke_inner(invocation, None, None)
     }
-    /// 控制器仅能使用一次；取消可早于 inflight 登记，进度由原读取线程写入有界最新槽。
+    /// The controller is single-use; cancellation may precede inflight registration, and progress is written into a bounded latest-value slot by the reader thread.
     pub fn invoke_controlled(
         &self,
         invocation: CapabilityInvocation,

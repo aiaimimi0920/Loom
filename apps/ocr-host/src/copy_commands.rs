@@ -16,7 +16,7 @@ pub(crate) fn copy_full_text(
     if text.is_empty() || text.len() > MAX_COPY_BYTES {
         return Err(missing_result());
     }
-    Ok(json!({ "effects": copy_effects(&text, "OCR 全文已复制") }))
+    Ok(json!({ "effects": copy_effects(&text, "Copied full OCR text") }))
 }
 
 pub(crate) fn copy_layout_text(
@@ -28,7 +28,7 @@ pub(crate) fn copy_layout_text(
     if text.is_empty() || text.len() > MAX_COPY_BYTES {
         return Err(missing_result());
     }
-    Ok(json!({ "effects": copy_effects(&text, "OCR 版式文本已复制") }))
+    Ok(json!({ "effects": copy_effects(&text, "Copied layout OCR text") }))
 }
 
 pub(crate) fn copy_selected_text(
@@ -40,7 +40,7 @@ pub(crate) fn copy_selected_text(
             "Select one or more OCR blocks with Shift+click first",
         ));
     }
-    Ok(json!({ "effects": copy_effects(&text, "已选 OCR 文本已复制") }))
+    Ok(json!({ "effects": copy_effects(&text, "Copied selected OCR text") }))
 }
 
 pub(crate) fn copy_block(
@@ -57,7 +57,7 @@ pub(crate) fn copy_block(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.len() <= MAX_COPY_BYTES)
         .ok_or_else(|| invalid_input("OCR text block is invalid"))?;
-    Ok(json!({ "effects": copy_effects(text, "OCR 文本已复制") }))
+    Ok(json!({ "effects": copy_effects(text, "Copied OCR text") }))
 }
 
 fn toggle_block_selection(
@@ -75,9 +75,9 @@ fn toggle_block_selection(
         .toggle_block_selection(index)
         .ok_or_else(|| invalid_input("OCR block index is outside the cached result"))?;
     let message = if selected {
-        format!("已选择 {selected_count} 个 OCR 文本块")
+        format!("Selected {selected_count} OCR text blocks")
     } else {
-        format!("已取消选择；当前选择 {selected_count} 个 OCR 文本块")
+        format!("Deselected block; {selected_count} OCR text blocks selected")
     };
     Ok(json!({
         "output": { "selected": selected, "selectedCount": selected_count },

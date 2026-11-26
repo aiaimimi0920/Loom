@@ -15,14 +15,14 @@
             "id": "title",
             "type": "text",
             "props": {
-              "text": "实时行情"
+              "text": "Live Quote"
             }
           },
           {
             "id": "status",
             "type": "text",
             "props": {
-              "text": "等待刷新"
+              "text": "Waiting for refresh"
             }
           }
         ]
@@ -34,7 +34,7 @@
           "text": "¥101.20"
         },
         "accessibility": {
-          "label": "当前价格",
+          "label": "Current price",
           "live": "polite"
         }
       },
@@ -47,28 +47,28 @@
         "type": "input",
         "props": {
           "value": "MSFT",
-          "placeholder": "股票代码"
+          "placeholder": "Stock symbol"
         },
         "events": {
           "input": "stock_symbol_input",
           "change": "stock_symbol_commit"
         },
         "accessibility": {
-          "label": "股票代码"
+          "label": "Stock symbol"
         }
       },
       {
         "id": "symbol_hint",
         "type": "text",
         "props": {
-          "text": "已选择 MSFT"
+          "text": "Selected MSFT"
         }
       },
       {
         "id": "interval_label",
         "type": "text",
         "props": {
-          "text": "每 3 秒刷新"
+          "text": "Refresh every 3s"
         }
       },
       {
@@ -85,14 +85,14 @@
           "change": "stock_interval_commit"
         },
         "accessibility": {
-          "label": "刷新间隔"
+          "label": "Refresh interval"
         }
       },
       {
         "id": "refresh",
         "type": "button",
         "props": {
-          "label": "刷新行情"
+          "label": "Refresh Quote"
         },
         "events": {
           "click": "stock_refresh"

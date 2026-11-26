@@ -1,4 +1,4 @@
-// 显式提供真实构建产物，不能用 MZ 文本夹具冒充 Art 执行成功。
+// Explicitly supply real build artifacts rather than spoofing Art execution success with MZ text fixtures.
 #[cfg(windows)]
 #[test]
 #[ignore = "requires real signed Art/framework archives and an isolated test trust store"]
@@ -26,7 +26,7 @@ fn cloud_install_real_art_blends_image_with_packaged_framework() {
         let downloaded = asset_library::prepare_trial_install(&config);
         if config["expected"] == "denied" {
             match downloaded {
-                Ok(_) => panic!("撤销或下架后不得取得安装包"),
+                Ok(_) => panic!("revoked or delisted publication must not yield an install package"),
                 Err(error) => assert_eq!(error.status, 404),
             }
             assert!(!Path::new(config["downloadRoot"].as_str().unwrap())
@@ -102,7 +102,7 @@ fn cloud_install_real_art_blends_image_with_packaged_framework() {
     let bytes = loom_image_io::decode_data_url_bytes(output).expect("decode actual image");
     assert!(
         bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "输出必须是真实 PNG"
+        "output must be a valid PNG"
     );
     println!("real Art output: {} PNG bytes", bytes.len());
     drop(runtime);

@@ -3,11 +3,11 @@
 function Get-SafeMcpErrorMessage {
     param([AllowNull()][object]$Value)
 
-    $message = ConvertTo-BoundedText -Value $Value -MaxLength 400 -DefaultValue "上游服务请求失败"
+    $message = ConvertTo-BoundedText -Value $Value -MaxLength 400 -DefaultValue "Upstream service request failed"
     if ($message -match '(?i)\b(?:authorization|cookie|token|secret|password|credential|signature|api[-_ ]?key|access[-_ ]?key|session[-_ ]?id)\b' -or
         $message -match '(?i)bearer\s+\S+' -or
         $message -match '(?:[A-Za-z]:\\|\\\\[^\\\s]+\\|%[A-Za-z_][A-Za-z0-9_]*%[\\/]|/(?:home|users|var|etc|tmp|opt|root|srv)/|\b(?:HKLM|HKCU|HKEY_[A-Z_]+)\\)') {
-        return "上游服务请求失败"
+        return "Upstream service request failed"
     }
     return $message
 }
@@ -24,16 +24,16 @@ function Get-McpToolContent {
     $execution = Get-ObjectPropertyValue -Value $results -Name $CallId
     $result = Get-ObjectPropertyValue -Value $execution -Name "result"
     if ($null -eq $result) {
-        throw "stock-api MCP 调用结果缺失：$CallId"
+        throw "Missing stock-api MCP call result: $CallId"
     }
     $structured = Get-ObjectPropertyValue -Value $result -Name "structuredContent"
     if (ConvertTo-StrictBoolean (Get-ObjectPropertyValue -Value $result -Name "isError" -DefaultValue $false)) {
         $response = Get-ObjectPropertyValue -Value $structured -Name "response"
-        $message = Get-SafeMcpErrorMessage (Get-ObjectPropertyValue -Value $response -Name "message" -DefaultValue "未知错误")
-        throw "stock-api MCP 调用失败（$CallId）：$message"
+        $message = Get-SafeMcpErrorMessage (Get-ObjectPropertyValue -Value $response -Name "message" -DefaultValue "Unknown error")
+        throw "stock-api MCP call failed ($CallId): $message"
     }
     if ($null -eq $structured) {
-        throw "stock-api MCP 返回的结构化结果缺失：$CallId"
+        throw "Missing structured result from stock-api MCP: $CallId"
     }
     return $structured
 }

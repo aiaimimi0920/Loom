@@ -105,7 +105,7 @@ pub(super) fn validate(request: &Request) -> Result<()> {
     );
     validate_upgrade(request)
 }
-/// 只共享Device/nonce/WS key与无body边界；各协议仍独占精确path/query/profile。
+/// Shares only Device/nonce/WS key and empty-body bounds; each protocol still owns its exact path, query, and profile.
 pub(super) fn validate_upgrade(request: &Request) -> Result<()> {
     let headers = &request.headers;
     ensure!(request.body.is_empty(), "LAN media body is not allowed");

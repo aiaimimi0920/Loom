@@ -1,67 +1,34 @@
-# Loom documentation
+# Loom Documentation Index
 
-Use the current functional contracts below when operating or extending Loom.
-Implementation, configuration and executable tests remain the source of truth.
+Use the documents below as the authoritative reference for operating, integrating with, and extending Loom. Live Rust/TypeScript source, JSON Schemas, and contract test suites remain the ultimate source of truth.
 
-## Product and development
+## Core architecture and development
 
-- [Product, desktop, daemon and CLI](../README.md): startup, configuration,
-  installation, Otter synchronization, request concurrency and run persistence.
-- [Otter display language](../README.md#otter-display-language): select an
-  approved receiver, inspect its reported language, and confirm the exact request
-  without an offline queue or a separate Loom-side language override.
-- [Architecture](ARCHITECTURE.md): runtime ownership, package boundaries,
-  durable run evidence, and workflow contracts.
-- [Development manual](DEVELOPMENT.md) and [contribution guide](../CONTRIBUTING.md):
-  module size, hardening, formatting, testing and release requirements.
-- [Workflow contract](WORKFLOW_CONTRACT.md).
-- [Otter canvas](HOOK_CANVAS.md): live projection, workflow actions, event refresh
-  and daemon-owned image preview authorization.
-- [Gateway integration](GATEWAY_INTEGRATION.md): global AI Gateway relay (`/v1/ai/*`) and `ai.chat.v1` invocation.
-- [Asset Library integration](ASSET_LIBRARY_INTEGRATION.md).
+- [Root README](../README.md): overview, build editions (`desktop`, `web`, `api`), client/server modes, CLI, outbound/inbound MCP, AI Gateway relay, container deployment, and release smoke suites.
+- [Architecture](ARCHITECTURE.md): system boundaries, workspace crates and apps, bounded HTTP request execution, package storage layout, and runtime subsystems.
+- [Development manual](DEVELOPMENT.md) and [contributing guide](../CONTRIBUTING.md): effective-code-line thresholds (`150` target / `500` acceptable / `700` max soft exception), module splitting, security/lifetime/performance review, and CI quality reports.
+- [Runtime security boundaries](RUNTIME_SECURITY.md): header-only HTTP upload admission, `loom_native_image` per-job resource caps, and Linux Bubblewrap + `pidfd` process-tree containment.
+- [Dependency security](DEPENDENCY_SECURITY.md): lockfile inventory contract, OSV vulnerability scanning, exception rules, and incident response.
 
-## Plugins and integrations
+## Companion integration, store, and workflows
 
-- [Public protocols and schemas](../protocol/README.md).
-- [Plugin development](plugin-development.md): framework/Art authoring and SDK usage.
-- [Plugin security](plugin-security.md), [permissions](plugin-permissions.md),
-  and [signing and trust](plugin-signing-and-trust.md).
-- [OCR contract](OCR_CONTRACT.md), [OCR golden dataset](OCR_GOLDEN_DATASET.md),
-  and [translation modes](TRANSLATION_HYBRID_MODE.md).
-- [Stock Monitor](STOCK_MONITOR.md): packaged market sources, optional credentials,
-  refresh/freshness, chart colors, structured outputs and verification limits.
-- [Image Search](IMAGE_SEARCH.md): independent MCP dependency, credentials,
-  authoritative inputs, argument schemas and image/source-page mapping.
-- [Wall guide](TILE_WALL.md): terminal and source ownership, functional contracts
-  and the 19 remaining joint acceptance conditions.
-- [Wall control API](../protocol/WALL_CONTROL_API.md): paired terminal outputs,
-  layouts, image delivery and acknowledgement.
-- [跨设备实时投射优化计划](LIVE_RELAY_OPTIMIZATION_PLAN.md)：Issue #67 的已实现基线、
-  分块验收、逐任务提交和 AI 接手入口。
-- [Issue #67 小 PR 工作包](LIVE_RELAY_ACCEPTANCE_WORKPACKAGES.md)：六组剩余验收、
-  条件优化、独立合并规则及暂停复测边界。
+- [Otter and companion integration](OTTER_INTEGRATION.md): global Otter connection control, two-level Host -> App Sessions hierarchy, Otter canvas projection, multi-device workflow sync and history archive, intra-workflow hybrid terminal relay, Otter display language, and Companion App Settings Hub.
+- [Workflow contract](WORKFLOW_CONTRACT.md): `loom.workflow.v1` graph synchronization, dynamic execution placement (`local`/`server`/`auto`), child Art dependencies, and SemVer compatibility.
+- [Gateway integration](GATEWAY_INTEGRATION.md): global AI Gateway configuration (`/v1/ai/*`), LAN/remote origin rules, and durable `ai.chat.v1` invocation.
+- [AssetLibrary, NAccount, and Unified Store](ASSET_LIBRARY_INTEGRATION.md): NAccount PKCE login (`/v1/naccount/*`), AssetLibrary catalog/download/install (`/v1/asset-library/*`), unified multi-platform catalog (`GET /v1/store/catalog`), forward-slash ZIP rule, and 3-tier Cloud Relay (`/v1/cloud-relay/*`).
+- [Download engine](DOWNLOAD_ENGINE.md): Windows in-process `libaria2` (`loom_aria2.dll`), Linux portable fallback, loopback ticket relay, download-control API, and GPL corresponding-source bundle rules.
+- [Neuro UI integration](NEURO_UI.md): `@neuro/ui` local linking, pinned clean-CI checkout layout, and UI-versus-controller ownership boundaries.
 
-## Packaging and operations
+## Plugins, capabilities, and Tile Walls
 
-- [Release provenance](release-provenance.md): independent packages, checksums,
-  source identity, SDK, attestations and release verification.
-- [Dependency security](DEPENDENCY_SECURITY.md): exact-lock inventory and advisory handling.
-- [Release body](GITHUB_RELEASE_BODY.md): public release description template.
+- [Public protocols and JSON Schemas](../protocol/README.md): normative wire contracts (`loom.framework.v1`, `loom.hook.v1`, `loom.surface.v1`, `loom.capability.runtime.v1`, `loom.live.v1`, `loom.wall.v1`, Local Art v3, Device Sessions, LAN Connection, and QR Projection).
+- [Plugin development](plugin-development.md): authoring Frameworks, Arts, and Capability Plugins with `loom-plugin`.
+- [Plugin security](plugin-security.md), [plugin permissions](plugin-permissions.md), [signing and trust](plugin-signing-and-trust.md), and [historical plugin migration](plugin-migration.md).
+- [OCR contract and golden dataset](OCR_CONTRACT.md) and [translation hybrid mode](TRANSLATION_HYBRID_MODE.md): `neuro.official/ocr` text/span/QR attachments, golden quality metrics, and `text-translation` `gateway`/`local`/`auto` broker modes.
+- [Image Search](IMAGE_SEARCH.md) and [Stock Monitor](STOCK_MONITOR.md): sample MCP-backed Arts, cross-platform MCP server runtimes, scoped credentials, and freshness boundaries.
+- [Tile Wall guide](TILE_WALL.md): multi-display terminal ownership, LAN wall routes, protocol index, and the 19 open physical multi-machine acceptance checks.
 
-## Historical records and acceptance
+## Release and provenance
 
-Completed migration phase 0-66 logs, the old migration ledger, migration audits
-and task-by-task implementation plans have been removed from the active tree.
-They describe earlier candidates, compatibility adapters and packaging layouts;
-they must not override current protocols or reinstall retired compatibility paths.
-For an exact historical record use the local recovery tag, for example:
-
-```powershell
-git show cleanup-base-20260928:docs/progress/phase-40-run-event-persistence.md
-```
-
-The remaining phase, planning and acceptance documents are not a claim that
-every proposed feature is delivered. In particular, screen-wall multi-computer
-acceptance and later native/runtime gates must retain their explicit evidence
-boundaries until they are individually reviewed. A source cleanup does not
-constitute a new packaged or native acceptance result.
+- [Release provenance](release-provenance.md): clean-source vs. `-DevelopmentOnly` builds, manifest/checksum verification, bounded smoke diagnostics, GitHub OIDC attestations, and draft-first publication.
+- [GitHub release notes template](GITHUB_RELEASE_BODY.md): public release body used by `.github/workflows/release-tag.yml`.

@@ -1,5 +1,6 @@
 // Projects canvas edges into workflow dependencies and parameter bindings.
 
+import { uiFormat } from "../../i18n/index.ts";
 import type { OtterCanvasNode, OtterCanvasSnapshot } from "./types.ts";
 
 export interface WorkflowEdgeBinding {
@@ -12,7 +13,7 @@ const WORKFLOW_REFERENCE_TOKEN = /^[A-Za-z0-9_-]+$/;
 
 export function requireWorkflowReferenceToken(value: string, label: string): string {
   if (!WORKFLOW_REFERENCE_TOKEN.test(value)) {
-    throw new Error(`Invalid ${label}: expected an ASCII letter, digit, underscore, or hyphen token.`);
+    throw new Error(uiFormat("otter.error.invalidWorkflowReferenceToken", { label }));
   }
   return value;
 }
@@ -68,7 +69,10 @@ export function workflowEdgeBindings(
         || existing.sourcePortId !== binding.sourcePortId
       ) {
         throw new Error(
-          `Workflow node ${targetNodeId} has multiple incoming edges for port ${binding.targetPortId}.`,
+          uiFormat("otter.error.multipleIncomingEdges", {
+            nodeId: targetNodeId,
+            portId: binding.targetPortId,
+          }),
         );
       }
       continue;

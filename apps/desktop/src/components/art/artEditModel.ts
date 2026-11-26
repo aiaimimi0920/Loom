@@ -1,4 +1,5 @@
 // Art settings validation and serialization; presentation primitives do not own this policy.
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import type {
   LoomArtManagement,
   LoomArtManagementParameter,
@@ -71,30 +72,30 @@ export function buildArtEditSettings(
     secretDrafts,
   }: ArtEditSettingsDraft,
 ): LoomArtManagementSettingsInput {
-  if (!management) throw new Error("Art 管理信息尚未加载。");
+  if (!management) throw new Error(uiText("art.edit.error.notLoaded"));
   const defaults: Record<string, unknown> = {};
   const nextValueBindings: Record<string, string> = {};
   for (const parameter of management.parameters.filter((candidate) => !candidate.secret)) {
     if (useGlobalValues[parameter.id]) {
       const binding = valueBindings[parameter.id];
-      if (!binding) throw new Error(`必须为 ${parameter.label} 选择全局值。`);
+      if (!binding) throw new Error(uiFormat("art.edit.error.selectGlobalValue", { label: parameter.label }));
       const credential = globalCredentials.find((candidate) => candidate.name === binding);
       if (!credential || !credentialMatchesArtParameter(parameter, credential)) {
-        throw new Error(`${parameter.label} 的全局值不存在或类型不匹配。`);
+        throw new Error(uiFormat("art.edit.error.invalidGlobalValue", { label: parameter.label }));
       }
       nextValueBindings[parameter.id] = binding;
       continue;
     }
     const draft = parameterValues[parameter.id];
     if (parameter.required && !valuePresent(draft)) {
-      throw new Error(`必须填写 ${parameter.label}。`);
+      throw new Error(uiFormat("art.edit.error.requiredParameter", { label: parameter.label }));
     }
     if (!valuePresent(draft)) continue;
     if (parameter.parameterType === "json" && typeof draft === "string") {
       try {
         defaults[parameter.id] = JSON.parse(draft);
       } catch {
-        throw new Error(`${parameter.label} 不是有效的 JSON。`);
+        throw new Error(uiFormat("art.edit.error.invalidJson", { label: parameter.label }));
       }
     } else {
       defaults[parameter.id] = draft;
@@ -110,10 +111,12 @@ export function buildArtEditSettings(
       value: "",
     };
     if (draft.useGlobal) {
-      if (!draft.credential) throw new Error(`必须为 ${parameter.label} 选择全局机密。`);
+      if (!draft.credential) {
+        throw new Error(uiFormat("art.edit.error.selectGlobalSecret", { label: parameter.label }));
+      }
       const credential = globalCredentials.find((candidate) => candidate.name === draft.credential);
       if (!credential || !credentialMatchesArtParameter(parameter, credential)) {
-        throw new Error(`${parameter.label} 的全局机密不存在或不是文本类型。`);
+        throw new Error(uiFormat("art.edit.error.invalidGlobalSecret", { label: parameter.label }));
       }
       bindings[parameter.id] = draft.credential;
       continue;
@@ -127,7 +130,7 @@ export function buildArtEditSettings(
       bindings[parameter.id] = draft.storedCredential;
       continue;
     }
-    if (parameter.required) throw new Error(`必须填写 ${parameter.label}。`);
+    if (parameter.required) throw new Error(uiFormat("art.edit.error.requiredParameter", { label: parameter.label }));
   }
   return {
     ...(management.canEditIdentity ? { name: name.trim(), description } : {}),

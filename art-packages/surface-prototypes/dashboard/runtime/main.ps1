@@ -1,13 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-function New-UnicodeText {
-    param([int[]]$CodePoints)
-    return -join ($CodePoints | ForEach-Object { [char]$_ })
-}
-
-$script:SyncingLabel = New-UnicodeText @(0x6B63, 0x5728, 0x540C, 0x6B65, 0x8BBE, 0x5907)
-$script:TabletOnlineLabel = New-UnicodeText @(0x5E73, 0x677F, 0x20, 0x00B7, 0x20, 0x5728, 0x7EBF)
-$script:SyncedLabel = New-UnicodeText @(0x5168, 0x90E8, 0x540C, 0x6B65, 0x5B8C, 0x6210)
+$script:SyncingLabel = "Syncing devices"
+$script:TabletOnlineLabel = "Tablet " + [char]0x00B7 + " Online"
+$script:SyncedLabel = "All devices synced"
 
 function Find-SurfaceAction {
     param([object]$Value)

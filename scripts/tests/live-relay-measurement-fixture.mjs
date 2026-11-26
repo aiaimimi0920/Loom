@@ -1,4 +1,4 @@
-// 两组测试共享真实会话响应的最小形状；私有字段用于证明采样输出不会复制原始响应。
+// Shared minimal live-session response fixture; private fields verify that sampled reports never copy raw responses.
 export function snapshot(overrides = {}) {
   return {
     session: { sessionId: 'live:test', sourceDeviceId: 'source:a', sourceWindowIdentity: { title: 'PRIVATE_TITLE' } },

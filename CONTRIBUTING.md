@@ -12,7 +12,7 @@ documented in `docs/ARCHITECTURE.md`.
 - Tauri v2 platform prerequisites for desktop builds
 - Docker when changing the container image or daemon packaging
 - Linux managed-process tests: distribution Bubblewrap at `/usr/bin/bwrap`, `perl-base`, Python 3,
-  user/PID namespace support and pidfd support; see `docs/LINUX_PROCESS_ISOLATION.md`
+  user/PID namespace support and pidfd support; see `docs/RUNTIME_SECURITY.md`
 
 ## Setup
 

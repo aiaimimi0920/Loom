@@ -1,4 +1,4 @@
-//! 精确包端口证明；不含参数默认值、路径或授权，新签名域不改变旧 package.v1。
+//! Exact package port proof; excludes parameter defaults, filesystem paths, and grants, using a separate signature domain so legacy `package.v1` stays unchanged.
 use super::{Error, Package as LegacyPackage};
 use serde::{Deserialize, Serialize};
 pub const PROTOCOL: &str = "loom.art.local.package.v2";
@@ -60,7 +60,7 @@ impl Package {
         }
         self.package.validate()?;
         self.ports.validate()?;
-        // 端口和资源共享原证明预算，不因逐项有界而放大原 envelope/payload 门。
+        // Ports and resources share the original proof budget so per-field bounds never widen the outer envelope/payload ceiling.
         if serde_json::to_vec(self).map_err(|_| Error::Source)?.len() > super::super::MAX_PAYLOAD {
             return Err(Error::Source);
         }

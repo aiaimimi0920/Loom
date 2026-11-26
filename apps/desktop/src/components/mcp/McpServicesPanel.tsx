@@ -1,9 +1,10 @@
 // Renders installed MCP services while the hub retains mutation ownership.
 
+import { ActionTooltip, Badge, EmptyState, IconButton, Panel, TabPanel } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../../services/loomApi";
 import type { McpMarketplaceTestSnapshot } from "../../services/mcpMarketplace";
 import { McpIcon } from "./McpIcon";
-import { ActionTooltip, Badge, EmptyState, IconButton, Panel, TabPanel } from "@neuro/ui";
 
 interface McpServicesPanelProps {
   hidden: boolean;
@@ -30,6 +31,7 @@ export function McpServicesPanel({
   onToggle,
   onRemove,
 }: McpServicesPanelProps) {
+  const { t, tf } = useUiText();
   return (
     <TabPanel
       value="services"
@@ -45,24 +47,26 @@ export function McpServicesPanel({
             const packaged = server.source === "package" && Boolean(server.package);
             const snapshot = testSnapshots[server.id];
             const busy = busyServerId === server.id;
+            const stateLabel = enabled ? t("mcp.status.enabled") : t("mcp.status.disabled");
+            const descriptionText = server.description || t("mcp.service.noDescription");
             return (
               <Panel
                 className="mcp-card mcp-service-card"
                 data-state={enabled ? "enabled" : "disabled"}
                 key={server.id}
-                title={enabled ? "已启用" : "已禁用"}
-                aria-label={`${server.name}，${enabled ? "已启用" : "已禁用"}`}
+                title={stateLabel}
+                aria-label={tf("mcp.service.cardAria", { name: server.name, state: stateLabel })}
                 aria-busy={busy}
               >
                 <div className="mcp-card__head">
                   <h3>{server.name}</h3>
-                  <span className="mcp-card__icon" title="MCP" aria-label="MCP">
+                  <span className="mcp-card__icon" title={t("mcp.icon.label")} aria-label={t("mcp.icon.label")}>
                     <McpIcon kind="plug" />
                   </span>
                 </div>
                 <div className="mcp-card__body">
-                  <p className="mcp-card__description" title={server.description || "暂无描述"}>
-                    {server.description || "暂无描述"}
+                  <p className="mcp-card__description" title={descriptionText}>
+                    {descriptionText}
                   </p>
                   <p
                     className="mcp-card__identity"
@@ -75,16 +79,19 @@ export function McpServicesPanel({
                     }
                   >
                     {packaged
-                      ? `包 · ${server.package?.qualifiedId} @ ${server.package?.version}`
+                      ? tf("mcp.service.identity.package", {
+                          id: server.package?.qualifiedId ?? "",
+                          version: server.package?.version ?? "",
+                        })
                       : server.transport === "streamable-http"
-                        ? `远程 · ${server.url}`
-                        : `手动 · ${server.command}`}
+                        ? tf("mcp.service.identity.remote", { url: server.url ?? "" })
+                        : tf("mcp.service.identity.manual", { command: server.command })}
                   </p>
                   <div className="mcp-card__status">
-                    <Badge tone={enabled ? "success" : "neutral"}>{enabled ? "已启用" : "已禁用"}</Badge>
+                    <Badge tone={enabled ? "success" : "neutral"}>{stateLabel}</Badge>
                     {busy ? (
                       <Badge tone="info" role="status">
-                        处理中
+                        {t("mcp.service.busy")}
                       </Badge>
                     ) : snapshot ? (
                       <Badge
@@ -92,44 +99,52 @@ export function McpServicesPanel({
                         role={snapshot.status === "error" ? "alert" : "status"}
                         title={
                           snapshot.status === "success"
-                            ? `已发现 ${snapshot.toolCount} 个工具`
-                            : snapshot.error || "连接失败"
+                            ? tf("mcp.service.toolsDiscoveredTitle", { count: snapshot.toolCount })
+                            : snapshot.error || t("mcp.service.connectionFailed")
                         }
                       >
                         <span className="mcp-card__status-text">
                           {snapshot.status === "success"
-                            ? `${snapshot.toolCount} 个工具`
-                            : snapshot.error || "连接失败"}
+                            ? tf("mcp.service.toolsCount", { count: snapshot.toolCount })
+                            : snapshot.error || t("mcp.service.connectionFailed")}
                         </span>
                       </Badge>
                     ) : server.credentialRequired ? (
                       <Badge tone={server.credentialBound ? "success" : "warning"} role="status">
-                        {server.credentialBound ? "凭据已配置" : "需要配置凭据"}
+                        {server.credentialBound
+                          ? t("mcp.service.credentialConfigured")
+                          : t("mcp.service.credentialRequired")}
                       </Badge>
                     ) : (
-                      <Badge role="status">无需凭据</Badge>
+                      <Badge role="status">{t("mcp.service.credentialNotNeeded")}</Badge>
                     )}
                   </div>
-                  {server.usageCount ? <p className="mcp-card__usage">被 {server.usageCount} 个 Art 使用</p> : null}
+                  {server.usageCount ? (
+                    <p className="mcp-card__usage">{tf("mcp.service.usedByArts", { count: server.usageCount })}</p>
+                  ) : null}
                 </div>
                 <div className="mcp-card__actions">
                   <div className="mcp-card__action-buttons">
-                    <ActionTooltip label={packaged ? "配置凭据" : "编辑"}>
+                    <ActionTooltip label={packaged ? t("mcp.action.configureCredentials") : t("mcp.action.edit")}>
                       <IconButton
                         compact
                         variant="quiet"
-                        label={`${packaged ? "配置凭据" : "编辑"} ${server.name}`}
+                        label={
+                          packaged
+                            ? tf("mcp.action.configureCredentialsFor", { name: server.name })
+                            : tf("mcp.action.editFor", { name: server.name })
+                        }
                         disabled={operationBusy}
                         onClick={() => (packaged ? onCredentials(server) : onEdit(server))}
                       >
                         <McpIcon kind="edit" />
                       </IconButton>
                     </ActionTooltip>
-                    <ActionTooltip label="测试连接">
+                    <ActionTooltip label={t("mcp.action.testConnection")}>
                       <IconButton
                         compact
                         variant="quiet"
-                        label={`测试 ${server.name}`}
+                        label={tf("mcp.action.testFor", { name: server.name })}
                         disabled={
                           operationBusy || !enabled || Boolean(server.credentialRequired && !server.credentialBound)
                         }
@@ -138,22 +153,26 @@ export function McpServicesPanel({
                         <McpIcon kind="test" />
                       </IconButton>
                     </ActionTooltip>
-                    <ActionTooltip label={enabled ? "禁用" : "启用"}>
+                    <ActionTooltip label={enabled ? t("mcp.action.disable") : t("mcp.action.enable")}>
                       <IconButton
                         compact
                         variant={enabled ? "positive" : "quiet"}
-                        label={`${enabled ? "禁用" : "启用"} ${server.name}`}
+                        label={
+                          enabled
+                            ? tf("mcp.action.disableFor", { name: server.name })
+                            : tf("mcp.action.enableFor", { name: server.name })
+                        }
                         disabled={operationBusy}
                         onClick={() => onToggle(server)}
                       >
                         <McpIcon kind="power" />
                       </IconButton>
                     </ActionTooltip>
-                    <ActionTooltip label="删除">
+                    <ActionTooltip label={t("mcp.action.delete")}>
                       <IconButton
                         compact
                         variant="danger"
-                        label={`删除 ${server.name}`}
+                        label={tf("mcp.action.deleteFor", { name: server.name })}
                         disabled={operationBusy}
                         onClick={() => onRemove(server)}
                       >
@@ -166,7 +185,7 @@ export function McpServicesPanel({
             );
           })
         ) : (
-          <EmptyState title="暂无 MCP 服务" />
+          <EmptyState title={t("mcp.service.empty")} />
         )}
       </div>
     </TabPanel>

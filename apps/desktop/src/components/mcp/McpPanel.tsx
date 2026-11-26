@@ -1,8 +1,9 @@
 // Adapts the MCP hub to application feedback and refresh contracts.
+import { useCallback } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { LoomMcpServer } from "../../services/loomApi";
 import { pushAppToast, requestAppConfirmation } from "../feedback/AppFeedback";
 import { McpHub } from "./McpHub";
-import { useCallback } from "react";
 
 export function McpPanel({
   servers,
@@ -13,6 +14,7 @@ export function McpPanel({
   baseUrl: string;
   refresh: () => Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   const notify = useCallback((level: "info" | "warning" | "error", text: string) => {
     pushAppToast({ level, text });
   }, []);
@@ -22,14 +24,17 @@ export function McpPanel({
       baseUrl={baseUrl}
       refresh={refresh}
       notify={notify}
-      confirmRemove={(server) => requestAppConfirmation({
-        title: "删除 MCP",
-        message: server.usageCount
-          ? `删除 ${server.name || server.id} 后，${server.usageCount} 个正在使用它的 Art 将返回 MCP 依赖缺失错误。仍要删除吗？`
-          : `删除 ${server.name || server.id} 及其独立运行包和专属凭据。此操作不可撤销。`,
-        confirmLabel: "删除",
-        tone: "danger",
-      })}
+      confirmRemove={(server) => {
+        const name = server.name || server.id;
+        return requestAppConfirmation({
+          title: t("mcp.removeConfirm.title"),
+          message: server.usageCount
+            ? tf("mcp.removeConfirm.inUseMessage", { name, count: server.usageCount })
+            : tf("mcp.removeConfirm.unusedMessage", { name }),
+          confirmLabel: t("mcp.action.delete"),
+          tone: "danger",
+        });
+      }}
     />
   );
 }

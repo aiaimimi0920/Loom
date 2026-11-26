@@ -1,4 +1,4 @@
-// 实际二进制必须显式提供并匹配摘要；不把旧MZ文本夹具或runner注入冒充执行成功。
+// Real binaries must be supplied explicitly and match digests; never spoof execution success with legacy MZ text fixtures or runner injection.
 fn live_trigger_executable(name: &str) -> Vec<u8> {
     let path = PathBuf::from(std::env::var_os(name).unwrap());
     let expected = std::env::var(format!("{name}_SHA256")).unwrap();

@@ -31,15 +31,15 @@ test("capability lifecycle owns an independent Loom settings section", () => {
 });
 
 test("capability UI exposes installed, local ZIP, and signed catalog workflows", () => {
-  assert.match(capabilityPanel, /已安装/);
-  assert.match(capabilityPanel, /安装本地 ZIP/);
-  assert.match(capabilityPanel, /官方目录/);
-  assert.match(capabilityPanel, /Ed25519 签名/);
-  assert.match(capabilityPanel, /SBOM/);
-  assert.match(capabilityPanel, /Provenance/);
+  assert.match(capabilityPanel, /settings\.capabilities\.tabInstalled/);
+  assert.match(capabilityPanel, /settings\.capabilities\.installLocalZip/);
+  assert.match(capabilityPanel, /settings\.capabilities\.tabCatalog/);
+  assert.match(capabilityPanel, /settings\.capabilities\.ed25519Signed/);
+  assert.match(capabilityPanel, /settings\.capabilities\.sbomBadge/);
+  assert.match(capabilityPanel, /settings\.capabilities\.provenanceBadge/);
   assert.match(capabilityPanel, /hostCompatibility\.loomCapabilityApi/);
   assert.match(capabilityPanel, /<TabsRoot asChild value=\{tab\}/);
-  assert.match(capabilityPanel, /<TabList label="能力扩展来源">/);
+  assert.match(capabilityPanel, /<TabList label=\{t\("settings\.capabilities\.sourceTabsAria"\)\}>/);
   for (const value of ["installed", "catalog"]) {
     assert.ok(capabilityPanel.includes(`<Tab value="${value}">`));
     assert.ok(capabilityPanel.includes(`<TabPanel value="${value}">`));
@@ -48,8 +48,8 @@ test("capability UI exposes installed, local ZIP, and signed catalog workflows",
 
 test("official OCR quick install reuses the signed catalog lifecycle", () => {
   assert.match(officialOcrCard, /neuro\.official\/ocr/);
-  assert.match(officialOcrCard, /下载并安装 OCR/);
-  assert.match(officialOcrCard, /大模型包只通过受信任目录下载/);
+  assert.match(officialOcrCard, /settings\.capabilities\.ocr\.installAction/);
+  assert.match(officialOcrCard, /settings\.capabilities\.ocr\.catalogOnlyNote/);
   assert.match(capabilityPanel, /controller\.installFromCatalog\(item\)/);
   assert.doesNotMatch(officialOcrCard, /fetch\(|installLocalCapability|https?:\/\//);
   assert.match(officialOcrCard, /aria-live="polite"/);
@@ -57,7 +57,7 @@ test("official OCR quick install reuses the signed catalog lifecycle", () => {
 });
 
 test("permission review displays digest-bound evidence before activation", () => {
-  assert.match(permissionDialog, /权限与不可变包摘要绑定/);
+  assert.match(permissionDialog, /settings\.capabilities\.review\.description/);
   assert.match(permissionDialog, /review\.digest/);
   assert.match(permissionDialog, /review\.permissions\.map/);
   assert.match(permissionDialog, /from "@neuro\/ui"/);
@@ -88,5 +88,5 @@ test("capability presentation uses standard primitives and field-owned unique as
   assert.doesNotMatch(capabilitySettings, /field.id.replace|inputId|id=\{/);
   assert.match(capabilitySettings, /<Switch checked=\{value === true\}/);
   assert.match(capabilitySettings, /setSaving\(true\);\s+setError\(null\);/);
-  assert.match(capabilityPanel, /已授权.*待授权/);
+  assert.match(capabilityPanel, /settings\.capabilities\.permissionGranted.*settings\.capabilities\.permissionPending/);
 });

@@ -4,67 +4,34 @@ Loom stores and executes Art and Otter workflows through `loom_workflow_store` a
 
 ## Otter workflow synchronization
 
-Otter sends its live graph through the typed `loom.hook.workflow.sync` contract.
-Loom stores and validates the resulting workflow with the same native workflow
-store used by packaged workflow Arts. Parameter persistence uses
-`loom.hook.workflow.node.update`; instantiation uses
-`loom.hook.workflow.instantiate`. The removed ArtLoom YAML converter is not an
-accepted import or runtime path.
+Otter sends its live graph through the typed `loom.hook.workflow.sync` contract. Loom validates and persists the resulting graph using the same native workflow store backing packaged workflow Arts. Parameter updates use `loom.hook.workflow.node.update`, and desktop instantiation uses `loom.hook.workflow.instantiate`. Historical ArtLoom YAML converters are retired and are not accepted as import or runtime paths.
 
-## Workflow Art package dependencies
+## Dynamic execution placement and intra-workflow hybrid relay
 
-A packaged workflow Art may declare child Arts under
-`metadata.dependencies.arts`. This package-install contract is separate from
-the native `WorkflowGraph` execution contract above:
+Workflow nodes support dynamic execution placement across heterogeneous Loom and Otter environments:
 
-1. Loom reads the dependency graph without activating the parent, then installs
-   missing children dependency-first through the normal secure ZIP path.
-2. Cycles and fetched packages whose identity does not match the requested child
-   reference are rejected.
-3. A child already present in the tool registry is retained rather than copied
-   into the parent package or reinstalled implicitly, but its integrity is
-   revalidated before the parent can be locked.
-4. The parent lockfile records every direct child as `kind: "art"` with the
-   child's canonical publisher-qualified ID, exact package version, and
-   canonical digest.
-5. Every child is its own immutable package with its own activation pointer,
-   canonical digest, framework lockfile, writable state/cache/output roots, and
-   execution-time integrity verification.
-6. Parent readiness, execution, and rollback recursively verify that the child
-   graph still matches the exact locks. A child upgrade, rollback, activation
-   edit, payload/lock tamper, or uninstall makes the parent not ready until the
-   matching child state is restored or the parent is explicitly reinstalled to
-   refresh its lock.
+- Nodes declare execution capabilities and placement requirements (`local`, `server`, or `auto`).
+- When a workflow spans server-side compute nodes (such as AI Gateway, MCP, or Cloud API steps) and terminal-bound nodes (such as local screen capture, desktop UI automation, or local-only Otter Arts), Loom coordinates cross-end step execution through the authenticated terminal relay (`/v1/otter/relay/*` in `apps/daemon/src/terminal_relay.rs`).
+- Relay tasks bind to an approved, active device session, enforce per-device queue and payload bounds, preserve topological data dependencies (`needs` and `${{ nodes.<id>.outputs.<port> }}`), and fail closed when the required target terminal goes offline or exceeds its execution deadline.
 
-The parent workflow package never receives child source code and neither Loom
-nor Otter source is modified. Uninstall does not maintain dependency reference
-counts or automatically garbage-collect orphan child Arts; operators still
-remove independently installed child packages explicitly.
+## Workflow Art package dependencies and SemVer compatibility
+
+A packaged workflow Art may declare child Arts under `metadata.dependencies.arts`. This package-install contract is separate from the dynamic `WorkflowGraph` execution contract above:
+
+1. Loom inspects the dependency graph before activating the parent, then installs missing children dependency-first through the verified ZIP installer.
+2. Dependency cycles and fetched packages whose canonical publisher-qualified identity does not match the requested child reference are rejected.
+3. Existing installed child packages are retained rather than copied into the parent package, and their integrity is verified before locking the parent.
+4. Each parent lockfile records direct children as `kind: "art"` with their publisher-qualified ID, SemVer requirement (when declared), locked version, and canonical SHA-256 digest.
+5. Every child remains an independent immutable package with its own activation pointer, canonical digest, framework lockfile, writable `state/`/`cache/`/`outputs/` directories, and pre-execution integrity checks.
+6. Parent readiness, execution, and rollback recursively verify the child dependency graph. When a child Art is upgraded within a declared compatible SemVer range and passes publisher trust, signature, and canonical digest verification, Loom supports explicit compatible child rebinding; incompatible version changes, tampering, revocation, or child uninstallation fail closed until a valid compatible child version is restored or the parent lock is refreshed.
+
+Uninstall never deletes independently installed child packages automatically; operators manage child package lifecycles explicitly.
 
 ## Image blend and compress example
 
-The canonical example is `art-packages/samples/image-blend-compress`, with Art ID
-`neuro.official/custom-image-blend-compress-workflow` and workflow ID
-`image-blend-compress-workflow`. It requires the independently installed `workflow`
-framework and two separately installed process Arts:
-`neuro.official/custom-image-blend-script` and
-`neuro.official/custom-1770146354922`. It does not bundle their implementations.
+The canonical workflow sample is `art-packages/samples/image-blend-compress` (`neuro.official/custom-image-blend-compress-workflow`, workflow ID `image-blend-compress-workflow`). It depends on the `workflow` framework and two separately installed `process` Arts (`neuro.official/custom-image-blend-script` and `neuro.official/custom-1770146354922`) without bundling their code.
 
-Two image inputs, `input` and `reference`, feed the blend node. `mix_ratio` ranges
-from 0 to 100 (default 50); `quality_num` ranges from 60 to 100 (default 90).
-Compression uses `lossless: false`; lower quality values permit stronger lossy
-compression. Current manifest/YAML values are authoritative, including parameters
-not exposed by this Art.
-
-`compress` declares `needs: [blend]` and reads
-`${{ nodes.blend.outputs.output_base64 }}` as its input. Manifest bindings map
-the two root images and scalar parameters to their child arguments. The
-`primaryOutput` uses `node_result` from `compress`, preserving the terminal image
-response rather than returning an intermediate blend or stringifying it.
-
-Missing required images and child failures must produce execution failures;
-compression must not run after failed blending or report the intermediate image
-as success. Package creation uses `scripts/Build-LoomSampleArtPackages.ps1`, and
-installation uses the normal package lifecycle. Retired built-in `script`/
-`cli_wrapper` frameworks, AHRP calls and one-off resource-tree installers are not
-the current implementation. Otter uses the public `loom.hook.v1` execution contract.
+- Two image inputs (`input` and `reference`) feed `blend`, parameterized by `mix_ratio` (`0..=100`, default `50`) and `quality_num` (`60..=100`, default `90`, `lossless: false`).
+- `compress` declares `needs: [blend]`, consumes `${{ nodes.blend.outputs.output_base64 }}`, and supplies the workflow's `primaryOutput` via `node_result`.
+- Missing required inputs or upstream `blend` failures abort the DAG immediately without running `compress` or emitting intermediate outputs as formal results.
+- Build sample packages with `scripts/Build-LoomSampleArtPackages.ps1` and install them through the standard package lifecycle.

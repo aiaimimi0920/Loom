@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 #else
 [assembly: AssemblyVersion("1.0.0.0")]
 #endif
-// 便携文本规范化应用：新版在去掉首尾空白之外合并连续空白。
+// Portable text normalization app: v2 collapses consecutive whitespace in addition to trimming.
 class TextNormalize {
     static int Main(string[] args) {
         if (args.Length != 1) return 2;

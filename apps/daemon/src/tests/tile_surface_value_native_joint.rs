@@ -1,4 +1,4 @@
-// 真实LAN离散值→原executor→实际framework/Art；expected独立于Otter事件编码/呈现。
+// Real LAN discrete values -> original executor -> live framework/Art; expected values remain independent of Otter event encoding and rendering.
 mod values {
     use super::*;
     #[test]
@@ -85,7 +85,7 @@ mod values {
         }
         signal(&f, "switch-on");
         f.phase(&mut child, "switch-on-done.json");
-        // patch先提交并释放锁，正式结果/ACK随后到达；不可将中间态当作动作完成。
+        // Patches commit and release the lock before the formal result/ACK arrives; intermediate state must not be treated as action completion.
         let first = wait_source(&f, &mut child, instance, |v| {
             v["authoritativeState"]["price"] == 101
                 && v["latestResult"]["outputs"]["price"]["value"] == 101

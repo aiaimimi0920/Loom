@@ -1,4 +1,4 @@
-// 复用原真实LAN/配对/窗口child；独立断言源instance存活、唯一ephemeral view及有界资源更新。
+// Reuses real LAN, pairing, and windowed child; independently asserts source instance liveness, single ephemeral view, and bounded resource updates.
 #[test]
 #[ignore = "explicit real Loom LAN Art image mixed Tile view update freeze black resume stop"]
 fn real_lan_native_tile_art_views_images_and_cleanup() {
@@ -89,7 +89,7 @@ fn art_run(revoked: bool) {
         .iter()
         .find(|(id, _)| id.as_str() != source)
         .unwrap();
-    // ephemeral/mirror_of刻意不序列化；公开身份与最终附件回收共同证明view归属/生命周期。
+    // `ephemeral` and `mirror_of` are intentionally omitted from serialization; public identity and final attachment reclamation jointly prove view ownership and lifetime.
     assert!(record.get("ephemeral").is_none());
     assert_eq!(record["descriptor"]["deviceId"], device);
     assert_eq!(record["descriptor"]["hookNodeId"], format!("wall:{}", endpoint["endpointId"].as_str().unwrap()));
@@ -108,7 +108,7 @@ fn art_run(revoked: bool) {
     assert_eq!(status, 200, "{changed}");
     let updated = f.phase(&mut output, "tile-art-updated.json");
     assert_eq!(updated["sourcePbgra"], json!([0, 255, 0, 255]));
-    // 连续null snapshot轮询必须复用同一view，不创建第二个源/附件。
+    // Consecutive null-snapshot polls must reuse the same view rather than creating a second source or attachment.
     thread::sleep(Duration::from_millis(750));
     assert_eq!(read()["attachments"].as_object().unwrap().len(), 2);
     assert!(read()["attachments"].get(view).is_some());

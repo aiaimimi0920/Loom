@@ -1,4 +1,4 @@
-//! 显式协议不扩旧v1字段；未知/伪造字段、错误终态及超预算均拒绝。
+//! Explicit confirmation protocol never widens legacy v1 fields; unknown/forged fields, invalid terminal states, and over-budget payloads are rejected.
 use super::*;
 use serde_json::json;
 fn challenge() -> Challenge {

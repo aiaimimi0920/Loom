@@ -17,10 +17,11 @@ art.runtime.json
 runtime and resources
 ```
 
-Loom migrates compatible legacy flat installs into an immutable
-`versions/<version>-<digest>` directory and creates `active.json`, `locks`,
-`state`, `cache`, and `outputs`. Code becomes read-only; mutable files must move
-to the execution-context directories.
+Loom installs packages strictly into immutable
+`<frameworks|arts>/<publisher>/<id>/versions/<version>-<digest>` directories with
+`active.json`, `locks`, `state`, `cache`, and `outputs`. Legacy flat install roots
+are retired and are not migrated automatically. Code directories remain read-only;
+mutable runtime files must use the execution-context directories.
 
 ## Publisher namespace
 
@@ -47,10 +48,10 @@ only the names needed by the framework.
 3. `loom-plugin sign` and validate with a trust store.
 4. `loom-plugin pack`.
 5. Install into a fresh control plane.
-6. Execute through HTTP, Otter Bridge, and AHRP as applicable.
+6. Execute through HTTP and the `loom.hook.v1` Otter Bridge.
 7. Upgrade, rollback, restart, disable/enable, uninstall/reinstall.
 8. Verify Loom and Otter source fingerprints did not change.
 
-Legacy execution paths remain for compatibility during migration, but new
-Desktop-authored content is built as an Art ZIP and installed through the same
-validator/immutable lifecycle as external packages.
+Retired AHRP routes and legacy built-in script adapters are removed; all
+Desktop-authored and external packages build as canonical Art ZIPs and install
+through the same verified immutable lifecycle.

@@ -1,4 +1,4 @@
-//! 只读取immutable resolver确认的包内声明；路径不进入wire，所有声明先受同一运行预算约束。
+//! Reads only in-package declarations verified by the immutable resolver; filesystem paths never enter the wire, and all declarations share the same runtime budget.
 use super::*;
 use loom_protocol::local_art::package::{validate_resources, Resource};
 #[derive(Deserialize)]

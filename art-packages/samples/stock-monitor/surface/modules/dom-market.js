@@ -36,30 +36,27 @@ const renderBookSide = (host, levels, tag, previousClose, palette) => {
             : deltaColor(asNumber(level.price) - previousClose, palette);
         writeText(line.children[2], volumeText);
         line.title = label + " " + priceText
-            + " · 委托量 " + volumeText
-            + (orders === null ? "" : " · 笔数 " + formatVolume(orders));
+            + " · Vol " + volumeText
+            + (orders === null ? "" : " · Orders " + formatVolume(orders));
     });
 };
 const tapeDefinitions = [
-    ["均价", (tape) => formatNumber(tape.avgPrice, 2)],
-    ["成交量", (tape) => formatVolume(tape.volume)],
-    ["成交额", (tape) => formatVolume(tape.amount)],
-    ["换手", (tape) => asNumber(tape.turnoverRate) === null ? "--" : formatNumber(tape.turnoverRate, 2) + "%"],
-    ["振幅", (tape) => asNumber(tape.amplitude) === null ? "--" : formatNumber(tape.amplitude, 2) + "%"],
-    ["总市值", (tape) => formatVolume(tape.marketCapital)]
+    ["Avg", (tape) => formatNumber(tape.avgPrice, 2)],
+    ["Volume", (tape) => formatVolume(tape.volume)],
+    ["Amount", (tape) => formatVolume(tape.amount)],
+    ["Turnover", (tape) => asNumber(tape.turnoverRate) === null ? "--" : formatNumber(tape.turnoverRate, 2) + "%"],
+    ["Amplitude", (tape) => asNumber(tape.amplitude) === null ? "--" : formatNumber(tape.amplitude, 2) + "%"],
+    ["Mkt Cap", (tape) => formatVolume(tape.marketCapital)]
 ];
-// 标签是常量，值在 strong 里。原来把标签写进 item.textContent 再 append strong，所以
-// 每帧都要重建整个 span；这里把标签放进独立文本节点，只有值需要改写。
+// Keep the static label in its own text node so frame updates only mutate the <strong> value element.
 const buildTapeItem = (index) => {
     const item = document.createElement("span");
     item.className = "tape-item";
     item.append(document.createTextNode(tapeDefinitions[index][0]), document.createElement("strong"));
     return item;
 };
-// 运行时已经判定过新鲜度（stale/ageSeconds/maxAgeSeconds），但界面此前只画一个时钟串，
-// 陈旧记录和最新记录长得一模一样。把判定显式标出来，年龄已知时连秒数一起给。
-// asNumber 不能用在这里：Number(null) 是 0，观测时间缺失的记录会被写成"已陈旧 0 秒"，
-// 也就是刚刚才观测到——正好和运行时 fail-closed 的判定相反。
+// Surface the runtime's staleness verdict alongside the clock string. Guard null/empty values before
+// calling asNumber() because Number(null) is 0, which would mislabel an ageless fail-closed record as 0s old.
 const asAgeSeconds = (value) => {
     if (value === null || value === undefined || value === "") return null;
     return asNumber(value);
@@ -68,23 +65,22 @@ const staleLabel = (record) => {
     if (!record || record.stale !== true) return "";
     const age = asAgeSeconds(record.ageSeconds);
     const limit = asAgeSeconds(record.maxAgeSeconds);
-    if (age === null) return "已陈旧（观测时间不可用）";
-    if (limit === null) return "已陈旧 " + formatNumber(age, 0) + " 秒";
-    return "已陈旧 " + formatNumber(age, 0) + "/" + formatNumber(limit, 0) + " 秒";
+    if (age === null) return "Stale (observation time unavailable)";
+    if (limit === null) return "Stale " + formatNumber(age, 0) + "s";
+    return "Stale " + formatNumber(age, 0) + "/" + formatNumber(limit, 0) + "s";
 };
 const withStale = (base, record) => {
     const label = staleLabel(record);
     return label ? base + " · " + label : base;
 };
-// 报价成功但 K 线抓取失败时，运行时会送来 historyWarning：状态仍然是 ready，可图表画不
-// 出来。借用页脚同一个位置显示，用黄色和 error 的红色区分非致命告警；错误优先，因为报价
-// 本身都没拿到时，抱怨图表没有意义。
+// When quote refresh succeeds without K-line data, surface historyWarning in the footer in warning
+// yellow while keeping fatal quote errors higher priority in red.
 const footerNoticeOf = (state) => {
     const error = typeof state.error === "string" ? state.error.trim() : "";
     if (error !== "") return { text: boundedText(error, ""), warning: false };
     const historyWarning = typeof state.historyWarning === "string" ? state.historyWarning.trim() : "";
     if (historyWarning === "") return { text: "", warning: false };
-    return { text: "K 线数据不可用：" + boundedText(historyWarning, ""), warning: true };
+    return { text: "K-line data unavailable: " + boundedText(historyWarning, ""), warning: true };
 };
 const updateOrderBook = (state, quote, palette) => {
     if (!refs.book) return;
@@ -105,20 +101,20 @@ const updateOrderBook = (state, quote, palette) => {
     if (snapshot) {
         const book = snapshot.book;
         const levels = asNumber(book.levels) || Math.max(snapshot.bids.length, snapshot.asks.length);
-        writeText(refs.bookTitle, levels + " 档盘口");
+        writeText(refs.bookTitle, levels + "-Level Order Book");
         const buyPercent = asNumber(book.buyPercent);
         const sellPercent = asNumber(book.sellPercent);
         const netVolume = asNumber(book.netVolume);
         const parts = [];
         if (buyPercent !== null && sellPercent !== null) {
-            parts.push("买 " + formatNumber(buyPercent, 2) + "% / 卖 " + formatNumber(sellPercent, 2) + "%");
+            parts.push("Bid " + formatNumber(buyPercent, 2) + "% / Ask " + formatNumber(sellPercent, 2) + "%");
         }
-        if (netVolume !== null) parts.push("委差 " + formatSigned(netVolume, ""));
-        if (asNumber(book.ratio) !== null) parts.push("量比 " + formatNumber(book.ratio, 2));
+        if (netVolume !== null) parts.push("Net " + formatSigned(netVolume, ""));
+        if (asNumber(book.ratio) !== null) parts.push("Ratio " + formatNumber(book.ratio, 2));
         parts.push(withStale(text(book.source, "xueqiu") + " · " + formatClock(book.observedAt), book));
         if (hasTape) {
             const tapeStale = staleLabel(tape);
-            if (tapeStale) parts.push("实时逐笔" + tapeStale);
+            if (tapeStale) parts.push("Live tape " + tapeStale);
         }
         writeText(refs.bookMeta, parts.join(" · "));
         refs.bookMeta.title = refs.bookMeta.textContent;
@@ -130,13 +126,13 @@ const updateOrderBook = (state, quote, palette) => {
         refs.bookBuyBar.style.background = palette.up;
         refs.bookSellBar.style.width = (100 - buyShare) + "%";
         refs.bookSellBar.style.background = palette.down;
-        renderBookSide(refs.bids, snapshot.bids, "买", previousClose, palette);
-        renderBookSide(refs.asks, snapshot.asks, "卖", previousClose, palette);
+        renderBookSide(refs.bids, snapshot.bids, "B", previousClose, palette);
+        renderBookSide(refs.asks, snapshot.asks, "A", previousClose, palette);
     }
     else {
-        writeText(refs.bookTitle, "盘中实时");
+        writeText(refs.bookTitle, "Intraday Live");
         writeText(refs.bookMeta, hasTape
-            ? withStale(text(tape.source, "xueqiu") + " · " + formatClock(tape.observedAt) + " · 该市场不提供十档盘口", tape)
+            ? withStale(text(tape.source, "xueqiu") + " · " + formatClock(tape.observedAt) + " · Ten-level depth unavailable for this market", tape)
             : "");
         refs.bookMeta.title = refs.bookMeta.textContent;
         refs.bookMeta.classList.toggle("is-stale", hasTape && tape.stale === true);
@@ -151,7 +147,7 @@ const updateOrderBook = (state, quote, palette) => {
     tapeDefinitions.forEach((definition, index) => {
         writeText(items[index].lastElementChild, definition[1](tape));
     });
-    // 逐笔派生量（均价/成交额/换手）全部来自这一条记录，记录陈旧时这些数字也陈旧。
+    // Derived tape metrics come from the same live record, so badge them stale together.
     const tapeStaleLabel = staleLabel(tape);
     refs.tape.classList.toggle("is-stale", tapeStaleLabel !== "");
     refs.tape.title = tapeStaleLabel;

@@ -29,7 +29,7 @@
                 "id": "title",
                 "type": "text",
                 "props": {
-                  "text": "设备仪表板"
+                  "text": "Device Dashboard"
                 }
               },
               {
@@ -42,7 +42,7 @@
                   "change": "dashboard_toggle"
                 },
                 "accessibility": {
-                  "label": "自动同步"
+                  "label": "Auto sync"
                 }
               }
             ]
@@ -51,10 +51,10 @@
             "id": "sync_status",
             "type": "text",
             "props": {
-              "text": "等待同步"
+              "text": "Waiting to sync"
             },
             "accessibility": {
-              "label": "同步状态",
+              "label": "Sync status",
               "live": "polite"
             }
           },
@@ -66,7 +66,7 @@
               "max": 1
             },
             "accessibility": {
-              "label": "同步进度"
+              "label": "Sync progress"
             }
           },
           {
@@ -84,21 +84,21 @@
                 "id": "device_1",
                 "type": "text",
                 "props": {
-                  "text": "主机 · 在线"
+                  "text": "Host · Online"
                 }
               },
               {
                 "id": "device_2",
                 "type": "text",
                 "props": {
-                  "text": "平板 · 等待同步"
+                  "text": "Tablet · Waiting to sync"
                 }
               },
               {
                 "id": "device_3",
                 "type": "text",
                 "props": {
-                  "text": "工作站 · 在线"
+                  "text": "Workstation · Online"
                 }
               }
             ]
@@ -107,7 +107,7 @@
             "id": "chart",
             "type": "image",
             "props": {
-              "alt": "设备同步状态图"
+              "alt": "Device sync status chart"
             },
             "layout": {
               "width": "100%",
@@ -118,7 +118,7 @@
             "id": "refresh",
             "type": "button",
             "props": {
-              "label": "刷新仪表板"
+              "label": "Refresh Dashboard"
             },
             "events": {
               "click": "dashboard_refresh"

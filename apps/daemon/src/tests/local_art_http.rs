@@ -245,7 +245,7 @@ mod local_art_http {
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.server.finish().expect("stop local Art test daemon");
-            // 失败保留原始跨进程日志与夹具，成功才清理由本测试创建的临时目录。
+            // Preserve raw cross-process logs and fixtures on failure; clean up temporary directories created by this test only on success.
             if !thread::panicking() {
                 remove_test_dir(&self.root);
             }

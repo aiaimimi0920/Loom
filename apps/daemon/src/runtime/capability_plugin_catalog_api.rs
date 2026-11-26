@@ -18,7 +18,7 @@ fn list_capability_catalog(
             serde_json::to_string(&json!({
                 "configured": false,
                 "packages": [],
-                "diagnostic": "未配置官方能力扩展目录"
+                "diagnostic": "Official capability plugin catalog is not configured"
             }))?,
         ));
     };

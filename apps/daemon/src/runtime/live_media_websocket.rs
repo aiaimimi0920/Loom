@@ -405,7 +405,7 @@ fn run_live_viewer_socket<S: LiveMediaSocket>(
                     .is_ok();
                 sample.socket_write_ms = bounded_media_millis(write_started.elapsed());
                 sample.write_succeeded = sent;
-                // socket 写入不是对端接收或呈现回执；计时仅使用本机单调时钟。
+                // Socket write is neither a peer receive nor presentation receipt; timing uses only the local monotonic clock.
                 sessions.record_media_forward(session_id, sample);
                 if !sent {
                     break;

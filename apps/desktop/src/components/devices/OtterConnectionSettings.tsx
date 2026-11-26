@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Field, Input, Notice, Select, Switch } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import {
   loadOtterConnections,
   saveOtterConnectionPolicy,
@@ -13,6 +14,7 @@ import "./DeviceConnectionLayout.css";
 import { LoomLanSettings } from "./LoomLanSettings.tsx";
 
 export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; online: boolean }) {
+  const { t } = useUiText();
   const [view, setView] = useState<OtterConnectionsView | null>(null);
   const [draft, setDraft] = useState<OtterConnectionPolicyDraft | null>(null);
   const [password, setPassword] = useState("");
@@ -78,7 +80,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
       if (current !== epoch.current) return;
       if (saved) {
         setPassword("");
-        setNotice("已保存");
+        setNotice(t("devices.otterConnection.savedNotice"));
       }
       const next = await loadOtterConnections(baseUrl);
       if (current === epoch.current) setView(next);
@@ -96,14 +98,14 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
   return (
     <section
       className="loom-device-settings otter-connection-settings"
-      aria-label="Otter 连接设置"
+      aria-label={t("devices.otterConnection.ariaLabel")}
       aria-busy={busy || undefined}
     >
       <header>
-        <h2>连接设置</h2>
+        <h2>{t("devices.otterConnection.heading")}</h2>
         <code title={view?.loom.loomId}>{view?.loom.loomId ?? "-"}</code>
       </header>
-      {!online && <Notice tone="warning">Loom 离线</Notice>}
+      {!online && <Notice tone="warning">{t("devices.otterConnection.offlineNotice")}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
       {notice && <Notice tone="success">{notice}</Notice>}
       <LoomLanSettings baseUrl={baseUrl} online={online} />
@@ -123,7 +125,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
         >
           <fieldset className="loom-device-settings__fields" disabled={!online || busy}>
             <div className="loom-device-settings__wide">
-              <Field label="名称">
+              <Field label={t("devices.common.name")}>
                 <Input
                   maxLength={80}
                   value={draft.name}
@@ -133,20 +135,20 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
               </Field>
             </div>
             <div className="loom-device-settings__wide">
-              <Field label="审批">
+              <Field label={t("devices.otterConnection.approvalLabel")}>
                 <Select
                   value={draft.approval}
                   onChange={(event) => change({ approval: event.target.value as OtterApprovalPolicy })}
                 >
-                  <option value="manual">手动批准</option>
-                  <option value="lan">局域网自动批准</option>
-                  <option value="authenticated">已连接设备自动批准</option>
+                  <option value="manual">{t("devices.otterConnection.approval.manual")}</option>
+                  <option value="lan">{t("devices.otterConnection.approval.lan")}</option>
+                  <option value="authenticated">{t("devices.otterConnection.approval.authenticated")}</option>
                 </Select>
               </Field>
             </div>
             <div className="otter-connection-password loom-device-settings__wide">
               <Switch
-                label="启用连接码"
+                label={t("devices.otterConnection.codeSwitch")}
                 checked={passwordEnabled}
                 onChange={(event) => {
                   setPasswordEnabled(event.target.checked);
@@ -156,7 +158,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
               <div className="otter-connection-secret-slot">
                 <div hidden={!passwordEnabled} inert={!passwordEnabled}>
                   <Input
-                    aria-label="连接码"
+                    aria-label={t("devices.otterConnection.codeAriaLabel")}
                     type="password"
                     autoComplete="new-password"
                     minLength={8}
@@ -164,7 +166,11 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
                     value={password}
                     disabled={!passwordEnabled}
                     required={passwordEnabled && !view?.loom.passwordRequired}
-                    placeholder={view?.loom.passwordRequired ? "已设置 · 留空保留" : "至少 8 位"}
+                    placeholder={
+                      view?.loom.passwordRequired
+                        ? t("devices.otterConnection.codePlaceholderKeep")
+                        : t("devices.otterConnection.codePlaceholderMin")
+                    }
                     onChange={(event) => setPassword(event.target.value)}
                   />
                 </div>
@@ -172,7 +178,7 @@ export function OtterConnectionSettings({ baseUrl, online }: { baseUrl: string; 
             </div>
             <div className="loom-device-settings__actions loom-device-settings__wide">
               <Button type="submit" variant="primary" loading={busy}>
-                保存
+                {t("devices.common.save")}
               </Button>
             </div>
           </fieldset>

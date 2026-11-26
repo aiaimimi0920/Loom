@@ -1,3 +1,4 @@
+import { uiText } from "../i18n/index.ts";
 import { postJson } from "./loomApi/transport.ts";
 
 export type NAccountView =
@@ -23,41 +24,46 @@ export function parseNAccount(value: unknown): NAccountView {
   }
   throw new Error("naccount_response_invalid");
 }
+
 export async function naccountRequest(baseUrl: string, action: "status" | "start" | "refresh" | "logout") {
   return parseNAccount(await postJson<unknown>(baseUrl, `/v1/naccount/${action}`, {}));
 }
+
+const CLOUD_ERROR_MESSAGE_IDS: ReadonlyArray<readonly [string, string]> = [
+  ["naccount_not_configured", "settings.cloud.error.naccountNotConfigured"],
+  ["naccount_callback_port_required", "settings.cloud.error.callbackPortRequired"],
+  ["naccount_login_required", "settings.cloud.error.loginRequired"],
+  ["naccount_signed_out", "settings.cloud.error.signedOut"],
+  ["naccount_logout_required", "settings.cloud.error.logoutRequired"],
+  ["naccount_network_unavailable", "settings.cloud.error.naccountUnavailable"],
+  ["asset_library_native_client_not_configured", "settings.cloud.error.assetClientNotConfigured"],
+  ["asset_library_distribution_unavailable", "settings.cloud.error.distributionUnavailable"],
+  ["asset_library_unavailable", "settings.cloud.error.assetUnavailable"],
+  ["asset_library_response_invalid", "settings.cloud.error.responseInvalid"],
+  ["asset_library_download_invalid", "settings.cloud.error.downloadInvalid"],
+  ["asset_library_download_interrupted", "settings.cloud.error.downloadInterrupted"],
+  ["asset_library_download_cancelled", "settings.cloud.error.downloadCancelled"],
+  ["asset_library_task_not_found", "settings.cloud.error.taskNotFound"],
+  ["asset_library_engine_busy", "settings.cloud.error.engineBusy"],
+  ["asset_library_download_rejected", "settings.cloud.error.downloadRejected"],
+  ["asset_library_save_failed", "settings.cloud.error.saveFailed"],
+  ["asset_library_install_selection_invalid", "settings.cloud.error.installSelectionInvalid"],
+  ["asset_library_install_selection_changed", "settings.cloud.error.installSelectionChanged"],
+  ["asset_library_install_file_changed", "settings.cloud.error.installFileChanged"],
+  ["asset_library_framework_required", "settings.cloud.error.frameworkRequired"],
+  ["asset_library_host_install_rejected", "settings.cloud.error.hostInstallRejected"],
+];
+
 export function cloudError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const errors: Record<string, string> = {
-    naccount_not_configured: "尚未配置 Loom 的 NAccount 客户端。",
-    naccount_callback_port_required: "NAccount 登录需要本机 Loom 服务运行于 127.0.0.1:8765。",
-    naccount_login_required: "登录已失效，请检查登录状态或重新登录。",
-    naccount_signed_out: "请先登录 NAccount。",
-    naccount_logout_required: "请先取消当前登录或退出账号。",
-    naccount_network_unavailable: "NAccount 暂时无法连接。",
-    asset_library_native_client_not_configured: "AssetLibrary 尚未配置 Loom 客户端。",
-    asset_library_distribution_unavailable: "AssetLibrary 暂未开放分发。",
-    asset_library_unavailable: "AssetLibrary 暂时无法连接。",
-    asset_library_response_invalid: "AssetLibrary 返回的数据无效。",
-    asset_library_download_invalid: "下载内容校验失败，未保存文件。",
-    asset_library_download_interrupted: "下载已中断，请重新下载。",
-    asset_library_download_cancelled: "下载已取消。",
-    asset_library_task_not_found: "下载任务已结束或当前账号已变化。",
-    asset_library_engine_busy: "下载任务已满，请稍后重试。",
-    asset_library_download_rejected: "下载授权已失效或内容已不可用，请重新读取资源库。",
-    asset_library_save_failed: "无法保存下载文件，请检查本机存储。",
-    asset_library_install_selection_invalid: "请选择可安装的 Loom 能力包或 Art Node。",
-    asset_library_install_selection_changed: "资源版本或类型已变化，请重新读取资源库。",
-    asset_library_install_file_changed: "下载文件在安装前发生变化，已停止安装。",
-    asset_library_framework_required: "包已下载，但所需 Art 框架尚未就绪，请先安装并启用对应框架。",
-    asset_library_host_install_rejected: "包已下载，但 Loom 安装器拒绝了该包；请检查包格式、发布者信任、签名及版本冲突。",
-  };
-  const known = Object.entries(errors).find(([code]) => message.includes(code))?.[1];
-  if (known) return known;
-  if (/401|403/.test(message)) return "本机服务身份校验失败，请重新启动 Loom。";
-  if (/invalid args|missing required key/.test(message)) return "桌面请求参数无效，请更新 Loom。";
-  if (/not found|not allowed|not permitted/.test(message)) return "桌面登录接口不可用，请更新 Loom。";
-  if (/无法连接|Failed to fetch|NetworkError/.test(message)) return "无法连接本机 Loom 服务，请重试连接。";
-  if (message.includes("naccount_response_invalid")) return "本机服务返回的登录状态无效，请更新 Loom。";
-  return "请求未完成，请重试连接。";
+  const known = CLOUD_ERROR_MESSAGE_IDS.find(([code]) => message.includes(code));
+  if (known) return uiText(known[1]);
+  if (/401|403/.test(message)) return uiText("settings.cloud.error.localAuthFailed");
+  if (/invalid args|missing required key/.test(message)) return uiText("settings.cloud.error.invalidDesktopArgs");
+  if (/not found|not allowed|not permitted/.test(message)) return uiText("settings.cloud.error.loginBridgeUnavailable");
+  if (/\u65e0\u6cd5\u8fde\u63a5|Failed to fetch|NetworkError|unable to connect|connection refused/i.test(message)) {
+    return uiText("settings.cloud.error.localServiceUnreachable");
+  }
+  if (message.includes("naccount_response_invalid")) return uiText("settings.cloud.error.invalidLoginState");
+  return uiText("settings.cloud.error.generic");
 }

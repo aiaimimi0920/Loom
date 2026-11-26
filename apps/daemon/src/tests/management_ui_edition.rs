@@ -56,7 +56,7 @@ fn management_ui_serves_login_gate_cookie_exchange_and_embedded_spa() {
             unauth.starts_with("HTTP/1.1 200 OK"),
             "unexpected unauthenticated /ui/ response (raw output withheld)"
         );
-        assert!(unauth.contains("Loom Web 管理控制台"));
+        assert!(unauth.contains("Loom Web Management Console"));
 
         let exchange = raw_http_get(
             port,

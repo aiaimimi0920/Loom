@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { currentLanguage, setLanguage, uiTextFor } from "../i18n/index.ts";
 import { desktopStyleSource as styleSource } from "./desktopStyleSource.ts";
 import {
   MCP_MARKET_SERVERS,
@@ -23,7 +24,9 @@ const hubSource = [
   "../components/mcp/McpStorePanel.tsx",
   "../components/mcp/McpServerDialog.tsx",
   "../components/mcp/McpCredentialDialog.tsx",
-].map((sourcePath) => readFileSync(new URL(sourcePath, import.meta.url), "utf8")).join("\n");
+]
+  .map((sourcePath) => readFileSync(new URL(sourcePath, import.meta.url), "utf8"))
+  .join("\n");
 const credentialDialogSource = readFileSync(
   new URL("../components/mcp/McpCredentialDialog.tsx", import.meta.url),
   "utf8",
@@ -91,27 +94,31 @@ test("maps official Registry packages and remotes into selectable install option
 });
 
 test("prefers a real Registry localization matching the Loom language", () => {
+  const zhTitle = "\u672c\u5730\u5316 MCP";
+  const zhDescription = "\u6765\u81ea\u4ed3\u5e93\u7684\u4e2d\u6587\u4ecb\u7ecd\u3002";
   const response: McpRegistryResponse = {
-    servers: [{
-      server: {
-        name: "io.example/localized",
-        title: "Localized MCP",
-        description: "English upstream description.",
-        localizations: {
-          "zh-Hans": { title: "本地化 MCP", description: "来自仓库的中文介绍。" },
-          en: { title: "Localized MCP (English)", description: "Localized English description." },
+    servers: [
+      {
+        server: {
+          name: "io.example/localized",
+          title: "Localized MCP",
+          description: "English upstream description.",
+          localizations: {
+            "zh-Hans": { title: zhTitle, description: zhDescription },
+            en: { title: "Localized MCP (English)", description: "Localized English description." },
+          },
+          packages: [{ registryType: "npm", identifier: "localized-mcp", transport: { type: "stdio" } }],
         },
-        packages: [{ registryType: "npm", identifier: "localized-mcp", transport: { type: "stdio" } }],
       },
-    }],
+    ],
   };
 
   const [chinese] = mapRegistryResponseToMarketplace(response, "zh-CN");
   const [english] = mapRegistryResponseToMarketplace(response, "en-US");
   const [fallback] = mapRegistryResponseToMarketplace(response, "ja-JP");
 
-  assert.equal(chinese.name, "本地化 MCP");
-  assert.equal(chinese.description, "来自仓库的中文介绍。");
+  assert.equal(chinese.name, zhTitle);
+  assert.equal(chinese.description, zhDescription);
   assert.equal(english.name, "Localized MCP (English)");
   assert.equal(english.description, "Localized English description.");
   assert.equal(fallback.name, "Localized MCP");
@@ -120,13 +127,15 @@ test("prefers a real Registry localization matching the Loom language", () => {
 
 test("normalizes Registry repository transports into safe browser links", () => {
   const [server] = mapRegistryResponseToMarketplace({
-    servers: [{
-      server: {
-        name: "io.example/source-link",
-        repository: { url: "git+https://github.com/example/source-link.git" },
-        packages: [{ registryType: "npm", identifier: "source-link-mcp", transport: { type: "stdio" } }],
+    servers: [
+      {
+        server: {
+          name: "io.example/source-link",
+          repository: { url: "git+https://github.com/example/source-link.git" },
+          packages: [{ registryType: "npm", identifier: "source-link-mcp", transport: { type: "stdio" } }],
+        },
       },
-    }],
+    ],
   });
 
   assert.equal(server.sourceUrl, "https://github.com/example/source-link.git");
@@ -139,20 +148,27 @@ test("builds compact, directly selectable MCP page numbers", () => {
   assert.deepEqual(buildMcpPaginationItems(12, 12), [1, "start-ellipsis", 9, 10, 11, 12]);
 });
 
-test("preserves configured secrets when rebuilding an official Registry service", () => {
+test("preserves configured secrets when rebuilding an official Registry service", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
   const [marketItem] = mapRegistryResponseToMarketplace({
-    servers: [{
-      server: {
-        name: "io.example/secure",
-        title: "Secure MCP",
-        packages: [{
-          registryType: "npm",
-          identifier: "@example/secure-mcp",
-          transport: { type: "stdio" },
-          environmentVariables: [{ name: "API_KEY", isRequired: true }],
-        }],
+    servers: [
+      {
+        server: {
+          name: "io.example/secure",
+          title: "Secure MCP",
+          packages: [
+            {
+              registryType: "npm",
+              identifier: "@example/secure-mcp",
+              transport: { type: "stdio" },
+              environmentVariables: [{ name: "API_KEY", isRequired: true }],
+            },
+          ],
+        },
       },
-    }],
+    ],
   });
   assert.ok(marketItem);
 
@@ -164,49 +180,80 @@ test("preserves configured secrets when rebuilding an official Registry service"
     env: { API_KEY: "saved-secret" },
     enabled: false,
   });
-  const health = getMarketplaceHealth(marketItem, configured);
 
-  assert.equal(configured.command, "npx");
-  assert.equal(configured.env?.API_KEY, "saved-secret");
-  assert.equal(configured.enabled, false);
-  assert.equal(health.configured, true);
-  assert.equal(health.requiredEnvPresent, true);
-  assert.deepEqual(health.tags.map((tag) => tag.label), ["已安装", "已禁用", "密钥已填"]);
+  for (const language of ["en", "zh-Hans"] as const) {
+    setLanguage(language);
+    const health = getMarketplaceHealth(marketItem, configured);
+    assert.equal(configured.command, "npx");
+    assert.equal(configured.env?.API_KEY, "saved-secret");
+    assert.equal(configured.enabled, false);
+    assert.equal(health.configured, true);
+    assert.equal(health.requiredEnvPresent, true);
+    assert.deepEqual(
+      health.tags.map((tag) => tag.label),
+      [
+        uiTextFor(language, "mcp.health.installed"),
+        uiTextFor(language, "mcp.status.disabled"),
+        uiTextFor(language, "mcp.health.secretConfigured"),
+      ],
+    );
+  }
 });
 
-test("ships a small reviewed Loom catalog instead of the public Registry firehose", () => {
+test("ships a small reviewed Loom catalog instead of the public Registry firehose", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
   const [registryServer] = mapRegistryResponseToMarketplace({
-    servers: [{ server: { name: "io.example/echo", packages: [{ registryType: "npm", identifier: "echo-mcp", transport: { type: "stdio" } }] } }],
+    servers: [
+      {
+        server: {
+          name: "io.example/echo",
+          packages: [{ registryType: "npm", identifier: "echo-mcp", transport: { type: "stdio" } }],
+        },
+      },
+    ],
   });
   assert.ok(registryServer);
   const merged = mergeRegistryAndCuratedMarketplace([registryServer, registryServer], MCP_MARKET_SERVERS);
 
   assert.equal(MCP_MARKET_SERVERS.length, 8);
   assert.ok(MCP_MARKET_SERVERS.every((server) => server.sourceKind === "curated"));
-  assert.ok(MCP_MARKET_SERVERS.every((server) => server.sourceLabel === "Loom 精选"));
-  assert.deepEqual(MCP_MARKET_SERVERS.map((server) => server.id), [
-    "loom.curated/memory",
-    "loom.curated/filesystem",
-    "loom.curated/fetch",
-    "loom.curated/git",
-    "loom.curated/time",
-    "loom.curated/sequential-thinking",
-    "loom.curated/playwright",
-    "loom.curated/github",
+  for (const language of ["en", "zh-Hans"] as const) {
+    setLanguage(language);
+    assert.ok(
+      MCP_MARKET_SERVERS.every((server) => server.sourceLabel === uiTextFor(language, "mcp.market.source.curated")),
+    );
+    const filesystem = MCP_MARKET_SERVERS.find((server) => server.id === "loom.curated/filesystem");
+    assert.equal(filesystem?.args[2], uiTextFor(language, "mcp.catalog.filesystem.argAllowedDirectory"));
+  }
+  assert.deepEqual(
+    MCP_MARKET_SERVERS.map((server) => server.id),
+    [
+      "loom.curated/memory",
+      "loom.curated/filesystem",
+      "loom.curated/fetch",
+      "loom.curated/git",
+      "loom.curated/time",
+      "loom.curated/sequential-thinking",
+      "loom.curated/playwright",
+      "loom.curated/github",
+    ],
+  );
+  assert.equal(
+    MCP_MARKET_SERVERS.find((server) => server.id === "loom.curated/filesystem")?.requiresManualConfiguration,
+    true,
+  );
+  assert.deepEqual(MCP_MARKET_SERVERS.find((server) => server.id === "loom.curated/github")?.requiredEnvKeys, [
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
   ]);
-  assert.equal(MCP_MARKET_SERVERS.find((server) => server.id === "loom.curated/filesystem")?.requiresManualConfiguration, true);
-  assert.deepEqual(MCP_MARKET_SERVERS.find((server) => server.id === "loom.curated/github")?.requiredEnvKeys, ["GITHUB_PERSONAL_ACCESS_TOKEN"]);
   assert.equal(merged.filter((server) => server.id === registryServer.id).length, 1);
 });
 
 test("validates editable MCP key-value fields without discarding valid entries", () => {
-  const parsed = parseMcpKeyValueLines([
-    "# local comment",
-    "API_KEY=secret=value",
-    "missing-separator",
-    " =missing-key",
-    "EMPTY=",
-  ].join("\n"));
+  const parsed = parseMcpKeyValueLines(
+    ["# local comment", "API_KEY=secret=value", "missing-separator", " =missing-key", "EMPTY="].join("\n"),
+  );
 
   assert.deepEqual(parsed.values, {
     API_KEY: "secret=value",
@@ -225,22 +272,24 @@ test("accepts only credential-free HTTP MCP URLs", () => {
 
 test("rejects unsafe Registry remotes before they reach install configuration", () => {
   const [server] = mapRegistryResponseToMarketplace({
-    servers: [{
-      server: {
-        name: "io.example/remote-safety",
-        remotes: [
-          { type: "streamable-http", url: "javascript:alert(1)" },
-          { type: "streamable-http", url: "file:///tmp/mcp" },
-          { type: "streamable-http", url: "https://user:secret@example.test/mcp" },
-          {
-            type: "streamable-http",
-            url: "https://safe.example.test/{tenant}/mcp",
-            variables: { tenant: { isRequired: true } },
-            headers: [{ name: "Authorization", isRequired: true, isSecret: true }],
-          },
-        ],
+    servers: [
+      {
+        server: {
+          name: "io.example/remote-safety",
+          remotes: [
+            { type: "streamable-http", url: "javascript:alert(1)" },
+            { type: "streamable-http", url: "file:///tmp/mcp" },
+            { type: "streamable-http", url: "https://user:secret@example.test/mcp" },
+            {
+              type: "streamable-http",
+              url: "https://safe.example.test/{tenant}/mcp",
+              variables: { tenant: { isRequired: true } },
+              headers: [{ name: "Authorization", isRequired: true, isSecret: true }],
+            },
+          ],
+        },
       },
-    }],
+    ],
   });
 
   assert.ok(server);
@@ -252,16 +301,20 @@ test("rejects unsafe Registry remotes before they reach install configuration", 
 
 test("does not embed Registry secret variable values in remote URLs", () => {
   const [server] = mapRegistryResponseToMarketplace({
-    servers: [{
-      server: {
-        name: "io.example/remote-secret",
-        remotes: [{
-          type: "streamable-http",
-          url: "https://safe.example.test/{token}/mcp",
-          variables: { token: { value: "registry-secret", isSecret: true } },
-        }],
+    servers: [
+      {
+        server: {
+          name: "io.example/remote-secret",
+          remotes: [
+            {
+              type: "streamable-http",
+              url: "https://safe.example.test/{token}/mcp",
+              variables: { token: { value: "registry-secret", isSecret: true } },
+            },
+          ],
+        },
       },
-    }],
+    ],
   });
 
   assert.equal(server.installOptions[0].url, "https://safe.example.test/{token}/mcp");
@@ -289,34 +342,33 @@ test("matches installed Registry services by stable id instead of display name",
 
 test("presents MCP as service and store workspaces with real install actions", () => {
   assert.match(hubSource, /<TabsRoot asChild value=\{activeWorkspace\}/);
-  assert.match(hubSource, /<TabList label="MCP 工作区"/);
+  assert.match(hubSource, /<TabList label=\{t\("mcp\.workspace\.ariaLabel"\)\}>/);
   assert.match(hubSource, /<TabPanel\s+value="services"\s+forceMount/);
   assert.match(hubSource, /<TabPanel\s+value="store"\s+forceMount/);
-  assert.match(hubSource, /id: "services", label: "服务"/);
-  assert.match(hubSource, /id: "store", label: "商店"/);
+  assert.match(hubSource, /id: "services", label: t\("mcp\.workspace\.services"\)/);
+  assert.match(hubSource, /id: "store", label: t\("mcp\.workspace\.store"\)/);
   assert.doesNotMatch(hubSource, /fetchMcpRegistry\(baseUrl/);
   assert.match(hubSource, /MCP_MARKET_SERVERS\.filter/);
   assert.match(hubSource, /await saveMcpServer\(baseUrl, server\)/);
   assert.match(hubSource, /await testInstalledMcpServer\(baseUrl, saved\.id\)/);
-  assert.match(hubSource, />安装 MCP 包</);
-  assert.match(hubSource, />添加手动配置</);
-  assert.match(hubSource, />\s*链接添加\s*</);
+  assert.match(hubSource, /t\("mcp\.toolbar\.installPackage"\)/);
+  assert.match(hubSource, /t\("mcp\.toolbar\.addManual"\)/);
+  assert.match(hubSource, /t\("mcp\.toolbar\.addByLink"\)/);
   assert.match(hubSource, /mode: "link", server: createRemoteMcpDraft\(\)/);
   assert.match(hubSource, /transport: "streamable-http"/);
   assert.match(hubSource, /editor\?\.mode === "install" \|\| editor\?\.mode === "link"/);
   assert.match(hubSource, /loading=\{busyMarketplaceId === marketItem\.id\}/);
-  assert.doesNotMatch(hubSource, /图片搜索手工测试流|MCP 包兼容|安装命令预览/);
-  assert.match(hubSource, /远程 · Streamable HTTP/);
+  assert.match(hubSource, /t\("mcp\.installOption\.remoteHttp"\)/);
   assert.match(hubSource, /findInstalledMcpServer\(installedServers, marketItem\)/);
-  assert.match(hubSource, /已安装，但连接测试失败/);
-  assert.match(hubSource, /Loom 精选/);
+  assert.match(hubSource, /tf\("mcp\.toast\.installedTestFailed"/);
+  assert.match(hubSource, /t\("mcp\.market\.source\.curated"\)/);
   assert.match(hubSource, /connectionLabel\.startsWith\(`\$\{categoryLabel\} ·`\)/);
-  assert.doesNotMatch(hubSource, /registryProgressRef|loadMarketplace|继续载入|刷新 MCP 商店/);
+  assert.doesNotMatch(hubSource, /registryProgressRef|loadMarketplace/);
   assert.match(hubSource, /buildMcpPaginationItems/);
-  assert.match(hubSource, /aria-label="MCP 商店分页"/);
+  assert.match(hubSource, /aria-label=\{t\("mcp\.store\.paginationAria"\)\}/);
   assert.match(hubSource, /aria-current=\{item === resolvedMarketPage \? "page" : undefined\}/);
   assert.match(hubSource, /title=\{marketItem\.description\}/);
-  assert.match(hubSource, /安装前需配置/);
+  assert.match(hubSource, /t\("mcp\.store\.configureBeforeInstall"\)/);
   assert.match(hubSource, /if \(isTauri\(\)\)/);
   assert.match(hubSource, /const sourceUrl = normalizeHttpsExternalUrl\(marketItem\.sourceUrl\)/);
   assert.match(hubSource, /invoke\("open_mcp_source_url", \{ url: sourceUrl \}\)/);
@@ -324,8 +376,8 @@ test("presents MCP as service and store workspaces with real install actions", (
   assert.match(hubSource, /openMarketplaceSource\(marketItem\)/);
   assert.match(hubSource, /onClick=\{\(\) => onTest\(configured\)\}/);
   assert.match(hubSource, /configuredSnapshot\?\.status === "success"/);
-  assert.match(hubSource, /"已连接"/);
-  assert.doesNotMatch(hubSource, /加载更多|mcp-hub__load-more/);
+  assert.match(hubSource, /t\("mcp\.store\.connected"\)/);
+  assert.doesNotMatch(hubSource, /mcp-hub__load-more/);
   assert.doesNotMatch(hubSource, /mcp-hub__tab(?:s|--active)|role="tab"/);
   assert.doesNotMatch(hubSource, /mcp-hub__notice/);
   assert.match(styleSource, /\.mcp-card-grid\s*\{[\s\S]*?repeat\(auto-fill, minmax\(min\(100%, 240px\), 1fr\)\)/);
@@ -345,15 +397,18 @@ test("presents MCP as service and store workspaces with real install actions", (
 });
 
 test("renders MCP packages as independently managed services", () => {
-  assert.doesNotMatch(hubSource, /isArtManagedServer|由 Art 管理|只读 · 请在 Art 管理中配置/);
+  assert.doesNotMatch(hubSource, /isArtManagedServer/);
   assert.match(hubSource, /server\.source === "package"/);
   assert.match(hubSource, /assertMcpPackageFileSize\(file\.size\)/);
   assert.match(hubSource, /await installMcpServerPackage\(baseUrl, encodeMcpPackageBytes\(bytes\)\)/);
   assert.match(hubSource, /await setMcpServerEnabled\(baseUrl, server\.id, enabled\)/);
   assert.match(hubSource, /await updateMcpServerCredentials\(baseUrl, server\.id, values, clear\)/);
   assert.match(hubSource, /await deleteMcpServer\(baseUrl, server\.id\)/);
-  assert.match(hubSource, /被 \{server\.usageCount\} 个 Art 使用/);
-  assert.match(hubSource, /凭据由 Loom CredentialStore 加密保存/);
-  assert.match(credentialDialogSource, /<Dialog\s+open\s+title="配置 MCP 凭据"[\s\S]*?busy=\{busy\}\s+initialFocusRef=\{firstInputRef\}/);
+  assert.match(hubSource, /tf\("mcp\.service\.usedByArts", \{ count: server\.usageCount \}\)/);
+  assert.match(hubSource, /t\("mcp\.credentials\.notice"\)/);
+  assert.match(
+    credentialDialogSource,
+    /<Dialog\s+open\s+title=\{t\("mcp\.credentials\.title"\)\}[\s\S]*?busy=\{busy\}\s+initialFocusRef=\{firstInputRef\}/,
+  );
   assert.doesNotMatch(credentialDialogSource, /createPortal|document\.body\.style\.overflow|addEventListener\("keydown"/);
 });

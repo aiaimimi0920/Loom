@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { uiTextFor } from "../i18n/index.ts";
 import { desktopStyleSource } from "./desktopStyleSource.ts";
 
 const source = readFileSync(new URL("../components/art/FrameworkManagementDialog.tsx", import.meta.url), "utf8");
@@ -12,14 +13,28 @@ test("framework loading and a completed empty catalog have distinct standard fee
   assert.match(owner, /finally \{\s*if \(version === frameworkLoadVersion.current\) setFrameworksLoading\(false\)/);
   assert.match(owner, /loading=\{frameworksLoading\}/);
   assert.match(source, /aria-busy=\{loading\}/);
-  assert.match(source, /error \? null : loading \? <Notice>加载中…<\/Notice> : <EmptyState role="status" title="暂无框架" \/>/);
+  assert.match(source, /<Notice>\{t\("art\.framework\.loading"\)\}<\/Notice>/);
+  assert.match(source, /<EmptyState role="status" title=\{t\("art\.framework\.empty"\)\} \/>/);
+  assert.equal(uiTextFor("en", "art.framework.loading"), "Loading…");
+  assert.ok(uiTextFor("zh-Hans", "art.framework.loading").length > 0);
   assert.doesNotMatch(source, /<p[^>]*role="status"/);
 });
 
 test("framework rows use standard table semantics and domain identity", () => {
-  assert.match(source, /<DataTable\s+label="框架列表"\s+rows=\{frameworks\}\s+getRowKey=\{frameworkIdentity\}/);
-  assert.match(source, /key: "identity", header: "框架", rowHeader: true, cell: frameworkFilterLabel/);
-  for (const header of ["版本", "安装", "更新"]) assert.ok(source.includes(`header: "${header}"`));
+  assert.match(source, /<DataTable\s+label=\{t\("art\.framework\.tableLabel"\)\}\s+rows=\{frameworks\}\s+getRowKey=\{frameworkIdentity\}/);
+  assert.match(
+    source,
+    /key: "identity", header: t\("art\.framework\.column\.framework"\), rowHeader: true, cell: frameworkFilterLabel/,
+  );
+  for (const key of [
+    "art.framework.column.version",
+    "art.framework.column.install",
+    "art.framework.column.update",
+  ]) {
+    assert.ok(source.includes(`header: t("${key}")`), key);
+    assert.ok(uiTextFor("en", key).length > 0);
+    assert.ok(uiTextFor("zh-Hans", key).length > 0);
+  }
   assert.doesNotMatch(source, /<(?:table|thead|tbody|tr|th|td)\b|className="framework-dialog__table/);
   assert.doesNotMatch(desktopStyleSource, /\.framework-dialog__table/);
   assert.match(desktopStyleSource, /\.loom-framework-dialog__table > \.n-table-scroll\s*\{[^}]*min-height: 0;/);
@@ -32,7 +47,7 @@ test("framework operations keep explicit uninstall approval and stable busy labe
   assert.match(source, /loading=\{toggleBusy\}/);
   assert.match(source, /loading=\{upgradeBusy\}/);
   assert.match(source, /disabled=\{!framework\.installed \|\| busyId !== null\}/);
-  assert.doesNotMatch(source, /处理中|更新中/);
+  assert.doesNotMatch(source, /toggleBusy \?|upgradeBusy \?/);
   assert.match(source, /if \(!open\) setPendingUninstallId\(null\)/);
 });
 

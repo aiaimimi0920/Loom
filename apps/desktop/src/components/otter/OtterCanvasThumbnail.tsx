@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Notice } from "@neuro/ui";
 
+import { useUiText } from "../../i18n/index.ts";
 import {
   buildOtterWorkflowInstantiationGraph,
   buildSubWorkflowYaml,
@@ -66,6 +67,7 @@ export function OtterCanvasThumbnail({
   tools = EMPTY_TOOLS,
   onCreateWorkflowArt,
 }: OtterCanvasThumbnailProps) {
+  const { t, tf } = useUiText();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<StatusMessage | null>(null);
@@ -198,14 +200,17 @@ export function OtterCanvasThumbnail({
         const yaml = buildSubWorkflowYaml(snapshot, highlighted, workflowId);
         await saveWorkflowBundle(baseUrl, { id: workflowId }, yaml);
       }
-      setSaveMessage({ ok: true, text: `已保存工作流 ${workflowId}（${highlighted.size} 个节点）。` });
+      setSaveMessage({
+        ok: true,
+        text: tf("otter.canvas.workflowSaved", { workflowId, count: highlighted.size }),
+      });
       refreshWorkflowList();
       setSelectedNodeId(null);
       setSelectedWorkflow(workflowId);
     } catch (saveError) {
       setSaveMessage({
         ok: false,
-        text: saveError instanceof Error ? saveError.message : "保存工作流失败。",
+        text: saveError instanceof Error ? saveError.message : t("otter.canvas.saveWorkflowFailed"),
       });
     } finally {
       setSaving(false);
@@ -260,11 +265,14 @@ export function OtterCanvasThumbnail({
         mode: "reference",
         workflowId: selectedWorkflow,
       });
-      setArtMessage({ ok: true, text: `已添加到桌面：${currentWorkflowName}` });
+      setArtMessage({
+        ok: true,
+        text: tf("otter.interface.addedToDesktop", { name: currentWorkflowName }),
+      });
     } catch (actionError) {
       setArtMessage({
         ok: false,
-        text: actionError instanceof Error ? actionError.message : "添加到桌面失败。",
+        text: actionError instanceof Error ? actionError.message : t("otter.interface.addToDesktopFailed"),
       });
     } finally {
       setWorkflowBusy(false);
@@ -275,11 +283,11 @@ export function OtterCanvasThumbnail({
   const addWorkflowAsArt = async () => {
     if (isLive) return;
     if (!onCreateWorkflowArt) {
-      setArtMessage({ ok: false, text: "Art 创建界面暂不可用。" });
+      setArtMessage({ ok: false, text: t("otter.interface.artCreatorUnavailable") });
       return;
     }
     if (!workflowInterface.inputs.length) {
-      setArtMessage({ ok: false, text: "该工作流没有可用的输入图像，无法封装为 Art。" });
+      setArtMessage({ ok: false, text: t("otter.interface.missingInputImage") });
       return;
     }
     const { yaml, tool } = buildWorkflowArtBundle({
@@ -299,7 +307,7 @@ export function OtterCanvasThumbnail({
     } catch (actionError) {
       setArtMessage({
         ok: false,
-        text: actionError instanceof Error ? actionError.message : "添加为 Art 失败。",
+        text: actionError instanceof Error ? actionError.message : t("otter.interface.addAsArtFailed"),
       });
     } finally {
       setWorkflowBusy(false);
@@ -339,6 +347,7 @@ export function OtterCanvasThumbnail({
         workflowBusy={workflowBusy}
         saving={saving}
         canSave={Boolean(selectedNodeId && highlighted.size)}
+        saveLabel={t("otter.canvas.saveWorkflow")}
         scale={canvasViewport.viewport.scale}
         showMinimap={canvasViewport.showMinimap}
         saveMessage={saveMessage}

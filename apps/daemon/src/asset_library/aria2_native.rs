@@ -1,4 +1,4 @@
-//! Windows C ABI 适配：唯一工作线程拥有 libaria2 会话，其他线程只操作原子控制状态。
+//! Windows C ABI adapter: a single worker thread owns the libaria2 session while other threads touch only atomic control state.
 use super::{error, Result};
 #[cfg(all(test, windows))]
 #[path = "aria2_native_tests.rs"]
@@ -123,7 +123,7 @@ mod windows {
         completed: u64,
         speed: u64,
     ) -> i32 {
-        // context 在同步 FFI 调用返回前一直由工作线程持有，回调不存储该指针。
+        // `context` remains owned on the worker thread stack until the synchronous FFI call returns; the callback never stores this pointer.
         let context = unsafe { &*(pointer as *const Context) };
         context.state.total.store(total, Ordering::Release);
         context.state.completed.store(completed, Ordering::Release);
@@ -179,7 +179,7 @@ mod windows {
             return Err(());
         }
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        // 只加载绝对路径 DLL；依赖仅从系统目录解析，不搜索 PATH 或当前目录。
+        // Load only from an absolute DLL path; resolve dependencies solely from System32 without searching PATH or the current working directory.
         let module = Module(unsafe {
             LoadLibraryExW(
                 wide.as_ptr(),
@@ -261,12 +261,12 @@ mod windows {
                             .and_then(|engine| execute(engine, &job))
                             .unwrap_or(-100);
                         let detached = job.result.send(result).is_err();
-                        // 成功送达结果后，目录所有权移交调用线程，不能再因迟到取消删除它。
+                        // Once the result is delivered on success, directory ownership transfers to the caller and must not be deleted by a late cancel.
                         if result != 0 || detached {
                             super::super::aria2::cleanup(&job.directory);
                         }
                     }
-                    // 最后一个 Session 已清理；显式关闭工作线程后卸载 DLL 和全局库状态。
+                    // The final Session has been cleaned up; drop `engine` as the worker exits to close global libaria2 state and unload the DLL.
                 })
                 .map_err(|_| error(503, "asset_library_engine_start_failed"))?;
             *worker = Some(Worker { sender, thread });

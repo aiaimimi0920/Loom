@@ -1,14 +1,6 @@
 # QR projection v2: local Loom ownership and central coordination
 
-当前开发约定（2026-11-19）：Otter 与 Loom 同时升级到最新代码，投射分享只支持本合同 v2。
-不实现 v1/v2 互联、旧邀请导入、自动协议降级或旧关联迁移；这些项目不作为本阶段验收门。
-账号证明、设备配对和 Live 帧格式各有独立协议标识，不能根据其中的版本数字判断是否属于旧投射兼容代码。
-
-中心协调、每个 daemon 的传输所有权、持久来源/接收快照和后台同步已经实现。
-Windows 原生 Otter 已接入普通账号分享请求、场景检查点和更新调度；真实双 Loom 联合测试
-已验证创建、接受、两次 Iroh PNG 更新、双方重启及解绑保留末图。新版单入口分享面板与二维码
-定向回归已通过，完整普通程序验收仍需以对应候选结果为准。用户认可本阶段使用局域网环境，
-公网 Live 与外网 NAT/relay 验收暂缓；局域网结果不改写为公网通过。真实 OAuth 尚未验证。
+Scope and upgrade boundary: Otter and Loom upgrade together on `neuro.qr-projection.v2`. Cross-version `v1`/`v2` interop, legacy invitation import, and automatic protocol downgrade are not supported. Central coordination, per-daemon transport ownership, durable source/receiver snapshots, and background synchronization are implemented; account proofs (`neuro.loom-account.v1`), device sessions (`loom.device-session.v1`), and Live frames (`NLLV` v1) retain their own independent protocol version identifiers.
 
 ## Ownership and transport
 

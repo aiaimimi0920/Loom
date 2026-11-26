@@ -1,34 +1,21 @@
 ## Loom V0.2.2
 
-本版本汇总与 Hook 的认证联动、实时投射和扩展运行时改进，并加强设备与进程安全边界。
+This release unifies authenticated Otter bridge connectivity, live projection, outbound/inbound MCP runtime capabilities, and multi-edition server/desktop packaging while tightening device, deserialization, and process-containment security boundaries.
 
-### 主要更新
+### Highlights
 
-- 与新版 Hook 配合使用经过认证的本地桥接，完善 TLS 身份校验、连接生命周期
-  和超时处理；建议与 Hook v0.2.33 配套升级。
-- 修复扩展命令失败时被成功结果 schema 再次拒绝的问题，保留脱敏后的错误分类，
-  避免将运行失败掩盖为协议错误。
-- 完善实时投射 H.264 协商、有界数据处理、恢复与图像回退。
-- 加强设备配对与上传的认证、容量限制和超时清理，限制公开响应中的身份信息。
-- 加强框架执行授权、外发连接和代理目标校验，以及 Windows/Linux 托管子进程的
-  隔离与清理边界。
-- 桌面程序、工作区产品 crates 和本次 Plugin SDK 发布包统一为 `0.2.2`。
-- 继续使用 tag 驱动构建、冒烟检查、来源证明及附件精确核验，先创建草稿，
-  通过发布门禁后再公开。
+- **Authenticated Otter Bridge & Multi-Device Hub**: strengthens native TLS 1.3 bridge identity verification, connection lifecycles, two-level host/app-session device hierarchy, multi-device Otter workflow sync, and three-tier NAccount Cloud Relay support. Upgrade alongside the matching Otter release.
+- **Three Build Editions & Embedded Web Console**: supports `desktop` (Windows `Loom.exe` + sidecar daemon), `web` (`loom-daemon` with embedded `/ui/` management console + `loom` CLI), and `api` (headless `loom-daemon` + `loom` CLI) across Windows and Linux Docker deployments.
+- **Outbound & Inbound MCP Ecosystem**: exposes Loom capabilities to external AI clients over `POST /mcp` and `loom mcp-stdio` guarded by fine-grained Scoped Share Tokens, alongside cross-platform packaged MCP server runtimes.
+- **Live Projection & Hybrid Workflow Execution**: refines H.264/JPEG/raw BGRA media continuity and fallback rules, plus dynamic cross-end workflow step relay between server compute and paired terminals.
+- **Runtime & Security Hardening**: enforces bounded deserialization before JSON parsing on model/broker responses, header-only upload admission, device pairing/challenge budgets, and managed child-process tree isolation on Windows (Job Objects) and Linux (Bubblewrap + `pidfd`).
+- **Unified Versioning & Provenance**: aligns the desktop shell, workspace crates, and `Loom-Plugin-SDK` at `0.2.2` with draft-first tag verification, CycloneDX/SPDX SBOMs, and GitHub build attestations.
 
-### 下载与兼容性
+### Downloads and compatibility
 
-桌面用户下载 `Loom-V0.2.2-windows-x64.zip`，解压后运行 `Loom.exe`；Plugin 和
-Art 节点开发者下载 `Loom-Plugin-SDK-V0.2.2-windows-x64.zip`。每个 ZIP 均提供对应
-的 `.zip.sha256` 校验文件。
+- **Windows Desktop**: download `Loom-V0.2.2-windows-x64.zip`, verify against `.zip.sha256`, extract, and launch `Loom.exe`.
+- **Plugin & Art SDK**: download `Loom-Plugin-SDK-V0.2.2-windows-x64.zip` (with `.zip.sha256`) for `loom-plugin`, public v1 JSON Schemas, templates, and documentation.
 
-本版本沿用当前 canonical-only 格式与协议，不恢复已移除的旧别名。旧集成应按
-仓库中的现行协议和 SDK 更新。本次发布不代表所有跨机器、公网或 wall 场景均
-已完成验收。
+Loom enforces canonical-only wire protocols and publisher-qualified package layouts; retired legacy aliases are not accepted. Optional capabilities such as `neuro.official/ocr` and `text-translation` remain separately installed and permission-approved, and local translation models are configured independently rather than bundled into the base installer.
 
-CLI 继续在流水线中构建和验证，但不作为公开附件。SBOM、构建来源、manifest
-和完整校验清单作为维护侧证据保留；GitHub 同时提供 tag 对应的源码归档。
-
-OCR、翻译等扩展仍需安装、启用和授权；翻译模型或服务需单独配置，发布包不包含本地模型。
-
-**完整更新记录**：[V0.2.1...V0.2.2](https://github.com/aiaimimi0920/Loom/compare/V0.2.1...V0.2.2)
+**Full Changelog**: [V0.2.1...V0.2.2](https://github.com/aiaimimi0920/Loom/compare/V0.2.1...V0.2.2)

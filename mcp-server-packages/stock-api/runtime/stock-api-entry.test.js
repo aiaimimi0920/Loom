@@ -77,7 +77,8 @@ test("vendored stock parsers remove every upstream quote delimiter", () => {
 });
 
 test("known 5 MiB Unicode body uses one exact byte buffer and parses at the boundary", async () => {
-  const unicodeTail = "汉";
+  // Multi-byte UTF-8 BMP character (3 bytes, 1 UTF-16 code unit) at the exact 5 MiB boundary.
+  const unicodeTail = "\u20AC";
   const envelopeBytes = Buffer.byteLength(JSON.stringify({ value: unicodeTail }), "utf8");
   const json = JSON.stringify({
     value: `${"x".repeat(MAX_RESPONSE_BYTES - envelopeBytes)}${unicodeTail}`,

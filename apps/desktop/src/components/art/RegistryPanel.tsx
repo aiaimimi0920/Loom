@@ -1,5 +1,7 @@
 // Owns installed Art registry actions and authoring orchestration.
 import { Badge, Button, IconButton, Notice, Panel } from "@neuro/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import {
   artFrameworkReference,
   artPackageIdentity,
@@ -32,7 +34,6 @@ import { ArtCreationDialog } from "./ArtCreationDialog";
 import { ArtEditDialog } from "./ArtEditDialog";
 import type { ArtCreationRequest } from "./artWizardModel";
 import { useArtCreationSubmission } from "./useArtCreationSubmission";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function RegistryPanel({
   tools,
@@ -59,6 +60,7 @@ export function RegistryPanel({
   baseUrl: string;
   refresh: () => Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   const [busyToolId, setBusyToolId] = useState<string | null>(null);
   const [busyToolAction, setBusyToolAction] = useState<"delete" | "toggle" | "edit" | null>(null);
   const [registryMessage, setRegistryMessage] = useState<StudioMessage | null>(null);
@@ -113,6 +115,7 @@ export function RegistryPanel({
     setRegistryMessage(null);
     setBusyToolId(tool.id);
     setBusyToolAction("delete");
+    const displayName = tool.name || tool.id;
     try {
       const packageIdentity = artPackageIdentity(tool);
       if (packageIdentity) {
@@ -120,18 +123,21 @@ export function RegistryPanel({
         const confirmation =
           mcpDependencies.length > 0
             ? await requestAppConfirmationWithOption({
-                title: "卸载 Art",
-                message: `将卸载 ${tool.name || tool.id}。它声明了 ${mcpDependencies.length} 个独立 MCP 服务依赖。`,
-                optionLabel: "同时卸载未被其他 Art 使用的 MCP 服务",
+                title: t("art.registry.uninstallConfirm.title"),
+                message: tf("art.registry.uninstallConfirm.withMcpMessage", {
+                  name: displayName,
+                  count: mcpDependencies.length,
+                }),
+                optionLabel: t("art.registry.uninstallConfirm.removeUnusedMcpOption"),
                 optionDefault: false,
-                confirmLabel: "卸载",
+                confirmLabel: t("art.action.uninstall"),
                 tone: "danger",
               })
             : {
                 accepted: await requestAppConfirmation({
-                  title: "卸载 Art",
-                  message: `将卸载 ${tool.name || tool.id} 及其运行数据。`,
-                  confirmLabel: "卸载",
+                  title: t("art.registry.uninstallConfirm.title"),
+                  message: tf("art.registry.uninstallConfirm.basicMessage", { name: displayName }),
+                  confirmLabel: t("art.action.uninstall"),
                   tone: "danger",
                 }),
                 optionSelected: false,
@@ -146,15 +152,19 @@ export function RegistryPanel({
           kind: "info",
           text:
             removedCount || retainedCount
-              ? `已卸载 ${tool.name || tool.id}；移除 ${removedCount} 个未使用 MCP，保留 ${retainedCount} 个仍在使用的 MCP。`
-              : `已卸载 ${tool.name || tool.id}。`,
+              ? tf("art.registry.uninstalledWithMcpSummary", {
+                  name: displayName,
+                  removed: removedCount,
+                  retained: retainedCount,
+                })
+              : tf("art.registry.uninstalledMessage", { name: displayName }),
         });
       } else {
         if (
           !(await requestAppConfirmation({
-            title: "删除工具",
-            message: `将删除 ${tool.name || tool.id}。此操作不可撤销。`,
-            confirmLabel: "删除",
+            title: t("art.registry.deleteToolConfirm.title"),
+            message: tf("art.registry.deleteToolConfirm.message", { name: displayName }),
+            confirmLabel: t("art.action.delete"),
             tone: "danger",
           }))
         )
@@ -165,7 +175,7 @@ export function RegistryPanel({
     } catch (error) {
       setRegistryMessage({
         kind: "error",
-        text: error instanceof Error ? error.message : "无法删除工具。",
+        text: error instanceof Error ? error.message : t("art.registry.deleteToolFailed"),
       });
     } finally {
       setBusyToolId(null);
@@ -181,13 +191,15 @@ export function RegistryPanel({
       await saveToolDefinition(baseUrl, { ...tool, enabled: nextEnabled });
       setRegistryMessage({
         kind: "info",
-        text: `已${nextEnabled ? "启用" : "禁用"} ${tool.name || tool.id}。`,
+        text: tf(nextEnabled ? "art.registry.enabledMessage" : "art.registry.disabledMessage", {
+          name: tool.name || tool.id,
+        }),
       });
       await refresh();
     } catch (error) {
       setRegistryMessage({
         kind: "error",
-        text: error instanceof Error ? error.message : "无法切换 Art 状态。",
+        text: error instanceof Error ? error.message : t("art.registry.toggleFailed"),
       });
     } finally {
       setBusyToolId(null);
@@ -217,7 +229,7 @@ export function RegistryPanel({
       if (version === editLoadVersion.current) setArtManagement(management);
     } catch (error) {
       if (version === editLoadVersion.current)
-        setEditError(error instanceof Error ? error.message : "无法读取 Art 设置。");
+        setEditError(error instanceof Error ? error.message : t("art.registry.loadSettingsFailed"));
     } finally {
       if (version === editLoadVersion.current) setArtManagementLoading(false);
     }
@@ -232,7 +244,7 @@ export function RegistryPanel({
       await refresh();
       closeToolEditor();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "无法更新 Art。";
+      const detail = error instanceof Error ? error.message : t("art.registry.updateFailed");
       setEditError(detail);
       setRegistryMessage({
         kind: "error",
@@ -253,7 +265,7 @@ export function RegistryPanel({
       setArtManagement(updated);
       await refresh();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "无法更新 Art 版本。";
+      const detail = error instanceof Error ? error.message : t("art.registry.updateVersionFailed");
       setEditError(detail);
       setRegistryMessage({ kind: "error", text: detail });
     } finally {
@@ -267,13 +279,15 @@ export function RegistryPanel({
     setRegistryMessage(null);
     try {
       await updateMcpServerCredentials(baseUrl, credentialServer.id, values, clear);
-      const message = `${credentialServer.name || credentialServer.id} 的 MCP 凭据已更新。`;
+      const message = tf("art.registry.mcpCredentialsUpdated", {
+        name: credentialServer.name || credentialServer.id,
+      });
       setCredentialServer(null);
       setRegistryMessage({ kind: "info", text: message });
       pushAppToast({ level: "info", text: message });
       await refresh();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "无法保存 MCP 凭据。";
+      const detail = error instanceof Error ? error.message : t("art.registry.mcpCredentialsSaveFailed");
       setRegistryMessage({ kind: "error", text: detail });
       pushAppToast({ level: "error", text: detail });
     } finally {
@@ -294,6 +308,7 @@ export function RegistryPanel({
       <div className="card-grid art-registry-grid">
         {visibleTools.map((tool) => {
           const enabled = tool.enabled !== false;
+          const displayName = tool.name || tool.id;
           const frameworkReference = artFrameworkReference(tool) || tool.execution?.type || null;
           const framework = frameworks.find(
             (candidate) => frameworkIdentity(candidate) === frameworkReference || candidate.id === frameworkReference,
@@ -307,25 +322,27 @@ export function RegistryPanel({
           const mcpStatus = displayedMcpDependency?.status;
           const mcpStatusText =
             mcpStatus === "credentials_required"
-              ? "需要配置 MCP 凭据"
+              ? t("art.registry.mcpStatus.credentialsRequired")
               : mcpStatus === "disabled"
-                ? "MCP 依赖已禁用"
+                ? t("art.registry.mcpStatus.disabled")
                 : mcpStatus === "missing"
-                  ? "MCP 依赖未安装"
+                  ? t("art.registry.mcpStatus.missing")
                   : mcpStatus === "ready"
-                    ? "MCP 依赖就绪"
+                    ? t("art.registry.mcpStatus.ready")
                     : null;
           const toolBusy = busyToolId === tool.id;
           return (
             <Panel className="art-registry-entry" data-enabled={enabled} key={tool.id}>
               <div className="art-registry-card__head">
-                <h3 title={tool.name || tool.id}>{tool.name || tool.id}</h3>
+                <h3 title={displayName}>{displayName}</h3>
                 <div className="art-registry-entry__state">
-                  <Badge tone={enabled ? "success" : "neutral"}>{enabled ? "已启用" : "已禁用"}</Badge>
+                  <Badge tone={enabled ? "success" : "neutral"}>
+                    {enabled ? t("art.status.enabled") : t("art.status.disabled")}
+                  </Badge>
                   <span
                     className="art-registry-card__framework-icon"
                     role="img"
-                    aria-label={`${frameworkLabel} Art`}
+                    aria-label={tf("art.card.frameworkIconAria", { framework: frameworkLabel })}
                     title={frameworkLabel}
                   >
                     <ArtIcon kind={artFrameworkIconKind(frameworkReference)} />
@@ -345,7 +362,10 @@ export function RegistryPanel({
                       wrap
                       type="button"
                       title={displayedMcpDependency.dependencyId}
-                      aria-label={`${tool.name || tool.id}: 配置 ${displayedMcpDependency.server.name || displayedMcpDependency.server.id} MCP 凭据`}
+                      aria-label={tf("art.registry.configureMcpCredentialsAria", {
+                        art: displayName,
+                        server: displayedMcpDependency.server.name || displayedMcpDependency.server.id,
+                      })}
                       onClick={() => setCredentialServer(displayedMcpDependency.server)}
                       disabled={toolBusy || credentialBusy}
                     >
@@ -363,8 +383,8 @@ export function RegistryPanel({
               </div>
               <div className="art-registry-card__actions">
                 <IconButton
-                  label={`编辑 ${tool.name || tool.id}`}
-                  title="编辑"
+                  label={tf("art.action.editFor", { name: displayName })}
+                  title={t("art.action.edit")}
                   onClick={() => {
                     void openToolEditor(tool);
                   }}
@@ -374,10 +394,10 @@ export function RegistryPanel({
                 </IconButton>
                 <IconButton
                   variant={enabled ? "positive" : "secondary"}
-                  label={`${enabled ? "禁用" : "启用"} ${tool.name || tool.id}`}
+                  label={tf(enabled ? "art.action.disableFor" : "art.action.enableFor", { name: displayName })}
                   aria-pressed={enabled}
                   loading={toolBusy && busyToolAction === "toggle"}
-                  title={enabled ? "禁用" : "启用"}
+                  title={enabled ? t("art.action.disable") : t("art.action.enable")}
                   onClick={() => void toggleTool(tool)}
                   disabled={toolBusy}
                 >
@@ -385,9 +405,9 @@ export function RegistryPanel({
                 </IconButton>
                 <IconButton
                   variant="danger"
-                  label={`删除 ${tool.name || tool.id}`}
+                  label={tf("art.action.deleteFor", { name: displayName })}
                   loading={toolBusy && busyToolAction === "delete"}
-                  title="删除"
+                  title={t("art.action.delete")}
                   onClick={() => void removeTool(tool)}
                   disabled={toolBusy}
                 >

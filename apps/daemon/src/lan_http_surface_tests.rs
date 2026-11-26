@@ -1,4 +1,4 @@
-//! 原始请求构造的独立LAN边界oracle；真实Device/附件/生命周期另由双原生联合验证。
+//! Independent LAN boundary oracle built from raw HTTP requests; real Device, attachment, and lifecycle flows are verified separately by dual-native joint tests.
 use super::*;
 const DEVICE: &str =
     "Authorization: Device fixture-session\r\nX-Loom-Device-Nonce: unique-surface\r\n";

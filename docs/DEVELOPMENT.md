@@ -265,3 +265,10 @@ Before declaring a task complete, confirm:
 - [ ] strict effective-line tests and report passed;
 - [ ] official formatters and `git diff --check` passed;
 - [ ] actual commands, results, and remaining reviewed exceptions are reported.
+
+## 11. Development quality reports
+
+Pull-request, `main`, scheduled, and manual `Development Quality Reports` workflow runs retain raw diagnostic outputs, exit codes, structured classifications, and check summaries as non-blocking reports without implying that reported historical findings are resolved. Missing or failed report artifacts still fail the job.
+
+- Loom's ratchet check runs without altering the checker, baseline, or exception registry; only allowlisted historical scale debt is classified into non-blocking report entries, while scan-integrity, syntax, configuration, empty-scan, or stale-report errors fail closed.
+- Functional tests, typechecks, compilation, provenance, dependency security, and release gates are never relaxed by development quality reports, and report status never substitutes for formal release qualification or local `--mode strict` enforcement.

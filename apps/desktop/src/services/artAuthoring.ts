@@ -1,3 +1,4 @@
+import { uiFormat, uiText } from "../i18n/index.ts";
 import type {
   LoomArtRuntimeManifest,
   LoomFramework,
@@ -94,7 +95,14 @@ const requiredValue = (
   framework: LoomFramework,
 ) => {
   const value = asString(values[field]);
-  if (!value) throw new Error(`${frameworkFilterLabel(framework)} 需要字段 ${field}。`);
+  if (!value) {
+    throw new Error(
+      uiFormat("art.authoring.error.missingExecutionField", {
+        framework: frameworkFilterLabel(framework),
+        field,
+      }),
+    );
+  }
   return value;
 };
 
@@ -161,15 +169,19 @@ export function buildAuthoredArtPackage(
 ): AuthoredArtPackage {
   const id = draft.id.trim();
   if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(id) || id.includes("..")) {
-    throw new Error("Art ID 必须是安全的单段标识符。");
+    throw new Error(uiText("art.authoring.error.invalidId"));
   }
   const schema = framework.authoringSchema;
   if (!framework.installed || !framework.enabled || !framework.ready || !schema) {
-    throw new Error(`框架 ${frameworkFilterLabel(framework)} 未安装、未启用、未就绪或没有 authoring schema。`);
+    throw new Error(
+      uiFormat("art.authoring.error.frameworkNotReady", {
+        framework: frameworkFilterLabel(framework),
+      }),
+    );
   }
   for (const field of schema.fields ?? []) {
     if (field.required && (draft.values[field.id] === undefined || asString(draft.values[field.id]) === "")) {
-      throw new Error(`${field.label || field.id} 是必填项。`);
+      throw new Error(uiFormat("art.authoring.error.requiredField", { field: field.label || field.id }));
     }
   }
   const secretFields = new Set(
@@ -177,7 +189,7 @@ export function buildAuthoredArtPackage(
   );
   const secretExecutionField = [...secretFields].find((field) => executionFieldIds.has(field));
   if (secretExecutionField) {
-    throw new Error(`机密字段 ${secretExecutionField} 不能直接作为 Art 执行配置。`);
+    throw new Error(uiFormat("art.authoring.error.secretExecutionField", { field: secretExecutionField }));
   }
   const persistedValues = Object.fromEntries(
     Object.entries(draft.values).filter(([field]) => !secretFields.has(field)),

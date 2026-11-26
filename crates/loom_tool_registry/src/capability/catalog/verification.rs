@@ -270,7 +270,7 @@ pub fn capability_host_compatibility_error(
     )
     .or_else(|| {
         if !host.hook_connected {
-            Some("需要连接支持能力扩展的 Otter".to_owned())
+            Some("Requires a connected Otter instance with capability extension support".to_owned())
         } else {
             requirement_error(
                 "Otter",
@@ -303,13 +303,13 @@ fn requirement_error(
         &requirement.minimum,
         requirement.maximum.as_deref(),
     ) {
-        return Some(format!("{host_name} Host API 版本不兼容"));
+        return Some(format!("{host_name} Host API version is incompatible"));
     }
     requirement
         .required_features
         .iter()
         .find(|feature| !actual_features.contains(feature))
-        .map(|feature| format!("{host_name} 缺少功能 {feature}"))
+        .map(|feature| format!("{host_name} is missing feature {feature}"))
 }
 
 fn api_version_matches(actual: &str, minimum: &str, maximum: Option<&str>) -> bool {

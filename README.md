@@ -4,132 +4,73 @@
 [![Build Windows](https://github.com/aiaimimi0920/Loom/actions/workflows/build-windows.yml/badge.svg)](https://github.com/aiaimimi0920/Loom/actions/workflows/build-windows.yml)
 [![Docker](https://github.com/aiaimimi0920/Loom/actions/workflows/docker.yml/badge.svg)](https://github.com/aiaimimi0920/Loom/actions/workflows/docker.yml)
 
-Loom is Neuro's daemon-first personal and home control hub, Art/MCP runtime, and
-AI Gateway relay.
+Loom is Neuro's daemon-first personal and home control hub, Art/Capability/MCP runtime, Otter companion coordinator, and AI Gateway relay.
 
 Repository: https://github.com/aiaimimi0920/Loom
 
-Otter 局域网连接：桌面“Otter 连接”设置提供默认关闭的 HTTPS 入口（默认端口
-`8766`），不暴露本机管理端口。首次连接与防火墙要求见
-[局域网连接说明](protocol/LAN_CONNECTION.md)。
+Loom owns the runtime contracts for:
 
-It owns the local runtime contracts for:
+- **Package & Plugin Lifecycles**: publisher-qualified Art, Framework, Capability Plugin, and cross-platform MCP server packages under immutable versioned storage, plus a unified multi-platform store (`GET /v1/store/catalog` and AssetLibrary integration).
+- **Inbound & Outbound MCP**: consuming packaged/external MCP servers inside Arts and exposing Loom's own authorized Arts, capabilities, devices, projections, and live screen contexts to external AI clients via `POST /mcp` and `loom mcp-stdio` with Scoped Share Tokens.
+- **Otter & Companion Coordination**: `loom.hook.v1` / `loom.surface.v1` native bridge, optional LAN HTTPS listener (`8766`, disabled by default; see [LAN connection](protocol/LAN_CONNECTION.md)), two-level Host Device -> App Sessions hierarchy (`GET /v1/devices/hierarchy`), multi-device Otter workflow sync and history archive (`/v1/otter-sync/*`), intra-workflow hybrid terminal relay (`/v1/otter/relay/*`), 3-tier NAccount Cloud Relay (`/v1/cloud-relay/*`), Live Screenshot streaming, QR Projection, Tile Walls, and the Companion App Settings Hub (`/v1/configuration/companion-apps*`).
+- **Global AI Gateway Relay & Durable Evidence**: OpenAI-compatible `/v1/ai/*` relay and `ai.chat.v1` / `loom.runtime.probe.v1` invocation backed by atomic SQLite run/event evidence (`runs/loom-runs.sqlite3`), plus an optional IP-loopback local model adapter for `text-translation`.
 
-- Art, Framework, Capability Plugin, and MCP server package lifecycles,
-- Otter workflow synchronization, projection, live streams, and display walls,
-- durable capability run/session evidence in SQLite,
-- device pairing, LAN transport boundaries, and configuration ownership claims, and
-- global AI Gateway relay (`/v1/ai/*` and `ai.chat.v1`), plus an optional
-  loopback-only local adapter for the signed text-translation capability.
+Loom is not a replacement for Neuro Gateway (which owns upstream hosted-provider routing, credentials, and quotas) or Otter (which owns foreground desktop capture, canvas UI, and local `otter.art.v1` execution). Loom and Otter enforce canonical-only protocols and `publisher/id` package layouts; retired legacy aliases are rejected. See [public protocols](protocol/README.md), [architecture](docs/ARCHITECTURE.md), and [Otter integration](docs/OTTER_INTEGRATION.md).
 
-Loom is not a Gateway replacement. Gateway continues to own hosted-provider
-routing, credentials, relay APIs, and provider/runtime details. The optional
-translation local adapter accepts only an IP-loopback OpenAI-compatible origin;
-it does not expose provider URLs or credentials to capability processes. Platform
-continues to own account, quota, entitlement, and public web surfaces. Otter
-continues to own foreground capture/integration behavior.
-
-Loom now also ships a desktop workbench under `apps/desktop`. The visible user
-entry in a packaged desktop release is `Loom.exe`; it connects to the local
-Loom service on loopback and can start `runtime\loom-daemon.exe` automatically
-when the service is not already running. The CLI is published separately in a
-`Loom-CLI-*.zip` artifact so users do not need to choose between three
-executables in the desktop package. Loom and Otter use the versioned
-`loom.hook.v1` Art bridge; no old ArtLoom/ArtHook execution protocol is shipped.
-
-## Current canonical-only baseline
-
-Loom and Otter accept only the
-current persisted shapes, publisher-qualified package identities and storage
-layouts, exact framework/process fields, and the `com.yamiyu.hook` app-data
-identity. Obsolete aliases and migrations are rejected rather than translated.
-See the [public protocol](protocol/README.md),
-[package scope](docs/plugin-development.md#canonical-package-scope) and
-[canvas contract](docs/HOOK_CANVAS.md). Historical migration and native acceptance
-records remain recoverable through Git tag `cleanup-base-20260928`; they do not
-establish acceptance of a later package.
-
-## Workspace
+## Workspace layout
 
 ```text
 ./
 ├── apps/
-│   ├── daemon/    # loom-daemon
-│   ├── cli/       # loom
-│   ├── art-store/ # loom-art-store
-│   └── desktop/   # Loom Tauri desktop shell
-├── crates/
-│   ├── loom_core
-│   ├── loom_durable
-│   ├── loom_gateway
-│   ├── loom_protocol
-│   ├── loom_tool_registry
-│   ├── loom_workflow_store
-│   └── loom_workflow_runtime
-└── docs/
+│   ├── daemon/                # loom-daemon (HTTP/HTTPS/WSS hub, outbound /mcp, LAN & bridge host)
+│   ├── cli/                   # loom (operator HTTP CLI & mcp-stdio bridge)
+│   ├── plugin-cli/            # loom-plugin (standalone Plugin SDK CLI)
+│   ├── art-store/             # loom-art-store (multi-kind package store)
+│   ├── ocr-host/              # neuro.official/ocr capability runtime
+│   ├── text-translation-host/ # neuro.official/text-translation capability runtime
+│   └── desktop/               # React + @neuro/ui workbench & Windows Tauri shell (Loom.exe)
+├── crates/                    # Reusable runtime, protocol, security, MCP, workflow & UI crates
+├── protocol/                  # Public JSON Schemas, fixtures, and wire specifications
+├── sdk/                       # Authoring types and templates (capability, surface, otter-art)
+└── docs/                      # Architecture, security, development, and subsystem manuals
 ```
 
-## CLI and daemon smoke
+## Build editions and client/server modes
 
-Build the app binaries:
+Loom supports three deployment editions from a single codebase:
+
+1. **Desktop (`-Edition desktop`)**: Windows `Loom.exe` Tauri workbench paired with `runtime\loom-daemon.exe` and independent Framework, MCP server, and sample Art ZIP catalogs. `Loom.exe` can auto-start its local sidecar daemon on `http://127.0.0.1:8765` (**Local mode**) or connect to a remote `loom-daemon` hub (**Remote client mode**).
+2. **Server Web (`-Edition web` / Docker default `LOOM_EDITION=web`)**: `loom-daemon` compiled with `management-ui` (`loom_embedded_ui`), serving the full browser management console at `/ui/` alongside `loom` CLI—ideal for Linux/NAS/home servers without Tauri dependencies.
+3. **Server API (`-Edition api` / Docker `LOOM_EDITION=api`)**: minimal headless `loom-daemon` (`runtime-defaults` only, `/ui/*` disabled) plus `loom` CLI.
+
+### Quick start (CLI, daemon, and desktop)
+
+Build the core Rust binaries:
 
 ```powershell
 cargo build --locked -p loom-daemon -p loom-cli
 ```
 
-## Desktop shell
-
-The desktop shell is the normal UI for end users. In a packaged release, start
-Loom by double-clicking or running the single desktop entry:
+Run an isolated local daemon and query it with `loom`:
 
 ```powershell
-.\Loom.exe
+$env:LOOM_DAEMON_HOST = "127.0.0.1"
+$env:LOOM_DAEMON_PORT = "48766"
+.\target\debug\loom-daemon.exe
 ```
-
-`Loom.exe` will try to start `runtime\loom-daemon.exe` when the local service
-is offline. If you need to debug the backend manually, run the runtime daemon
-first and then open the desktop:
 
 ```powershell
-.\runtime\loom-daemon.exe
-.\Loom.exe
+.\target\debug\loom.exe status --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe frameworks list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe arts list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe workflows list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe mcp list --daemon-url http://127.0.0.1:48766
+.\target\debug\loom.exe ai status --daemon-url http://127.0.0.1:48766
 ```
 
-The CLI entry for advanced scripting is available from the separate
-`Loom-CLI-*.zip` release artifact. It is not copied into the desktop package
-root. The desktop package contains only the user-facing `Loom.exe` plus its
-internal runtime sidecar, support files, framework package catalog, and seven
-independent sample Art packages. Framework and Art runtimes remain separate
-ZIPs and are never statically linked into the desktop executable.
+Non-public routes require `Authorization: Bearer <token>` (from `LOOM_DAEMON_TOKEN` or auto-generated `<control-plane>/daemon-token`) or a scoped `Authorization: Device <session>` / MCP share token where permitted. Non-loopback binds require an authenticated TLS terminator (`LOOM_TLS_TERMINATED=1`) or explicit LAN management configuration.
 
-The desktop shell restores the independent Loom window. It is implemented
-separately from the Rust workspace so normal daemon/CLI checks do not pull in
-Tauri dependencies.
-
-### Otter display language
-
-Open **Settings → Otter → General → Otter display language** (currently labeled
-**设置 → Otter → 常规 → Otter 显示语言** in Loom), choose an approved target
-device, then choose one of the languages reported by that Otter. English and
-Simplified Chinese are bundled with Otter; no capability package download is
-required. This setting changes only the selected Otter, not Loom or other devices.
-
-The selector shows Otter's reported language, not an optimistic draft. A request
-is complete only after that receiver confirms saving and applying it. Otter's
-tray language menu uses the same persisted setting. Offline or unapproved
-devices, older clients without language reports, and devices already handling a
-request cannot receive a new change; requests are not queued for later delivery.
-If the result is unknown, refresh and check Otter's current language rather than
-assuming success. A revision conflict requires a fresh choice and never silently
-overwrites a newer tray change.
-
-Device management handles connection approval and paired devices; it no longer
-offers a separate image-sending operation. Start image projection from a pinned
-image in Otter. See [Otter connections](docs/OTTER_CONNECTIONS.md) for authorization
-and target-directory boundaries, and [the wall API](protocol/WALL_CONTROL_API.md)
-for composed wall layouts.
-
-Install and verify the desktop frontend:
+Install, test, and build the frontend workbench (`apps/desktop`):
 
 ```powershell
 Push-Location .\apps\desktop
@@ -138,468 +79,30 @@ npm test
 npm run typecheck
 npm run build
 Pop-Location
-```
 
-Check the Tauri wrapper:
-
-```powershell
 cargo check --locked --manifest-path .\apps\desktop\src-tauri\Cargo.toml
 ```
 
-Run the desktop during development:
+## Frameworks, Arts, Capabilities, and MCP packages
+
+Loom treats Art execution engines as installable Framework packages (`process`, `cloud_api`, `mcp`, `workflow`, or third-party frameworks implementing `loom.framework.v1`). None of these packages are statically linked into `loom-daemon` or `Loom.exe`, and a fresh standalone daemon starts with zero pre-installed frameworks. In packaged desktop releases, independent ZIPs under `packages\frameworks`, `packages\mcp-servers`, and `packages\arts` are verified against `.sha256` sidecars and bootstrapped once per catalog hash into the writable control plane via the public install APIs.
+
+Build or install repo-owned packages explicitly with:
 
 ```powershell
-Push-Location .\apps\desktop
-npm run tauri dev
-Pop-Location
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomArtFrameworkPackages.ps1 -OutputRoot .\.loom-art-store-data\frameworks
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-LoomSampleArtPackages.ps1 -OutputRoot .\.loom-art-store-data\arts
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-LoomSampleArtPackage.ps1 -PackageName image-compress
 ```
 
-By default the shell reads `http://127.0.0.1:8765`. Override that with
-`LOOM_DAEMON_URL` when testing against another loopback daemon port.
-Set `LOOM_DAEMON_EXECUTABLE` to an explicit `loom-daemon.exe` path when the
-daemon is not under the packaged `runtime` directory. Debug builds also check
-the repository's `target\debug\loom-daemon.exe` after the explicit override
-and packaged runtime location.
+- **Cross-platform MCP server packages**: `neuro.official/neuro-image-search` (`runtime/image-search-mcp.ps1` on Windows, `runtime/image-search-mcp.mjs` on Linux; see [Image Search](docs/IMAGE_SEARCH.md)) and `neuro.official/stock-api` (`=2.9.0` with pinned Node runtime; see [Stock Monitor](docs/STOCK_MONITOR.md)) store API credentials exclusively in server-scoped `CredentialStore` bindings (`PUT /v1/mcp/servers/{id}/credentials`).
+- **Outbound MCP server & Scoped Share Tokens**: external MCP clients can connect to `POST /mcp` or spawn `loom mcp-stdio --daemon-url <url> --mcp-token <loom_mcp_...>` using scoped tokens created via `POST /v1/mcp-share/tokens` (`arts:execute`, `capabilities:invoke`, `screen:read`, `devices:control`, `projection:control`).
+- **Official OCR & Translation Capabilities**: `neuro.official/ocr` (text OCR + QR/barcode recognition; see [OCR contract](docs/OCR_CONTRACT.md)) and `neuro.official/text-translation` (see [translation hybrid mode](docs/TRANSLATION_HYBRID_MODE.md)) install as signed, digest-approved Capability Plugins without bundling model weights into the base Loom installer.
+- **Plugin SDK & Trust**: `Loom-Plugin-SDK-<version>-windows-x64.zip` ships `loom-plugin.exe`, all public v1 JSON Schemas, templates, and conformance harnesses. See [plugin development](docs/plugin-development.md), [plugin security](docs/plugin-security.md), [plugin permissions](docs/plugin-permissions.md), and [signing and trust](docs/plugin-signing-and-trust.md).
 
-The UI names the Loom<->Otter integration workspace **Otter 同步**. Internally the
-daemon exposes the versioned `loom.hook.v1` Otter Bridge. Otter-generated live workflow data is
-stored as `latest.yaml` and surfaced in the desktop as `hook-live` / `Otter
-实时工作流`.
+## Global AI Gateway relay and durable runs
 
-For the normal user path, open **Otter 同步** to inspect the real Otter canvas:
-node placement, image previews, and links are rendered directly in the Loom
-workbench. Select a live node to save its connected component as a workflow;
-saved workflows can be instantiated on the Otter desktop or exported as an Art.
-See [Otter canvas](docs/HOOK_CANVAS.md) for navigation and preview boundaries.
-YAML, cURL, raw JSON, protocol methods, session paths, IPC,
-and shared-memory diagnostics remain available only inside the collapsed
-**高级技术信息** disclosure.
-
-When running an isolated desktop smoke, set `LOOM_HOOK_BRIDGE_PORT` (or
-`LOOM_HOOK_BRIDGE_URL`) alongside `LOOM_DAEMON_URL` to select the daemon's bridge
-port. Desktop event delivery uses a native authenticated TLS subscription discovered
-from `%APPDATA%/Neuro/capabilities/loom.json`, not a browser URL override. Isolate
-`APPDATA` too so the smoke cannot replace another running instance's manifest.
-See [local bridge security](protocol/LOCAL_BRIDGE_SECURITY.md); mixed transport
-versions fail closed and require a coordinated Otter/Loom update.
-
-Start the daemon on an isolated local port:
-
-```powershell
-$env:LOOM_DAEMON_HOST = "127.0.0.1"
-$env:LOOM_DAEMON_PORT = "48766"
-.\target\debug\loom-daemon.exe
-```
-
-The daemon defaults to loopback binding and always requires administrator authentication for
-non-public routes. Set `LOOM_DAEMON_TOKEN` explicitly, or let the daemon generate and persist a
-token in `<control-plane>/daemon-token`; the CLI and desktop client discover that file. API clients
-send `Authorization: Bearer <token>`. `/health` and the device pairing/session bootstrap routes stay
-public. Browser settings navigation uses `/settings?token=<token>` once, then exchanges the query
-token for an `HttpOnly; SameSite=Strict` cookie. Non-loopback binds additionally require an
-authenticated TLS terminator and `LOOM_TLS_TERMINATED=1`.
-
-In another shell:
-
-```powershell
-.\target\debug\loom.exe status --daemon-url http://127.0.0.1:48766
-.\target\debug\loom.exe frameworks list --daemon-url http://127.0.0.1:48766
-.\target\debug\loom.exe arts list --daemon-url http://127.0.0.1:48766
-.\target\debug\loom.exe workflows list --daemon-url http://127.0.0.1:48766
-.\target\debug\loom.exe ai status --daemon-url http://127.0.0.1:48766
-```
-
-## Installable frameworks and art packages
-
-Loom treats Art execution kinds as installable frameworks. An Art package
-belongs to exactly one framework, and Loom refuses to install that Art until
-its framework is both installed and ready.
-
-The four repo-owned framework ids are:
-
-- `process`
-- `cloud_api`
-- `mcp`
-- `workflow`
-
-`process` is the single local execution boundary for command-backed,
-script-backed, and Python-backed Arts. Those authoring styles differ only in
-their package-local `art.runtime.json` entry; they are not separate frameworks.
-
-These four packages are optional and are not installed by a standalone daemon in
-a fresh control plane. Formal desktop releases carry them as independent ZIPs
-under `packages\frameworks`. The desktop's one-time sample-Art bootstrap installs
-the dependencies required by its seven bundled Arts; operators can still install,
-disable, update, or uninstall packages independently through **管理框架**. They
-are never statically linked into `Loom.exe` or `loom-daemon.exe`. They are a
-repo-owned catalog, not a closed allowlist: safe third-party
-framework IDs use the same package and runtime protocol. Install a framework ZIP
-before installing an Art ZIP; Loom validates the package manifest, process
-entry, protocol version, and platform before marking the framework ready.
-
-Package identity is publisher-qualified: the canonical form is
-`publisher/id`. HTTP path parameters encode that slash as `%2F`, for example
-`publisher.alpha%2Fshared-framework`; raw slashes are rejected so the route
-cannot be confused with another endpoint. An unqualified local ID resolves only
-when it identifies exactly one installed package.
-
-Daemon routes:
-
-```http
-GET  /v1/frameworks
-POST /v1/frameworks/install
-POST /v1/frameworks/{frameworkId}/install
-POST /v1/frameworks/{frameworkId}/enable
-POST /v1/frameworks/{frameworkId}/disable
-POST /v1/frameworks/{frameworkId}/upgrade
-POST /v1/frameworks/{frameworkId}/rollback
-POST /v1/frameworks/{frameworkId}/uninstall
-GET  /v1/doctor/frameworks
-GET  /v1/tools/{toolId}/readiness
-POST /v1/arts/install
-POST /v1/arts/create
-POST /v1/arts/{artId}/rollback
-POST /v1/arts/{artId}/uninstall
-GET  /v1/arts/{artId}/package
-GET  /v1/doctor/arts
-GET  /v1/arts/store/catalog
-POST /v1/arts/store/install
-POST /v1/arts/store/publish
-GET  /v1/plugin-trust
-POST /v1/plugin-trust/publishers
-POST /v1/plugin-trust/revoke
-POST /v1/plugin-trust/policy
-POST /v1/plugin-trust/users
-POST /v1/plugin-trust/users/remove
-GET  /v1/plugin-credentials
-POST /v1/plugin-credentials
-POST /v1/plugin-credentials/delete
-POST /v1/plugin-credentials/reveal
-GET  /v1/publisher-identity
-POST /v1/publisher-identity/register
-POST /v1/publisher-identity/rotate
-POST /v1/publisher-identity/private-key
-GET  /v1/diagnostics/executions/{runId}
-GET  /v1/support-bundle?runId={runId}
-```
-
-`GET /v1/tools/{toolId}/readiness` reports the Art's resolved framework plus
-whether that framework is installed and ready. When an Art install is rejected,
-the daemon returns `framework_not_ready` and tells the operator to install the
-missing framework first.
-
-For local package distribution, Loom also ships a tiny art store server:
-
-```powershell
-.\scripts\run-art-store.ps1
-```
-
-By default it listens on `http://127.0.0.1:8790` and serves:
-
-```http
-GET  /catalog
-GET  /arts/{artId}.zip
-GET  /frameworks/{frameworkId}.zip
-POST /publishers/register
-GET  /publishers/{userId}
-POST /publishers/{userId}/rotate
-POST /publish
-```
-
-The store assigns immutable `NU` publisher IDs, retains retired public keys for
-historical Art verification, and accepts new Art versions only when their
-Ed25519 signature matches the publisher's current active key. The desktop
-stores only the current private key locally; Art packages contain the public
-key and detached signature.
-
-Point the daemon at that store with:
-
-```powershell
-$env:LOOM_ART_STORE_URL = "http://127.0.0.1:8790"
-```
-
-An explicit local catalog can be selected with
-`LOOM_FRAMEWORK_PACKAGE_CATALOG_DIR`. Without an override or network store, a
-packaged daemon automatically checks the release's sibling
-`packages\frameworks` directory and verifies each ZIP against its `.sha256`
-sidecar before installation.
-
-The four repo-owned framework packages and seven sample Art packages are built
-independently from the Loom binaries:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Build-LoomArtFrameworkPackages.ps1 `
-  -OutputRoot .\.loom-art-store-data\frameworks
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Build-LoomSampleArtPackages.ps1 `
-  -OutputRoot .\.loom-art-store-data\arts
-```
-
-The output contains one framework ZIP per framework and one Art ZIP per sample
-Art. Both ZIP types have independent manifests and SHA-256 files. Formal desktop
-release tooling publishes both catalogs under `packages\frameworks` and
-`packages\arts`. On the first launch for a catalog hash, the desktop verifies the
-ZIPs, installs the declared framework dependencies, and installs the seven curated Arts
-through the public package APIs. The applied catalog hash is recorded under the
-writable control plane, so deleting an Art later does not make it reappear on
-every startup. This bootstrap never edits Loom or Otter source. The same generic
-installer remains available for explicit local installation:
-
-Repo-owned sample builds also write `packages\official-art-certifications.json`.
-The Art Store marks an entry as official only when its qualified ID, latest
-version, and computed ZIP SHA-256 all match this server-owned index. Manifest
-fields cannot self-certify a package, and user-published Art remains unverified
-until the platform adds the exact package digest to the index.
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Install-LoomSampleArtPackage.ps1 `
-  -PackageName image-compress
-```
-
-`Install-LoomSampleArtPackage.ps1` is the only local sample-package installer.
-Per-Art wrapper entry points were removed rather than retained as aliases.
-
-When `process` is installed from the store, Loom downloads one runtime ZIP,
-unpacks it under `<LOOM_CONTROL_PLANE_ROOT>\frameworks\...\process\`, and uses
-its bundled Python 3.12 runtime for Python-backed Arts. Command and script Arts
-use the same installed framework process boundary without modifying Loom or Otter.
-
-The packaged `图片搜索` Art depends on the independently installed
-`neuro.official/neuro-image-search` MCP server package. Configure its required
-`Brave API Key` from either the Art dependency status or the MCP service page;
-both controls write the same server-scoped CredentialStore binding through
-`PUT /v1/mcp/servers/neuro-image-search/credentials`. The `mcp` framework maps
-that binding to `BRAVE_API_KEY` and starts the MCP package's
-`runtime/image-search-mcp.ps1` entry. The server exposes `brave_image_search`
-over stdio MCP and calls the Brave image-search API without an npm or `npx`
-runtime dependency. The Art manifest and Art settings never own this key.
-
-The packaged `股票盯盘` Art similarly depends on the independently installed
-`neuro.official/stock-api` MCP server package at exact version `2.9.0`, which
-pins the upstream `stock-api@2.7.3` library. Loom ships that upstream library
-together with a pinned Node.js runtime, so execution
-does not install npm packages or invoke `npx`. The generic `mcp` Framework makes
-the Art's quote, market-series, and order-book calls over one stdio MCP session,
-while the Art runtime converts the structured responses into its candlestick
-visualization, ten-level depth panel, and formal market-data output. Gains and
-losses follow the convention of the quoted market, so SH/SZ/BJ/HK render up in
-red and other markets render up in green. The package supports the upstream
-library's A-share, Hong Kong, and US code formats, including BJ codes, and does
-not expose trading actions. The 2.9.0 wrapper keeps Eastmoney/Sina/Tencent
-aggregation for full quotes and history, and adds a pysnowball-compatible Node
-adapter for live `quotec`/`pankou` semantics. Anonymous `quotec` works without a
-credential; an optional `LOOM_PYSNOWBALL_TOKEN` Cookie enables the credentialed
-depth path. The existing Xueqiu-compatible request path remains the automatic
-fallback, so the Art still works without a token. Live monitoring is bounded
-client-side polling; neither provider offers a websocket market channel.
-
-Every Art parameter can also switch from a literal default to a typed global
-encrypted value. Global values declare `string`, `number`, `integer`, `boolean`,
-or `json`; the editor only lists compatible values for each parameter. Art
-settings persist the reference in `valueBindings`, never the plaintext, and
-runtime node parameters still override the referenced default. Secret parameters
-use the same editor interaction but remain isolated in `credentialBindings` and
-only accept string credentials.
-
-For a repo-owned all-framework local proof path, run the dedicated fake-store
-Otter smoke:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1 `
-  -Configuration Debug `
-  -EvidenceRoot .\target\framework-art-store-otter-smoke
-```
-
-That smoke starts a temporary local fake cloud API server, a temporary stdio
-MCP server, and a temporary local `loom-art-store` root. The MCP fixture now
-proves the `图片搜索` path specifically by returning structured
-`brave_image_search` results whose first image URL is fetched back into a real
-previewable base64 image. The smoke installs all four framework packages and six
-Arts: three `process` Arts (command, script, and Python), plus cloud, MCP, and
-workflow Arts. It instantiates six Otter nodes, executes each node once, and writes a
-machine-readable summary under:
-
-```text
-target\framework-art-store-otter-smoke\<runId>\summary.json
-```
-
-That broad Otter smoke intentionally uses a protocol fixture; it is not the
-independent MCP package proof. `scripts/tests/Test-LoomSampleArtInstallExecution.ps1`
-installs the real `custom-image-search.zip`, `neuro-image-search.zip`,
-`custom-stock-monitor.zip`, and `stock-api.zip`. It writes the image-search
-credential only to the independent MCP server scope, redirects provider traffic
-only to isolated local fixtures, and verifies credential injection, image
-download, the stock quote plus daily K-line MCP calls, both formal results, and
-dependency cleanup.
-
-## Third-party plugin boundary smoke
-
-For the third-party boundary, run the isolated smoke with a built daemon and a
-Rust toolchain available:
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomPluginBoundarySmoke.ps1 -DaemonExecutable .\target\debug\loom-daemon.exe -EvidenceRoot .\target\plugin-boundary-smoke
-
-This smoke generates and independently compiles a framework runtime outside the
-repository, creates a separate Art package whose content is loaded by that
-runtime, and installs both into a fresh control plane. It proves v1-to-v2
-framework upgrade, restart, enable, disable, uninstall, reinstall, Otter-facing
-dynamic capability discovery, generic Otter node instantiation, Otter Bridge
-execution, and unchanged Loom/Otter source fingerprints. Framework IDs supplied
-by third-party packages are accepted when they match Loom's safe package ID
-rules; the seven catalog IDs are not a closed allowlist.
-
-This is a local boundary smoke, not a hosted marketplace certification. It
-requires a Rust toolchain and a built daemon. The invariant it proves is that
-install, execution, upgrade, rollback, restart, disable, uninstall, and
-reinstall operate only on control-plane package/state directories; they do not
-edit Loom or Otter source.
-
-To prove that the Capability Plugin host accepts an unknown third-party package
-without adding a core business branch, build `loom-daemon` and `loom-plugin`,
-then run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-LoomCapabilityPluginConformance.ps1 -PublisherId publisher.example -PackageId capability-a
-```
-
-The conformance package and its Rust runtime are created under the system temp
-directory. The smoke covers install, permission approval, enable, command and
-notice effects, manifest-driven settings, restart restoration, disable,
-re-enable, upgrade, rollback, and uninstall. It also requires zero remaining
-runtime processes. It runs without a sibling Otter checkout. Maintainers can add
-`-AuditSourceIsolation -LoomRepository . -OtterRepository ..\Otter` to also prove
-identical Otter/Loom source fingerprints at the boundary.
-
-### Installing the official OCR capability
-
-The Desktop **Settings > Capability Extensions** page contains a dedicated
-`neuro.official/ocr` card. Text OCR plus QR/barcode recognition ship in that one
-optional package. `Ctrl+4` runs both automatically, while the OCR unit-toolbar
-menu exposes cached-result actions instead of a redundant code-only scan item.
-The quick action uses the same signed catalog installer as the
-generic catalog tab; it does not download from a hard-coded URL or use the small
-local-ZIP upload path. Loom verifies the catalog signature, package SHA-256,
-package signature, SBOM, provenance, host compatibility, and exact permissions
-before presenting the digest-bound approval dialog.
-
-Operators configure the catalog with `LOOM_CAPABILITY_CATALOG_URL` and provision
-the matching public `neuro.official` key in the control-plane
-`plugin-trust.json`. HTTPS is required in production. Loopback HTTP is disabled
-unless `LOOM_CAPABILITY_CATALOG_ALLOW_LOOPBACK=1` is explicitly set for an
-isolated development test.
-
-Release engineers can build a deterministic signed package and catalog with:
-
-```powershell
-.\scripts\Build-LoomOcrCapabilityPackage.ps1 -OutputRoot <OCR_OUTPUT> -SigningKeyPath <KEY> -SigningPublisherId neuro.official
-.\scripts\Build-LoomOcrCapabilityCatalog.ps1 -PackageRoot <OCR_OUTPUT> -BaseUrl https://downloads.example/capabilities/ocr/ -SigningKeyPath <KEY> -SigningPublisherId neuro.official
-.\scripts\tests\Test-OcrCapabilityPackageContract.ps1 -ArtifactRoot <OCR_OUTPUT>
-```
-
-The package output includes `ocr.zip`, `ocr.zip.sha256`, CycloneDX SBOM,
-provenance, and the signed catalog metadata. The contract test verifies their
-hashes, required OCR/code-recognition runtime files, catalog identity, and
-catalog signature before the candidate is handed to a tester.
-
-For a local manual candidate, build the catalog with a loopback base URL and
-`-AllowHttpLoopback`, then run
-`scripts/Start-LoomWithLocalOcrCatalog.ps1`. The launcher uses an isolated
-control plane, serves only the four allowlisted OCR artifacts on loopback, and
-keeps the main Loom release free of models. Development signing keys must never
-be published or copied into a release payload.
-
-### Plugin SDK, trust, and lifecycle
-
-The release build publishes an independent `Loom-Plugin-SDK-<version>-windows-x64.zip`
-containing `loom-plugin.exe`, all 14 public v1 JSON Schemas, three language
-capability templates, their fake host, the clean-host
-capability conformance harness, and the public plugin documentation. The CLI
-supports `init`, `keygen`, `sign`, `validate`, `pack`,
-`conformance`, `catalog sign`, `catalog validate`, `trust add`, and
-`trust revoke`. The language-neutral source of
-truth is [protocol/README.md](protocol/README.md).
-
-Installed code is immutable under `versions/<version>-<digest-prefix>/`.
-Activation pointers, dependency lockfiles, lifecycle journals, and uninstall
-tombstones provide restart-safe upgrade, rollback, and crash recovery. Mutable
-`state/`, `cache/`, and `outputs/` directories remain outside immutable code.
-Every HTTP and `loom.hook.v1` package execution
-revalidates the active package digest, lockfile, signature/trust state, and
-publisher revocation before launching it.
-
-Workflow parents lock each direct child Art to its publisher-qualified ID,
-exact version, and canonical digest. Child upgrades, rollbacks, activation
-changes, tampering, or uninstall invalidate the parent until its exact child
-state is restored or the parent is explicitly reinstalled to refresh the lock.
-Otter forwards every package execution type, including CLI-backed Arts, to Loom;
-it does not contain an Art-specific local command executor.
-
-The default `LOOM_PLUGIN_PERMISSION_MODE=audit` permits declared capabilities
-that are not yet OS-enforceable and reports them through the Desktop and
-`GET /v1/doctor/frameworks`. `LOOM_PLUGIN_PERMISSION_MODE=strict` fails closed
-when a package requests direct network, arbitrary filesystem, GPU, or clipboard
-access that Loom cannot currently enforce with an OS sandbox. Process trees,
-timeouts/output limits, package containment, credential brokering, and
-host-mediated HTTP policy are enforced cross-platform. Windows Job Objects also
-enforce memory and active-process limits; Unix process groups currently report
-those two declarations as advisory. Neither boundary is a complete
-AppContainer/namespace sandbox.
-
-Further references:
-
-- [Plugin development](docs/plugin-development.md)
-- [Plugin security](docs/plugin-security.md)
-- [Permissions and enforcement](docs/plugin-permissions.md)
-- [Signing, trust, and revocation](docs/plugin-signing-and-trust.md)
-- [Historical plugin migration guide](docs/plugin-migration.md)
-- [Release SBOM and provenance](docs/release-provenance.md)
-- [Dependency vulnerability response](docs/DEPENDENCY_SECURITY.md)
-
-## Local capability API
-
-`loom-daemon` exposes local capability discovery and unified invocation:
-
-```http
-GET /v1/capabilities
-POST /v1/invoke
-```
-
-Built-in hub capabilities include `ai.chat.v1` and `loom.runtime.probe.v1`:
-
-```json
-{
-  "requestId": "uuid",
-  "caller": "hook",
-  "capability": "ai.chat.v1",
-  "input": {
-    "messages": [
-      { "role": "user", "content": "Summarize this workflow" }
-    ]
-  }
-}
-```
-
-The response includes a Loom run record. Run state and evidence can be
-retrieved through:
-
-```http
-GET /v1/runs/{run_id}
-GET /v1/runs/{run_id}/events
-```
-
-Errors are structured and include codes such as `unknown_capability`,
-`invalid_input`, `ai_gateway_not_configured`, `ai_gateway_upstream_failed`,
-`run_not_found`, `run_store_failed`, and `unauthorized`.
-
-### Global AI Gateway relay
-
-Configure an external AI Gateway via environment variables or at runtime via
-`PUT /v1/ai/config` (supporting loopback HTTP/HTTPS, private LAN RFC1918/ULA
-HTTP/HTTPS, and remote HTTPS):
+Configure an OpenAI-compatible AI Gateway via `LOOM_GATEWAY_*` environment variables or dynamically via `PUT /v1/ai/config` (loopback HTTP/HTTPS, private LAN RFC1918/ULA HTTP/HTTPS, or remote HTTPS):
 
 ```powershell
 $env:LOOM_GATEWAY_MODEL = "planner-model"
@@ -609,271 +112,35 @@ $env:LOOM_GATEWAY_TIMEOUT_SECS = "60"
 .\target\debug\loom-daemon.exe
 ```
 
-`LOOM_GATEWAY_BASE_URL` defaults to `http://127.0.0.1:4200` when
-`LOOM_GATEWAY_MODEL` is set, and the timeout is bounded to 1 through 300 seconds.
-`GET /v1/ai/status`, `GET /v1/ai/models`, and `POST /v1/ai/chat/completions`
-provide direct relay endpoints. Every valid `POST /v1/invoke` request creates a
-queryable `running` run first, then stores either `succeeded` plus
-`capability_completed` or `failed` plus `capability_failed` evidence. Gateway
-tokens and prompts are never persisted in status, runs, events, or public error
-responses.
+Direct relay endpoints (`GET /v1/ai/status`, `GET /v1/ai/models`, `POST /v1/ai/chat/completions`) and unified capability execution (`POST /v1/invoke` with `ai.chat.v1` or `loom.runtime.probe.v1`) run on bounded concurrent workers (`LOOM_DAEMON_WORKERS=4`, `LOOM_DAEMON_QUEUE_CAPACITY=32`). Run lifecycles (`GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`, `POST /v1/runs/{id}/stop`, `POST /v1/runs/{id}/retry`) persist atomically in `<LOOM_CONTROL_PLANE_ROOT>\runs\loom-runs.sqlite3` without logging prompts or upstream bearer tokens. See [Gateway integration](docs/GATEWAY_INTEGRATION.md).
 
-Check the operator-visible mode without probing Gateway:
+## Otter, multi-device sync, and Companion App Settings Hub
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/status | ConvertTo-Json -Depth 10
-```
+- **Otter Canvas & Multi-Device Sync**: inspect live Otter graphs (`GET /v1/hook-bridge/canvas`), track active workflow execution across paired devices, and archive/restore up to 200 reusable workflows (`/v1/otter-sync/*`).
+- **Device Hierarchy & Display Language**: view Host Devices and their nested App Sessions (`GET /v1/devices/hierarchy`) and update an approved online Otter's display language (`POST /v1/devices/{id}/locale-requests`) with revision-checked confirmation.
+- **Companion App Settings Hub**: centralize configuration claims (`GET /v1/configuration/claims?app=tea`) and schema-driven revisioned settings (`GET/PUT /v1/configuration/companion-apps/{appId}`) for companion desktop tools. See [Otter integration](docs/OTTER_INTEGRATION.md).
 
-For a packaged, isolated verification that does not require the desktop
-executable:
+## Container image and release packaging
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Invoke-LoomGatewayBrainPlanSmoke.ps1 `
-  -PackageDir .\release\Loom\<versionId>
-```
-
-## Bounded daemon request execution
-
-The production `loom-daemon.exe` uses a bounded request executor. By default it
-starts four request workers and accepts up to thirty-two additional queued
-requests. Queue capacity counts jobs waiting in the queue; active worker jobs
-are bounded separately by the worker count. Submission uses non-blocking
-`try_send`, so a full queue does not make the accept loop wait for capacity:
-
-```text
-LOOM_DAEMON_WORKERS=4
-LOOM_DAEMON_QUEUE_CAPACITY=32
-```
-
-Empty or unset values use these defaults. `LOOM_DAEMON_WORKERS` accepts `1` to
-`32`, and `LOOM_DAEMON_QUEUE_CAPACITY` accepts `1` to `1024`. An invalid
-non-empty value fails daemon startup before the listener is bound and names the
-invalid environment variable in the error.
-
-`GET /status` reports safe executor metadata without exposing queue contents or
-request data:
-
-```json
-{
-  "requestExecutor": {
-    "mode": "bounded_workers",
-    "workers": 4,
-    "queueCapacity": 32
-  }
-}
-```
-
-Library constructors such as `DaemonConfig::localhost(...)` intentionally keep
-the `inline` executor default (`workers: 1`, `queueCapacity: 0`) so embedded
-callers and library tests retain their existing behavior. Library callers may
-opt into bounded mode explicitly with
-`DaemonConfig::with_bounded_request_executor(...)`; only the production binary
-opts into bounded mode automatically through the environment.
-
-The concurrent route allowlist includes `/health`, `/status`, `/v1/capabilities`,
-`/v1/ai/status`, `/v1/ai/models`, `/v1/ai/chat/completions`, the MCP registry,
-Otter canvas/previews, asset-library downloads and download control, run
-reads/events and stop/retry, invocation cancellation, and `/v1/invoke`. Surface
-stream and Live event long-polls run on their dedicated stream executor so they
-never hold the global route lock or starve normal request workers. Only `/health`
-and `/status` are reserved probes outside the normal queue.
-
-When the bounded queue is full, Loom returns HTTP `503 Service Unavailable`
-with `error.code = "daemon_busy"` and `retryable = true`. The rejected request
-is not executed and creates no run or event. If shutdown arrives while the
-accept thread is still reading an already accepted request, that request
-receives `daemon_shutting_down` with the same retryable 503 contract. Loom does
-not automatically replay or interpret client retry timing.
-
-The packaged Windows binary maps Ctrl+C, Ctrl+Break, and console close/logoff/
-shutdown events to the daemon shutdown channel. Shutdown then stops accepting
-connections, closes the request sender, drains all accepted and queued work,
-and joins every worker. It does not forcibly cancel a blocking Gateway call;
-the existing Gateway timeout remains the boundary for that work.
-
-Consequently, a Gateway-backed `ai.chat.v1` call blocks only its assigned worker,
-not the accept loop. `/health` and `/status` bypass the normal queue, while
-another approved capability can proceed when a worker is available. The
-packaged check is:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Invoke-LoomDaemonConcurrencySmoke.ps1 `
-  -PackageDir .\release\Loom\<versionId>
-```
-
-This changes request scheduling only. Gateway continues to own hosted-provider
-routing, credential selection, relay APIs, and provider/runtime details; Loom
-does not move Gateway provider routing into the daemon. Text translation may
-additionally select its bounded, IP-loopback local adapter when explicitly
-configured, while the capability process still sees only the scoped broker.
-
-## Persistent run evidence
-
-The packaged daemon stores capability runs and events in bundled SQLite below
-the Loom control-plane root:
-
-```text
-<LOOM_CONTROL_PLANE_ROOT>\runs\loom-runs.sqlite3
-```
-
-Set `LOOM_RUN_STORE_PATH` to override the database file. Library-level daemon
-tests use an in-memory store unless they explicitly select SQLite, while the
-real `loom-daemon.exe` selects SQLite by default. `GET /status` reports only
-safe metadata such as `mode = sqlite` and `persistent = true`; it does not
-expose the configured path.
-
-Run creation and every status/event transition commit atomically. Runs left in
-`running` state by a daemon interruption are marked `failed` with
-`daemon_restarted` and receive a final `run_interrupted` event on the next
-startup. Loom never automatically replays an interrupted model or tool call.
-
-Use the packaged restart smoke to verify two daemon instances and the desktop
-sibling-daemon path against one isolated database:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Invoke-LoomRunPersistenceSmoke.ps1 `
-  -PackageDir .\release\Loom\<versionId>
-```
-
-## Configuration ownership claims
-
-`loom-daemon` exposes the minimal configuration-ownership claim endpoint used by
-independent local apps such as Tea:
-
-```http
-GET /v1/configuration/claims?app=tea
-```
-
-By default Loom does not claim Tea configuration and returns:
-
-```json
-{
-  "app": "tea",
-  "managed": false,
-  "panel_url": null,
-  "reason": "Loom has not claimed this app configuration"
-}
-```
-
-For local suite testing or deployments where Loom should centralize app
-settings, set:
-
-```powershell
-$env:LOOM_MANAGED_CONFIG_APPS = "tea,hook,talk"
-$env:LOOM_SETTINGS_BASE_URL = "loom://settings"
-```
-
-When `tea` is listed, the claim returns `managed: true` and
-`panel_url: "loom://settings/tea"`. Tea uses this to route settings buttons to
-Loom and to reject competing Tea-local configuration writes while Loom is the
-active owner.
-
-## Run lifecycle control
-
-`loom-daemon` exposes run stop and retry endpoints for durable stored runs:
-
-```http
-POST /v1/runs/{run_id}/stop
-POST /v1/runs/{run_id}/retry
-{ "run": <Run> }
-```
-
-These return the updated canonical stored `Run`. The request body must contain
-the matching `run.id`, while caller-supplied input, output, and evidence fields
-do not overwrite stored history.
-
-## Container image
+Build and run the server container (`LOOM_EDITION=web` by default, or `--build-arg LOOM_EDITION=api`):
 
 ```powershell
 docker build -t loom:local .
 docker run --rm -p 48766:8765 loom:local
 ```
 
-The container remains daemon-first: `loom-daemon` is the container entrypoint
-and `loom` is retained inside the image for operator and health-check scripts.
-The desktop shell is not part of the server image.
-
-## Release tooling
-
-Standalone release packages default to `.\release\Loom`. The Neuro parent
-release boundary remains available through the explicit `-OutputRoot` option:
+Build and verify standalone Windows desktop or server release packages:
 
 ```powershell
 .\scripts\build-release.ps1 -VersionId local-release
 .\scripts\verify-release.ps1 -PackageDir .\release\Loom\local-release
 
-.\scripts\build-release.ps1 `
-  -VersionId parent-release `
-  -OutputRoot C:\Users\Public\Project\Release\Loom
+# Server editions (web or api):
+.\scripts\build-release.ps1 -Edition web -VersionId local-web
+.\scripts\build-release.ps1 -Edition api -VersionId local-api
 ```
 
-Each candidate contains the desktop payload under one visible entry:
-
-```text
-Loom.exe
-runtime\loom-daemon.exe
-runtime\resources\...
-packages\frameworks\process.zip
-packages\frameworks\cloud_api.zip
-packages\frameworks\mcp.zip
-packages\frameworks\workflow.zip
-packages\frameworks\*.zip.sha256
-packages\frameworks\summary.json
-packages\mcp-servers\neuro-image-search.zip
-packages\mcp-servers\stock-api.zip
-packages\mcp-servers\*.zip.sha256
-packages\mcp-servers\summary.json
-packages\arts\*.zip
-packages\arts\*.zip.sha256
-packages\arts\summary.json
-packages\Loom-<versionId>-windows-x64.zip
-packages\Loom-<versionId>-windows-x64.zip.sha256
-packages\Loom-CLI-<versionId>-windows-x64.zip
-packages\Loom-CLI-<versionId>-windows-x64.zip.sha256
-```
-
-The desktop ZIP contains `Loom.exe`, the runtime tree, the four independent
-Framework ZIPs, two independent MCP server ZIPs, and seven independent Art ZIPs.
-On desktop startup, the MCP and Art catalogs are each applied once to the
-writable control plane through the same install APIs used by external packages.
-The CLI ZIP contains only `loom.exe`, allowing command-line use without adding a
-second executable to the desktop package root. The embedded Python runtime exists only inside
-`packages\frameworks\process.zip`; it is not duplicated in the default Loom
-runtime tree.
-
-`verify-release.ps1` validates the complete candidate boundary: the desktop
-root must contain exactly `Loom.exe`, the CLI artifact metadata must agree with
-its ZIP record and bytes/hash, each ZIP must contain its exact payload, both
-`.sha256` sidecars must contain the matching lowercase hash and filename, and
-`checksums.sha256` must cover every other package file. The focused negative
-coverage for these rules is `scripts/tests/Test-ReleaseIntegrityTamper.ps1`.
-
-When you pass `-RunSmoke`, `verify-release.ps1` also runs Loom's formal Windows
-smoke chain in sequence:
-
-1. `scripts\smoke-release.ps1`
-2. `scripts\Invoke-LoomOtterCanvasUiSmoke.ps1`
-3. `scripts\Invoke-LoomOtterErrorPreviewSmoke.ps1`
-4. `scripts\Invoke-LoomFrameworkArtStoreOtterSmoke.ps1`
-5. `scripts\Invoke-LoomPluginBoundarySmoke.ps1`
-6. `scripts\Invoke-LoomSurfacePrototypeSmoke.ps1`
-7. `scripts\Invoke-LoomAuthoredArtCreationSmoke.ps1`
-
-The fourth step reuses the packaged `runtime\loom-daemon.exe` from the release
-candidate, starts a temporary local fake art store plus fake cloud/MCP fixtures,
-installs all four framework packages and six representative Arts, instantiates
-six Otter nodes, and executes all six. The fifth step independently compiles a temporary
-third-party framework outside the repository and proves the no-source-change
-plugin lifecycle through Loom and the Otter Bridge.
-The sixth step installs the process Framework plus the stock-monitor, shared device
-dashboard, and project form Surface packages into an isolated control plane. It
-proves patch fanout, formal output, confirmation/cancellation, leased resource
-bytes, persistent-versus-temporary restart behavior, stream snapshot replay,
-explicit remount, and an action after daemon restart. The seventh step proves
-that a newly authored package can traverse the public package/runtime boundary.
+Passing `-RunSmoke` to `verify-release.ps1` executes the full packaged Windows smoke suite (`smoke-release.ps1`, `Invoke-LoomOtterCanvasUiSmoke.ps1`, `Invoke-LoomOtterErrorPreviewSmoke.ps1`, `Invoke-LoomFrameworkArtStoreOtterSmoke.ps1`, `Invoke-LoomPluginBoundarySmoke.ps1`, `Invoke-LoomSurfacePrototypeSmoke.ps1`, and `Invoke-LoomAuthoredArtCreationSmoke.ps1`). See [release provenance](docs/release-provenance.md).
 
 ## Validation
 
@@ -881,22 +148,18 @@ that a newly authored package can traverse the public package/runtime boundary.
 cargo fmt --all -- --check
 cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
+node .\scripts\effective-code-lines.mjs --mode strict --json .\.tmp\effective-code-lines.json
 ```
 
-Targeted useful gates:
-
-```powershell
-cargo test --locked -p loom_gateway -p loom_durable
-cargo test --locked -p loom-daemon -p loom-cli
-cargo test --locked -p loom_protocol -p loom_workflow_store -p loom_workflow_runtime -p loom_tool_registry
-```
-
-## Docs
+## Documentation
 
 - [Documentation index](docs/README.md)
 - `docs/DEVELOPMENT.md`
 - `docs/DEPENDENCY_SECURITY.md`
 - `docs/ARCHITECTURE.md`
+- `docs/OTTER_INTEGRATION.md`
 - `docs/WORKFLOW_CONTRACT.md`
 - `docs/GATEWAY_INTEGRATION.md`
 - `docs/ASSET_LIBRARY_INTEGRATION.md`
+- `docs/DOWNLOAD_ENGINE.md`
+- `docs/RUNTIME_SECURITY.md`

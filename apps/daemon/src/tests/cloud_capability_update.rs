@@ -1,4 +1,4 @@
-// 两版程序将版本写入真实进程响应；不能只凭清单版本判断升级成功。
+// Both binary versions embed their version into the live process response so upgrade is never judged by manifest version alone.
 fn cloud_versioned_capability(
     root: &Path,
     key: &loom_plugin_security::SigningKeyDocument,
@@ -46,7 +46,7 @@ fn cloud_versioned_capability(
 }
 
 fn cloud_capability_zip_options() -> zip::write::SimpleFileOptions {
-    // Windows 默认写 DOS 来源；Unix 权限必须同时声明 Unix 来源。
+    // Windows defaults to DOS system origin; Unix permissions require explicitly declaring Unix system origin.
     zip::write::SimpleFileOptions::default()
         .system(zip::System::Unix)
         .unix_permissions(0o644)

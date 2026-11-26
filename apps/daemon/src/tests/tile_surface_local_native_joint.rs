@@ -1,4 +1,4 @@
-// 独立LAN/Art进程oracle：本地值不发动作、权威同步、按钮只提交文本表单。
+// Independent LAN/Art process oracle: local values emit no actions, sync with authority, and submit text forms only on button click.
 mod local_values {
     use super::*;
     #[test]
@@ -94,7 +94,7 @@ mod local_values {
                 "only the test Source and Tile view may be present"
             );
             let mut targets = Vec::new();
-            // put_snapshot仅更新声明attachment，不广播；两个真实测试宿主各有自己的快照。
+            // `put_snapshot` updates only the declared attachment without broadcasting; both live test hosts maintain their own snapshots.
             for record in attachments.values() {
                 let mut snapshot = record["snapshot"].clone();
                 snapshot["revision"] = json!(snapshot["revision"].as_u64().unwrap() + 1);
@@ -124,6 +124,7 @@ mod local_values {
         signal(&f, "local-submit");
         let submitted = f.phase(&mut child, "local-submitted.json");
         assert_eq!(submitted["uiQueueAccepted"], true);
+        // Intentional UTF-8 CJK + emoji literal matching the native Tile child fixture's local form input.
         let final_state = wait_source(&f, &mut child, instance, |v| {
             v["authoritativeState"]["form"] == "仅本地🙂"
                 && v["latestResult"]["outputs"]["form"]["value"] == "仅本地🙂"

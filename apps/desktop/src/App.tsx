@@ -41,12 +41,14 @@ import {
 } from "./services/loomApi";
 import { applyLoomGeneralSettings } from "./services/loomGeneralSettings";
 import { isDesktopTauriShell, resolveBrowserDaemonBaseUrl } from "./services/loomRuntimeTarget";
+import { uiText, useUiText } from "./i18n/index.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconButton, NavigationItem as NeuroNavigationItem } from "@neuro/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export default function App() {
+  const { t } = useUiText();
   const snapshotRequestGate = useRef(createLatestRequestGate());
   const snapshotSingleFlight = useRef(createSingleFlightGate());
   const otterCanvasRequestGate = useRef(createLatestRequestGate());
@@ -132,7 +134,7 @@ export default function App() {
         }
       } catch (error) {
         if (otterCanvasRequestGate.current.isCurrent(requestToken)) {
-          setOtterCanvasError(error instanceof Error ? error.message : "无法读取 Otter 画布。");
+          setOtterCanvasError(error instanceof Error ? error.message : uiText("otter.canvas.readFailed"));
         }
       } finally {
         if (otterCanvasRequestGate.current.isCurrent(requestToken)) {
@@ -263,7 +265,7 @@ export default function App() {
       if (!cancelled) {
         pushAppToast({
           level: "error",
-          text: lastError instanceof Error ? lastError.message : "无法加载打包 Art。",
+          text: lastError instanceof Error ? lastError.message : uiText("shell.packagedArtsBootstrapFailed"),
         });
       }
     })();
@@ -308,7 +310,7 @@ export default function App() {
       mode: "workflow",
       repositoryName: request.tool.id,
       name: request.tool.name || request.workflowName,
-      description: request.tool.description || "由 Otter 工作流创建的 Art。",
+      description: request.tool.description || uiText("otter.workflowArt.defaultDescription"),
       workflowId: request.workflowId,
       templateTool: request.tool,
     });
@@ -340,17 +342,31 @@ export default function App() {
       className="rail-item"
       active={activeSection === item.id}
       key={item.id}
-      title={item.label}
-      aria-label={item.label}
+      title={t(item.labelKey)}
+      aria-label={t(item.labelKey)}
       data-testid={item.id === "otter-bridge" ? "nav-otter-bridge" : undefined}
       onClick={() => setActiveSection(item.id)}
     >
-      <span className="rail-item__icon">
-        <ShellIcon kind={item.icon} />
-      </span>
-      <span className="rail-item__label">{item.label}</span>
+      <span className="rail-item__icon"><ShellIcon kind={item.icon} /></span>
+      <span className="rail-item__label">{t(item.labelKey)}</span>
     </NeuroNavigationItem>
   );
+
+  const isTooling = activeSection === "registry" || activeSection === "otter-bridge";
+  const panelClass =
+    activeSection === "settings"
+      ? "workspace-panel workspace-panel--settings"
+      : isTooling
+        ? "workspace-panel workspace-panel--tooling"
+        : "workspace-panel";
+  const scrollClass =
+    activeSection === "devices"
+      ? "workspace-scroll workspace-scroll--devices"
+      : activeSection === "settings"
+        ? "workspace-scroll workspace-scroll--settings"
+        : isTooling
+          ? "workspace-scroll workspace-scroll--tooling"
+          : "workspace-scroll";
 
   return (
     <main className={railCollapsed ? "desktop-shell desktop-shell--rail-collapsed" : "desktop-shell"}>
@@ -366,8 +382,8 @@ export default function App() {
             <IconButton
               className="app-titlebar__back"
               variant="quiet"
-              label="返回 MCP"
-              title="返回 MCP"
+              label={t("shell.titlebar.backToMcp")}
+              title={t("shell.titlebar.backToMcp")}
               onDoubleClick={(event) => event.stopPropagation()}
               onClick={() => setActiveSection("mcp")}
             >
@@ -379,8 +395,8 @@ export default function App() {
           <IconButton
             className="loom-window-control loom-window-control--refresh"
             variant="quiet"
-            label="刷新"
-            title="刷新"
+            label={t("common.refresh")}
+            title={t("common.refresh")}
             loading={loading}
             onClick={() => void refresh()}
           >
@@ -389,8 +405,8 @@ export default function App() {
           <IconButton
             className="loom-window-control"
             variant="quiet"
-            label="最小化"
-            title="最小化"
+            label={t("shell.window.minimize")}
+            title={t("shell.window.minimize")}
             onClick={() => void runWindowCommand("minimize")}
           >
             <ShellIcon kind="minimize" />
@@ -398,8 +414,8 @@ export default function App() {
           <IconButton
             className="loom-window-control"
             variant="quiet"
-            label="最大化或还原"
-            title="最大化或还原"
+            label={t("shell.window.toggleMaximize")}
+            title={t("shell.window.toggleMaximize")}
             onClick={() => void runWindowCommand("toggle-maximize")}
           >
             <ShellIcon kind="maximize" />
@@ -407,8 +423,8 @@ export default function App() {
           <IconButton
             className="loom-window-control"
             variant="danger"
-            label="关闭"
-            title="关闭"
+            label={t("common.close")}
+            title={t("common.close")}
             onClick={() => void runWindowCommand("close")}
           >
             <ShellIcon kind="close" />
@@ -421,25 +437,19 @@ export default function App() {
           <IconButton
             className="shell-rail-toggle"
             variant="quiet"
-            label={railCollapsed ? "展开侧栏" : "收起侧栏"}
-            title={railCollapsed ? "展开侧栏" : "收起侧栏"}
+            label={railCollapsed ? t("shell.rail.expand") : t("shell.rail.collapse")}
+            title={railCollapsed ? t("shell.rail.expand") : t("shell.rail.collapse")}
             aria-expanded={!railCollapsed}
             onClick={() => setRailCollapsed((collapsed) => !collapsed)}
           >
-            <span className="shell-rail-toggle__icon">
-              <ShellIcon kind="sidebar" />
-            </span>
-            <span className="shell-rail-toggle__mark">
-              <LoomMark />
-            </span>
+            <span className="shell-rail-toggle__icon"><ShellIcon kind="sidebar" /></span>
+            <span className="shell-rail-toggle__mark"><LoomMark /></span>
           </IconButton>
-          <span className="app-titlebar__product-mark">
-            <LoomMark />
-          </span>
+          <span className="app-titlebar__product-mark"><LoomMark /></span>
           <strong className="app-titlebar__product-name">Loom</strong>
         </div>
 
-        <nav className="rail-nav" aria-label="Loom sections">
+        <nav className="rail-nav" aria-label={t("shell.rail.sectionsAria")}>
           {primaryNavigationItems.map(renderNavigationItem)}
         </nav>
 
@@ -447,55 +457,27 @@ export default function App() {
           <NeuroNavigationItem
             className="rail-item rail-device-button"
             active={activeSection === "devices"}
-            title="设备管理"
-            aria-label="设备管理"
+            title={t("shell.nav.devices")}
+            aria-label={t("shell.nav.devices")}
             onClick={() => setActiveSection("devices")}
           >
-            <span className="rail-item__icon">
-              <ShellIcon kind="device" />
-            </span>
-            <span className="rail-item__label">设备管理</span>
+            <span className="rail-item__icon"><ShellIcon kind="device" /></span>
+            <span className="rail-item__label">{t("shell.nav.devices")}</span>
           </NeuroNavigationItem>
-          <nav className="rail-utility-nav" aria-label="Loom utilities">
+          <nav className="rail-utility-nav" aria-label={t("shell.rail.utilitiesAria")}>
             {utilityNavigationItems.map(renderNavigationItem)}
           </nav>
         </div>
       </aside>
 
-      <section
-        className={
-          activeSection === "settings"
-            ? "workspace-panel workspace-panel--settings"
-            : activeSection === "registry" || activeSection === "otter-bridge"
-              ? "workspace-panel workspace-panel--tooling"
-              : "workspace-panel"
-        }
-      >
+      <section className={panelClass}>
         {activeSection !== "devices" && activeSection !== "settings" ? (
-          <header
-            className={
-              activeSection === "registry" || activeSection === "otter-bridge"
-                ? "workspace-header workspace-header--tooling"
-                : "workspace-header"
-            }
-          >
-            <div>
-              <h1>{activeNavigation.label}</h1>
-            </div>
+          <header className={isTooling ? "workspace-header workspace-header--tooling" : "workspace-header"}>
+            <div><h1>{t(activeNavigation.labelKey)}</h1></div>
           </header>
         ) : null}
 
-        <div
-          className={
-            activeSection === "devices"
-              ? "workspace-scroll workspace-scroll--devices"
-              : activeSection === "settings"
-                ? "workspace-scroll workspace-scroll--settings"
-                : activeSection === "registry" || activeSection === "otter-bridge"
-                  ? "workspace-scroll workspace-scroll--tooling"
-                  : "workspace-scroll"
-          }
-        >
+        <div className={scrollClass}>
           {activeSection === "mcp" && (
             <McpPanel servers={snapshot.mcpServers} baseUrl={snapshot.baseUrl} refresh={refresh} />
           )}

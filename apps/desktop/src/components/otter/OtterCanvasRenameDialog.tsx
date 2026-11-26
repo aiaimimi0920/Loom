@@ -1,6 +1,7 @@
 // The controller owns rename submission; the standard dialog owns modal lifetime.
 import { useRef } from "react";
 import { Button, Dialog, Field, Input } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 
 interface OtterCanvasRenameDialogProps {
   value: string;
@@ -11,10 +12,11 @@ interface OtterCanvasRenameDialogProps {
 }
 
 export function OtterCanvasRenameDialog({ value, busy, onChange, onClose, onSubmit }: OtterCanvasRenameDialogProps) {
+  const { t } = useUiText();
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <Dialog
-      title="重命名工作流"
+      title={t("otter.rename.title")}
       open
       busy={busy}
       initialFocusRef={inputRef}
@@ -29,15 +31,15 @@ export function OtterCanvasRenameDialog({ value, busy, onChange, onClose, onSubm
           if (!busy && value.trim()) onSubmit();
         }}
       >
-        <Field label="工作流名称">
+        <Field label={t("otter.rename.nameLabel")}>
           <Input ref={inputRef} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} />
         </Field>
         <div className="n-dialog-actions">
           <Button onClick={onClose} disabled={busy}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button type="submit" variant="primary" loading={busy} disabled={busy || !value.trim()}>
-            确定
+            {t("common.confirm")}
           </Button>
         </div>
       </form>

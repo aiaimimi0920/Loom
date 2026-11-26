@@ -69,7 +69,7 @@ fn product_job_closure_terminates_only_assigned_test_child() {
         unrelated.0.try_wait().unwrap().is_none(),
         "Job affected unassigned child"
     );
-    // Windows kill-on-close不保证非零退出码；核实际终止且未走release后的正常完成路径。
+    // Windows kill-on-close does not guarantee a non-zero exit code; verify actual termination and that the post-release normal completion path did not run.
     assert!(!root.join("assigned.finished").exists());
     write_once(&root.join("release"), b"normal-exit");
     super::fixture::finish(&mut unrelated);

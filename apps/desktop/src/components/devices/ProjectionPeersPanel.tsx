@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Disclosure, EmptyState, Field, Input, Notice, Panel, Switch } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import {
   listProjectionPeers,
   probeProjectionPeer,
@@ -14,9 +15,10 @@ import "./ProjectionPeersPanel.css";
 import "./DeviceConnectionLayout.css";
 
 const emptyPeer = (): ProjectionPeer => ({ peerId: "", publicKey: "", name: "", origin: "", enabled: true });
-const trustWarning = "修改任一对等连接会终止此 Loom 现有的跨 Loom 投射关联，需要重新投送。请先核对对方公开身份。";
 
 export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; online: boolean }) {
+  const { t, tf } = useUiText();
+  const trustWarning = t("devices.projectionPeers.trustWarning");
   const [state, setState] = useState<ProjectionPeerState | null>(null);
   const [draft, setDraft] = useState<ProjectionPeer>(emptyPeer);
   const [editing, setEditing] = useState(false);
@@ -63,7 +65,9 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
     try {
       await action();
     } catch (reason) {
-      if (active.current === generation) setError(errorMessage(reason) + "。请刷新配置后重试；不会自动覆盖并发修改。");
+      if (active.current === generation) {
+        setError(tf("devices.projectionPeers.error.withRetryHint", { reason: errorMessage(reason) }));
+      }
     } finally {
       if (active.current === generation) {
         inFlight.current = false;
@@ -83,9 +87,9 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
     if (!state) return;
     const generation = active.current;
     const accepted = await requestAppConfirmation({
-      title: remove ? "移除对等 Loom" : "保存对等 Loom",
+      title: remove ? t("devices.projectionPeers.confirmRemove.title") : t("devices.projectionPeers.confirmSave.title"),
       message: trustWarning,
-      confirmLabel: remove ? "移除" : "保存",
+      confirmLabel: remove ? t("devices.projectionPeers.confirmRemove.confirm") : t("devices.common.save"),
     });
     if (!accepted || !validGeneration(generation)) return;
     const next = remove
@@ -102,59 +106,69 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
     setState(next);
     setDraft(emptyPeer());
     setEditing(false);
-    setNotice(remove ? "对等连接已移除。" : "连接配置已保存。请在对方 Loom 配置本机公开身份，再验证连接。");
+    setNotice(remove ? t("devices.projectionPeers.notice.removed") : t("devices.projectionPeers.notice.saved"));
   }
   async function probe(peer: ProjectionPeer) {
     if (!state) return;
     const generation = active.current;
     await probeProjectionPeer(baseUrl, state.revision, peer.peerId);
-    if (validGeneration(generation)) setNotice(peer.name + "：已验证双方信任及签名连接。本次检查不表示贴图已经送达。");
+    if (validGeneration(generation)) setNotice(tf("devices.projectionPeers.notice.verified", { name: peer.name }));
   }
   const disabled = busy || !online;
   return (
-    <section className="loom-device-settings projection-peers" aria-label="投射连接管理" aria-busy={busy || undefined}>
+    <section
+      className="loom-device-settings projection-peers"
+      aria-label={t("devices.projectionPeers.ariaLabel")}
+      aria-busy={busy || undefined}
+    >
       <header>
-        <h2>跨 Loom 投射连接</h2>
+        <h2>{t("devices.projectionPeers.heading")}</h2>
         <Button variant="quiet" disabled={disabled} onClick={() => void run(refresh)}>
-          刷新配置
+          {t("devices.projectionPeers.refreshAction")}
         </Button>
       </header>
-      {!online && <Notice tone="warning">本机 Loom 离线。</Notice>}
+      {!online && <Notice tone="warning">{t("devices.projection.localOfflineNotice")}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
       {notice && <Notice tone="success">{notice}</Notice>}
       {state && (
         <>
-          <Disclosure title="本机公开身份">
+          <Disclosure title={t("devices.projectionPeers.localIdentityTitle")}>
             <div className="loom-device-settings__section">
-              <Field label="身份指纹">
+              <Field label={t("devices.projectionPeers.fingerprintLabel")}>
                 <Input readOnly value={state.identity.peerId} />
               </Field>
-              <Field label="公钥">
+              <Field label={t("devices.projectionPeers.publicKeyLabel")}>
                 <Input readOnly value={state.identity.publicKey} />
               </Field>
               {state.localConnection && <>
-                <Field label="本机 Loom 地址"><Input readOnly value={state.localConnection.origin} /></Field>
-                <Field label="本机 TLS 证书"><Input readOnly value={state.localConnection.certificate} /></Field>
+                <Field label={t("devices.projectionPeers.localOriginLabel")}>
+                  <Input readOnly value={state.localConnection.origin} />
+                </Field>
+                <Field label={t("devices.projectionPeers.localCertLabel")}>
+                  <Input readOnly value={state.localConnection.certificate} />
+                </Field>
               </>}
-              <Notice tone="warning">仅交换公开身份和公钥，不交换管理员令牌或私钥文件。</Notice>
+              <Notice tone="warning">{t("devices.projectionPeers.publicOnlyWarning")}</Notice>
             </div>
           </Disclosure>
           <div className="loom-device-settings__metadata">
-            <Badge>{state.peers.length} / 16 个连接</Badge>
-            <code>版本 {state.revision}</code>
+            <Badge>{tf("devices.projectionPeers.countBadge", { count: state.peers.length, max: 16 })}</Badge>
+            <code>{tf("devices.common.revisionBadge", { revision: state.revision })}</code>
           </div>
-          {state.peers.length === 0 && <EmptyState title="尚未添加其他 Loom" />}
+          {state.peers.length === 0 && <EmptyState title={t("devices.projectionPeers.empty")} />}
           {state.peers.map((peer) => (
             <Panel className="projection-peer" key={peer.peerId}>
               <div className="projection-peer__identity">
                 <strong>{peer.name}</strong>
-                <Badge tone={peer.enabled ? "success" : "neutral"}>{peer.enabled ? "已启用" : "已停用"}</Badge>
+                <Badge tone={peer.enabled ? "success" : "neutral"}>
+                  {peer.enabled ? t("devices.status.enabled") : t("devices.status.deactivated")}
+                </Badge>
                 <code>{peer.origin}</code>
               </div>
               <div className="loom-device-settings__actions">
                 <Button
                   variant="quiet"
-                  aria-label={`编辑 ${peer.name}`}
+                  aria-label={tf("devices.projectionPeers.editPeerAriaLabel", { name: peer.name })}
                   disabled={disabled}
                   onClick={() => {
                     setDraft({ ...peer });
@@ -162,14 +176,14 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                     setNotice("");
                   }}
                 >
-                  编辑
+                  {t("devices.common.edit")}
                 </Button>
                 <Button
-                  aria-label={`验证 ${peer.name}`}
+                  aria-label={tf("devices.projectionPeers.verifyPeerAriaLabel", { name: peer.name })}
                   disabled={disabled || !peer.enabled}
                   onClick={() => void run(() => probe(peer))}
                 >
-                  验证
+                  {t("devices.projectionPeers.verifyAction")}
                 </Button>
               </div>
             </Panel>
@@ -180,9 +194,9 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
               void run(() => mutate(false));
             }}
           >
-            <h3>{editing ? "编辑连接" : "添加连接"}</h3>
+            <h3>{editing ? t("devices.projectionPeers.editHeading") : t("devices.projectionPeers.addHeading")}</h3>
             <fieldset className="loom-device-settings__fields" disabled={disabled}>
-              <Field label="名称">
+              <Field label={t("devices.common.name")}>
                 <Input
                   required
                   maxLength={128}
@@ -190,7 +204,7 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                   onChange={(event) => setDraft({ ...draft, name: event.target.value })}
                 />
               </Field>
-              <Field label="Loom 地址">
+              <Field label={t("devices.projectionPeers.peerOriginLabel")}>
                 <Input
                   required
                   maxLength={256}
@@ -199,7 +213,7 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                   onChange={(event) => setDraft({ ...draft, origin: event.target.value })}
                 />
               </Field>
-              <Field label="对方身份指纹">
+              <Field label={t("devices.projectionPeers.peerFingerprintLabel")}>
                 <Input
                   required
                   readOnly={editing}
@@ -208,7 +222,7 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                   onChange={(event) => setDraft({ ...draft, peerId: event.target.value })}
                 />
               </Field>
-              <Field label="对方公钥">
+              <Field label={t("devices.projectionPeers.peerPublicKeyLabel")}>
                 <Input
                   required
                   readOnly={editing}
@@ -217,24 +231,24 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                   onChange={(event) => setDraft({ ...draft, publicKey: event.target.value })}
                 />
               </Field>
-              <Field label="对方 TLS 证书（自签证书必填）">
+              <Field label={t("devices.projectionPeers.peerCertLabel")}>
                 <Input maxLength={8192} value={draft.certificate ?? ""}
                   onChange={(event) => setDraft({ ...draft, certificate: event.target.value })} />
               </Field>
               <Switch
                 className="loom-device-settings__wide"
-                label="启用连接"
+                label={t("devices.projectionPeers.enablePeerSwitch")}
                 checked={draft.enabled}
                 onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
               />
             </fieldset>
             <div className="loom-device-settings__actions">
               <Button type="submit" variant="primary" disabled={disabled || (!editing && state.peers.length >= 16)}>
-                保存连接
+                {t("devices.projectionPeers.saveAction")}
               </Button>
               {editing && (
                 <Button variant="danger" disabled={disabled} onClick={() => void run(() => mutate(true))}>
-                  移除连接
+                  {t("devices.projectionPeers.removeAction")}
                 </Button>
               )}
               <Button
@@ -245,7 +259,7 @@ export function ProjectionPeersPanel({ baseUrl, online }: { baseUrl: string; onl
                   setEditing(false);
                 }}
               >
-                清空编辑
+                {t("devices.projectionPeers.clearAction")}
               </Button>
             </div>
           </form>

@@ -1,4 +1,4 @@
-//! Device 专属服务入口；只有当前 issuer、精确 Art 授权和原会话可以读写任务。
+//! Device-exclusive service entrypoint; only the current issuer, exact Art grant, and originating session may read or mutate tasks.
 use super::*;
 use loom_protocol::local_art::service::confirmation;
 use loom_protocol::local_art::service::{Control, Submit};

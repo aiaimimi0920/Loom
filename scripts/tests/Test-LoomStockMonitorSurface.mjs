@@ -219,11 +219,11 @@ assert.notEqual(
 assert.equal(typeof hooks.staleLabel, "function", "stale-label hook is missing");
 assert.equal(hooks.staleLabel(null), "");
 assert.equal(hooks.staleLabel({ stale: false, ageSeconds: 900 }), "");
-assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132, maxAgeSeconds: 90 }), "已陈旧 132/90 秒");
-assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132 }), "已陈旧 132 秒");
+assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132, maxAgeSeconds: 90 }), "Stale 132/90s");
+assert.equal(hooks.staleLabel({ stale: true, ageSeconds: 132 }), "Stale 132s");
 assert.equal(
   hooks.staleLabel({ stale: true, ageSeconds: null, maxAgeSeconds: 90 }),
-  "已陈旧（观测时间不可用）",
+  "Stale (observation time unavailable)",
   "a record whose age is unknown must be labelled, not silently drawn as if it were current",
 );
 
@@ -233,11 +233,11 @@ assert.equal(typeof hooks.footerNoticeOf, "function", "footer-notice hook is mis
 assert.deepEqual({ ...hooks.footerNoticeOf({}) }, { text: "", warning: false });
 assert.deepEqual(
   { ...hooks.footerNoticeOf({ historyWarning: "  upstream history failure  " }) },
-  { text: "K 线数据不可用：upstream history failure", warning: true },
+  { text: "K-line data unavailable: upstream history failure", warning: true },
 );
 assert.deepEqual(
-  { ...hooks.footerNoticeOf({ error: "行情获取失败", historyWarning: "upstream history failure" }) },
-  { text: "行情获取失败", warning: false },
+  { ...hooks.footerNoticeOf({ error: "Failed to fetch quote", historyWarning: "upstream history failure" }) },
+  { text: "Failed to fetch quote", warning: false },
   "a fatal error must keep the footer slot and its error styling",
 );
 

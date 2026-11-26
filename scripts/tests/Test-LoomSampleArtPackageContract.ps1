@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$automaticRefreshLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6Ieq5YqoIA=="))
+$automaticRefreshLabel = "Auto "
 
 function Assert-True {
     param(

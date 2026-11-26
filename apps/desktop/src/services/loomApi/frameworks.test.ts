@@ -30,22 +30,22 @@ test("framework helpers call the framework management routes", async (context) =
           {
             id: "process",
             qualifiedId: "neuro.official/process",
-            name: "Python Art 框架",
-            description: "运行 Python Art，需要 Python 运行时。",
+            name: "Python Art Framework",
+            description: "Runs Python Arts; requires Python runtime.",
             installed: false,
             enabled: false,
             ready: false,
-            readyDetail: "未安装",
+            readyDetail: "Not installed",
           },
           {
             id: "process",
             qualifiedId: "neuro.official/process",
-            name: "Python Art 框架",
-            description: "运行 Python Art，需要 Python 运行时。",
+            name: "Python Art Framework",
+            description: "Runs Python Arts; requires Python runtime.",
             installed: true,
             enabled: true,
             ready: true,
-            readyDetail: "已安装",
+            readyDetail: "Installed",
             version: "0.1.0",
           },
         ],
@@ -59,11 +59,11 @@ test("framework helpers call the framework management routes", async (context) =
       return new Response(JSON.stringify({
         framework: {
           id: "process",
-          name: "Python Art 框架",
-          description: "运行 Python Art，需要 Python 运行时。",
+          name: "Python Art Framework",
+          description: "Runs Python Arts; requires Python runtime.",
           installed: true,
           ready: true,
-          readyDetail: "已安装运行时：C:\\runtime\\python.exe",
+          readyDetail: "Installed runtime: C:\\runtime\\python.exe",
         },
       }), {
         status: 200,
@@ -75,11 +75,11 @@ test("framework helpers call the framework management routes", async (context) =
       return new Response(JSON.stringify({
         framework: {
           id: "process",
-          name: "Python Art 框架",
-          description: "运行 Python Art，需要 Python 运行时。",
+          name: "Python Art Framework",
+          description: "Runs Python Arts; requires Python runtime.",
           installed: false,
           ready: false,
-          readyDetail: "未安装",
+          readyDetail: "Not installed",
         },
       }), {
         status: 200,

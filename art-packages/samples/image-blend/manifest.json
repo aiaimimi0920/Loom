@@ -1,7 +1,7 @@
 {
   "id": "custom-image-blend-script",
-  "name": "图片融合",
-  "description": "通过可插拔进程框架按比例混合两张输入图片。",
+  "name": "Image Blend",
+  "description": "Blends two input images by ratio through the pluggable process framework.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -10,13 +10,13 @@
   "inputs": [
     {
       "name": "input",
-      "label": "源图",
+      "label": "Source Image",
       "type": "image",
       "execution_type": "image_buffer"
     },
     {
       "name": "reference",
-      "label": "参考图",
+      "label": "Reference Image",
       "type": "image",
       "execution_type": "image_buffer",
       "exposePort": true
@@ -25,7 +25,7 @@
   "outputs": [
     {
       "name": "output",
-      "label": "融合结果",
+      "label": "Blended Result",
       "type": "image",
       "execution_type": "image_buffer"
     }
@@ -33,7 +33,7 @@
   "params": [
     {
       "id": "mix_ratio",
-      "label": "融合值",
+      "label": "Blend Ratio",
       "widget": "slider",
       "default": 50,
       "min": 0,
@@ -57,7 +57,7 @@
       "globalId": "NA20260802005"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "图片融合",
         "en-US": "Image Blend"

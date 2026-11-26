@@ -1,4 +1,4 @@
-//! 宿主确认固定实际命令登记；确认后的调用仍走原schema、gesture、容量及取消门。
+//! Host confirmation pins the exact registered command; confirmed calls still pass through the original schema, gesture, capacity, and cancellation gates.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,8 +41,8 @@ impl CapabilityRuntimeHost {
         CommandScope::capture(&active, command_id)
     }
 
-    /// 只能由可信宿主在用户批准后调用。没有外发token，也不接受脚本布尔值作为批准。
-    /// 登记解析是准入线性化点：此前换代拒绝；此后换代由调用owner取消/拒收迟到结果。
+    /// Callable only by a trusted host after explicit user approval. Emits no external token and never accepts a script boolean as approval.
+    /// Resolving the registration is the admission linearization point: earlier generation swaps are rejected; later swaps are cancelled or discarded by the invocation owner.
     pub fn invoke_confirmed_controlled(
         &self,
         invocation: CapabilityInvocation,
@@ -92,7 +92,7 @@ mod tests {
             scope_id: "scope:old".into(),
             requires_user_gesture: true,
         };
-        // 精确模拟旧登记已读取、replacement已清理、旧issue才插入的交错，无sleep竞态。
+        // Deterministically simulates the interleaving where an old registration was read, a replacement cleared gestures, and the old issue inserts late, without sleep races.
         let token = host.issue_scoped_gesture(&old, None).unwrap();
         let call = CapabilityInvocation {
             request_id: "request".into(),

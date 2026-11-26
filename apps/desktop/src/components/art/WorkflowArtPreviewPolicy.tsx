@@ -1,5 +1,6 @@
 import { CheckboxGroup, Field, MultiSelect, Panel, RadioGroup, Select } from "@neuro/ui";
 import { useId } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { WorkflowOutputBinding, WorkflowPreviewNodeOption } from "../../services/workflowStudio";
 
 /** Adapts workflow policy choices; node dependencies and output selection remain in the wizard controller. */
@@ -18,6 +19,7 @@ export function WorkflowArtPreviewPolicy({
   onSelectNode: (option: WorkflowPreviewNodeOption) => void;
   onOutputChange: (output: WorkflowOutputBinding) => void;
 }) {
+  const { t } = useUiText();
   const name = useId();
   const selected = options.find((option) => option.nodeId === output?.nodeId);
   const requiredOptions = options.map((option) => ({
@@ -44,23 +46,31 @@ export function WorkflowArtPreviewPolicy({
     disabled: !option.outputs.length,
   }));
   return (
-    <Panel className="art-workflow-preview-policy" aria-label="流程预览策略">
+    <Panel className="art-workflow-preview-policy" aria-label={t("art.wizard.preview.ariaLabel")}>
       {options.length > 6 ? (
         <MultiSelect
-          label="必要节点"
+          label={t("art.wizard.preview.requiredNodes")}
           options={requiredOptions}
           values={values}
           onValuesChange={changeRequired}
-          search={{ label: "搜索流程节点", emptyMessage: "没有匹配的节点" }}
+          search={{
+            label: t("art.wizard.preview.searchNodes"),
+            emptyMessage: t("art.wizard.preview.noMatchingNodes"),
+          }}
         />
       ) : (
-        <CheckboxGroup label="必要节点" options={requiredOptions} values={values} onValuesChange={changeRequired} />
+        <CheckboxGroup
+          label={t("art.wizard.preview.requiredNodes")}
+          options={requiredOptions}
+          values={values}
+          onValuesChange={changeRequired}
+        />
       )}
       {options.length > 6 ? (
-        <Field label="预览节点">
+        <Field label={t("art.wizard.preview.previewNode")}>
           <Select value={selected?.nodeId ?? ""} onChange={(event) => selectNode(event.target.value)}>
             <option value="" disabled>
-              选择预览节点
+              {t("art.wizard.preview.selectPreviewNode")}
             </option>
             {previewOptions.map((option) => (
               <option key={option.value} value={option.value} disabled={option.disabled}>
@@ -71,14 +81,14 @@ export function WorkflowArtPreviewPolicy({
         </Field>
       ) : (
         <RadioGroup
-          label="预览节点"
+          label={t("art.wizard.preview.previewNode")}
           name={name}
           options={previewOptions}
           value={selected?.nodeId ?? ""}
           onValueChange={selectNode}
         />
       )}
-      <Field label="预览端口">
+      <Field label={t("art.wizard.preview.previewPort")}>
         <Select
           value={selected && output ? output.output : ""}
           disabled={!selected || selected.outputs.length < 2}

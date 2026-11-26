@@ -1,5 +1,6 @@
 // Converts frozen snapshots to desktop graphs and infers their external image interface.
 
+import { uiText } from "../../i18n/index.ts";
 import { resolveOtterCanvasPreviewUrl } from "./presentation.ts";
 import type {
   CanvasWorkflowInterface,
@@ -61,13 +62,13 @@ export function inferCanvasWorkflowInterface(snapshot: OtterCanvasSnapshot): Can
       inputs.push({
         nodeId: node.id,
         portId: "image",
-        label: node.label || "输入图像",
+        label: node.label || uiText("otter.port.inputImage"),
         semanticTarget,
         sourceOrder,
       });
     }
     if (!outgoing.has(node.id)) {
-      outputs.push({ nodeId: node.id, portId: "output_image", label: node.label || "输出图像" });
+      outputs.push({ nodeId: node.id, portId: "output_image", label: node.label || uiText("otter.port.outputImage") });
     }
   }
   inputs.sort((left, right) => {

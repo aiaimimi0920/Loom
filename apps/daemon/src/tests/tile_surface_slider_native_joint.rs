@@ -1,4 +1,4 @@
-// 真实LAN Slider采样/有界合并→原Surface executor；oracle不调用Otter的新实现。
+// Real LAN Slider sampling and bounded coalescing -> original Surface executor; oracle never invokes Otter's implementation.
 mod slider {
     use super::*;
     #[test]

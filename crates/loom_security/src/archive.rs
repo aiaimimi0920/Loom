@@ -55,7 +55,7 @@ pub fn extract_zip_securely(
     extract_reader(Cursor::new(zip_bytes), destination)
 }
 
-/// 大应用包专用文件入口；复用路径和解压保护，不将文件整体读入内存。
+/// Dedicated file entrypoint for large application archives; reuses path and decompression guards without reading the entire file into memory.
 pub fn extract_application_zip_file(
     mut file: &fs::File,
     destination: &Path,
@@ -94,7 +94,7 @@ fn extract_reader(
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let raw_name = entry.name()?.into_owned();
-        // 不依赖上游 enclosed_name 的规范化行为丢弃盘符；原始路径先独立验证。
+        // Validate the raw path first rather than relying on upstream `enclosed_name` normalization to strip drive prefixes.
         validate_relative_path(Path::new(&raw_name))?;
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(SecureZipError::UnsafePath(raw_name));
@@ -388,7 +388,7 @@ mod tests {
 
         let destination = temp_dir("lying-index");
         let error = extract_zip_securely(&bytes, &destination).expect_err("lying index");
-        // 新版解码器可在压缩比复核之前拒绝虚假的长度，仍必须清除不完整文件。
+        // Newer decoders may reject the falsified length before the compression-ratio check; partial files must still be removed.
         assert!(
             matches!(&error, SecureZipError::CompressionRatio { .. })
                 || matches!(&error, SecureZipError::Io(io) if matches!(io.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof)),

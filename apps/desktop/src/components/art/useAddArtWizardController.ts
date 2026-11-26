@@ -37,6 +37,7 @@ import {
   workflowBindingsFromTool,
 } from "./artWizardModel";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { useArtScriptSource } from "./useArtScriptSource";
 import { useArtMcpDiscovery } from "./useArtMcpDiscovery";
 import { useArtWorkflowInterface } from "./useArtWorkflowInterface";
@@ -60,6 +61,7 @@ export function useAddArtWizardController({
   busy: boolean;
   onCreate: (draft: ArtWizardSubmitDraft) => Promise<boolean>;
 }) {
+  const { t } = useUiText();
   const initialMode = initialRequest?.mode ?? "cloud_api";
   const initialTemplate = initialRequest?.templateTool;
   const initialWorkflowBindings = workflowBindingsFromTool(initialTemplate);
@@ -286,7 +288,7 @@ export function useAddArtWizardController({
   const importRawCommand = () => {
     const parsed = parseRawCommand(rawCommandText);
     if (!parsed) {
-      setWizardMessage({ kind: "error", text: "请输入命令。" });
+      setWizardMessage({ kind: "error", text: t("art.wizard.message.enterCommand") });
       return;
     }
     setCommand(parsed.command);
@@ -299,13 +301,13 @@ export function useAddArtWizardController({
       .map((port) => portDraftFromParsedPort(port, "output"));
     if (parsedInputs.length) setInputPorts(parsedInputs);
     if (parsedOutputs.length) setOutputPorts(parsedOutputs);
-    setWizardMessage({ kind: "info", text: "已解析命令。" });
+    setWizardMessage({ kind: "info", text: t("art.wizard.message.parsedCommand") });
   };
 
   const importCloudSmartTemplate = () => {
     const parsed = parseCurlCommand(cloudCurlText);
     if (!parsed) {
-      setWizardMessage({ kind: "error", text: "请输入有效的 cURL 命令。" });
+      setWizardMessage({ kind: "error", text: t("art.wizard.message.enterValidCurl") });
       return;
     }
     setEndpoint(parsed.url || endpoint);
@@ -319,7 +321,7 @@ export function useAddArtWizardController({
     const responsePreview = autoTemplateResponse(cloudResponseText);
     if (responsePreview.ports.length)
       setOutputPorts(responsePreview.ports.map((port) => portDraftFromParsedPort(port, "output")));
-    setWizardMessage({ kind: "info", text: "已导入请求和响应结构。" });
+    setWizardMessage({ kind: "info", text: t("art.wizard.message.importedCurl") });
   };
 
   const setWorkflowNodeRequired = (nodeId: string, required: boolean) => {

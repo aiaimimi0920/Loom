@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { currentLanguage, setLanguage, uiTextFor } from "../i18n/index.ts";
 import {
   artDisplayIdentity,
   artDisplayLocale,
   artFrameworkReference,
   artPackageIdentity,
   artPublisherIconSource,
-  artWorkspaceItems,
   filterArtStoreEntries,
   filterToolsByFrameworks,
   frameworkFilterLabel,
   isLocallyAuthoredTool,
-  nextArtWorkspaceIndex,
   officialFrameworkDisplayName,
   toggleArtFrameworkFilter,
 } from "./artHubUi.ts";
 import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
-import { appSource, styleSource } from "./artHubUiContractSource.ts";
 
 const framework = (id: string, qualifiedId?: string, name = qualifiedId || id): LoomFramework => ({
   id,
@@ -29,11 +27,16 @@ const framework = (id: string, qualifiedId?: string, name = qualifiedId || id): 
   readyDetail: "ready",
 });
 
-test("resolves localized Art identity and publisher metadata", () => {
+test("resolves localized Art identity and publisher metadata", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
+  const zhSampleName = "\u793a\u4f8b Art";
+  const zhSummary = "\u4e2d\u6587\u7b80\u8ff0";
   const tool: LoomToolDefinition = {
     id: "sample-art",
-    name: "默认名称",
-    description: "默认描述",
+    name: "Fallback Name",
+    description: "Fallback Description",
     metadata: {
       packageSecurity: {
         publisher: { id: "neuro.official", name: "Neuro", icon: "N" },
@@ -45,8 +48,8 @@ test("resolves localized Art identity and publisher metadata", () => {
       },
       localization: {
         defaultLocale: "en-US",
-        names: { "zh-CN": "示例 Art", "en-US": "Sample Art" },
-        descriptions: { "zh-CN": "中文简述", "en-US": "English summary" },
+        names: { "zh-CN": zhSampleName, "en-US": "Sample Art" },
+        descriptions: { "zh-CN": zhSummary, "en-US": "English summary" },
       },
     },
   };
@@ -57,13 +60,21 @@ test("resolves localized Art identity and publisher metadata", () => {
   assert.equal(chinese.publisher.initials, "N");
   assert.equal(chinese.englishName, "sample-art");
   assert.equal(chinese.globalId, "NA20260802999");
-  assert.equal(chinese.localizedName, "示例 Art");
-  assert.equal(chinese.localizedDescription, "中文简述");
+  assert.equal(chinese.localizedName, zhSampleName);
+  assert.equal(chinese.localizedDescription, zhSummary);
 
   const english = artDisplayIdentity(tool, null, "en-GB");
   assert.equal(english.locale, "en-US");
   assert.equal(english.localizedName, "Sample Art");
   assert.equal(english.localizedDescription, "English summary");
+
+  const anonymousTool: LoomToolDefinition = { id: "anon-art", name: "Anon" };
+  setLanguage("en");
+  assert.equal(artDisplayLocale(), "en-US");
+  assert.equal(artDisplayIdentity(anonymousTool).publisher.name, uiTextFor("en", "art.localUser"));
+  setLanguage("zh-Hans");
+  assert.equal(artDisplayLocale(), "zh-CN");
+  assert.equal(artDisplayIdentity(anonymousTool).publisher.name, uiTextFor("zh-Hans", "art.localUser"));
 });
 
 test("resolves installed Art packages by publisher-qualified identity", () => {
@@ -81,18 +92,20 @@ test("resolves installed Art packages by publisher-qualified identity", () => {
 });
 
 test("falls back safely for older Art metadata and publisher icons", () => {
+  const localName = "\u672c\u5730\u5de5\u5177";
+  const localDescription = "\u672c\u5730\u63cf\u8ff0";
   const tool: LoomToolDefinition = {
     id: "custom-local-tool",
-    name: "本地工具",
-    description: "本地描述",
+    name: localName,
+    description: localDescription,
     metadata: { authoring: { owner: "local-user" } },
   };
   const identity = artDisplayIdentity(tool, "local-user/custom-local-tool", "zh-CN");
   assert.equal(identity.publisher.name, "local-user");
   assert.equal(identity.englishName, "custom-local-tool");
   assert.equal(identity.globalId, null);
-  assert.equal(identity.localizedName, "本地工具");
-  assert.equal(identity.localizedDescription, "本地描述");
+  assert.equal(identity.localizedName, localName);
+  assert.equal(identity.localizedDescription, localDescription);
   assert.equal(artDisplayLocale("zh-TW"), "zh-CN");
   assert.equal(artDisplayLocale("fr-FR"), "en-US");
   assert.equal(artPublisherIconSource("N"), null);
@@ -101,22 +114,45 @@ test("falls back safely for older Art metadata and publisher icons", () => {
   assert.equal(artPublisherIconSource("data:image/png;base64,AAAA"), "data:image/png;base64,AAAA");
 });
 
-test("uses unified official framework display names", () => {
-  assert.equal(frameworkFilterLabel(framework("cloud_api", undefined, "云 API 框架")), "云端");
+test("uses unified official framework display names", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
+  setLanguage("en");
+  assert.equal(frameworkFilterLabel(framework("cloud_api", undefined, "Cloud API Framework")), "Cloud");
   assert.equal(frameworkFilterLabel(framework("mcp", undefined, "MCP Framework")), "MCP");
-  assert.equal(frameworkFilterLabel(framework("process", undefined, "本地进程框架")), "脚本");
-  assert.equal(frameworkFilterLabel(framework("workflow", undefined, "Workflow Framework")), "流程");
-  assert.equal(frameworkFilterLabel(framework("process", "neuro.official/process", "Process Framework")), "脚本");
-  assert.equal(frameworkFilterLabel(framework("custom", undefined, "自定义框架")), "自定义");
-  assert.equal(frameworkFilterLabel(framework("process", "publisher.test/process", "第三方进程框架")), "第三方进程");
+  assert.equal(frameworkFilterLabel(framework("process", undefined, "Local Process Framework")), "Script");
+  assert.equal(frameworkFilterLabel(framework("workflow", undefined, "Workflow Framework")), "Workflow");
+  assert.equal(frameworkFilterLabel(framework("process", "neuro.official/process", "Process Framework")), "Script");
+  assert.equal(frameworkFilterLabel(framework("custom", undefined, "Custom Framework")), "Custom");
+  assert.equal(
+    frameworkFilterLabel(framework("process", "publisher.test/process", "\u7b2c\u4e09\u65b9\u8fdb\u7a0b\u6846\u67b6")),
+    "\u7b2c\u4e09\u65b9\u8fdb\u7a0b",
+  );
+
+  setLanguage("zh-Hans");
+  assert.equal(
+    frameworkFilterLabel(framework("cloud_api", undefined, "Cloud API")),
+    uiTextFor("zh-Hans", "art.framework.official.cloudApi"),
+  );
+  assert.equal(
+    frameworkFilterLabel(framework("process", "neuro.official/process", "Process Framework")),
+    uiTextFor("zh-Hans", "art.framework.official.process"),
+  );
 });
 
-test("resolves official framework display names from Art references", () => {
-  assert.equal(officialFrameworkDisplayName("cloud_api"), "云端");
-  assert.equal(officialFrameworkDisplayName("neuro.official/mcp"), "MCP");
-  assert.equal(officialFrameworkDisplayName("process"), "脚本");
-  assert.equal(officialFrameworkDisplayName("workflow"), "流程");
-  assert.equal(officialFrameworkDisplayName("publisher.test/process"), null);
+test("resolves official framework display names from Art references", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
+  for (const language of ["en", "zh-Hans"] as const) {
+    setLanguage(language);
+    assert.equal(officialFrameworkDisplayName("cloud_api"), uiTextFor(language, "art.framework.official.cloudApi"));
+    assert.equal(officialFrameworkDisplayName("neuro.official/mcp"), uiTextFor(language, "art.framework.official.mcp"));
+    assert.equal(officialFrameworkDisplayName("process"), uiTextFor(language, "art.framework.official.process"));
+    assert.equal(officialFrameworkDisplayName("workflow"), uiTextFor(language, "art.framework.official.workflow"));
+    assert.equal(officialFrameworkDisplayName("publisher.test/process"), null);
+  }
 });
 
 test("resolves authored, official, and third-party Art framework references", () => {
@@ -232,7 +268,7 @@ test("filters the Art store by framework search text and server-certified status
       id: "official-script",
       qualifiedId: "neuro.official/official-script",
       globalId: "NA40000000000",
-      name: "图像压缩",
+      name: "Image Compressor",
       description: "Compress images",
       framework: "process",
       official: true,

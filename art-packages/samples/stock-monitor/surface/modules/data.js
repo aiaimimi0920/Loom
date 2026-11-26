@@ -22,8 +22,8 @@ const periodOf = (state) => {
 const periodLabelOf = (state) => {
     const value = periodOf(state);
     const found = PERIODS.find((period) => period[0] === value);
-    // 标签只从本地封闭表取：state.periodLabel 由另一个进程写入，不能当作可信显示文本。
-    return found ? found[1] : "日 K";
+    // Resolve labels exclusively from the local closed table instead of trusting cross-process state.periodLabel.
+    return found ? found[1] : "1D";
 };
 const isIntradayPeriod = (period) => period === "minute" || period === "five-day" || period.indexOf("minute-") === 0;
 const chartRowsOf = (history) => history.map((item) => {
@@ -64,7 +64,7 @@ const downsampleRows = (rows, maxPoints) => {
     }
     return result;
 };
-// 均线用滚动累加。每点重新 slice/map/reduce 一次，一次绘制要多出三倍于点数的中间数组。
+// Rolling accumulator avoids allocating intermediate slice/map/reduce arrays per point on every redraw.
 const movingAverages = (points, intraday) => {
     const values = new Array(points.length);
     let total = 0;
@@ -86,9 +86,8 @@ const revisionOf = (snapshot) => {
     const value = Number(snapshot && snapshot.revision);
     return Number.isFinite(value) ? value : -1;
 };
-// 派生序列按 (代码, 周期, revision, 行数) 缓存。运行时的历史上限是 2000 行，最小刷新间隔
-// 是一秒，而重绘还会被 resize、悬浮和动作拒绝路径额外触发多次；没有缓存时每次都要重新
-// 分配整个序列。revision 只在状态真的变化时前进，所以它同时是正确性边界和失效条件。
+// Memoize derived series by (code, period, revision, row count) so resize, hover, and rejected-action
+// redraws reuse the 2,000-row projection until authoritative state advances revision.
 const chartSeriesOf = (state, revision) => {
     const history = historyOf(state);
     const key = text(state.code, text(state.symbol, "")) + "|" + periodOf(state) + "|" + revision + "|" + history.length;
@@ -113,7 +112,7 @@ const boundedText = (value, fallback, maxChars = MAX_UI_TEXT_CHARS) => {
 };
 const formatNumber = (value, digits) => {
     const number = asNumber(value);
-    return number === null ? "--" : number.toLocaleString("zh-CN", {
+    return number === null ? "--" : number.toLocaleString("en-US", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits
     });
@@ -127,24 +126,25 @@ const formatSigned = (value, suffix) => {
 const formatVolume = (value) => {
     const number = asNumber(value);
     if (number === null) return "--";
-    if (Math.abs(number) >= 100000000) return formatNumber(number / 100000000, 2) + " 亿";
-    if (Math.abs(number) >= 10000) return formatNumber(number / 10000, 2) + " 万";
+    if (Math.abs(number) >= 1000000000) return formatNumber(number / 1000000000, 2) + "B";
+    if (Math.abs(number) >= 1000000) return formatNumber(number / 1000000, 2) + "M";
+    if (Math.abs(number) >= 1000) return formatNumber(number / 1000, 2) + "K";
     return formatNumber(number, 0);
 };
 const formatTimestamp = (value) => {
-    if (typeof value !== "string" || !value.trim()) return "时间未知";
+    if (typeof value !== "string" || !value.trim()) return "Time unavailable";
     const normalized = value.slice(0, MAX_UI_TEXT_CHARS);
     const parsed = new Date(normalized);
     return Number.isNaN(parsed.getTime())
         ? normalized
-        : parsed.toLocaleString("zh-CN", { hour12: false });
+        : parsed.toLocaleString("en-US", { hour12: false });
 };
 const formatClock = (value) => {
     if (typeof value !== "string" || !value.trim()) return "--:--:--";
     const parsed = new Date(value.slice(0, MAX_UI_TEXT_CHARS));
     return Number.isNaN(parsed.getTime())
         ? "--:--:--"
-        : parsed.toLocaleTimeString("zh-CN", { hour12: false });
+        : parsed.toLocaleTimeString("en-US", { hour12: false });
 };
 const normalizeCode = (value) => {
     const input = String(value || "").slice(0, 64).trim().toUpperCase().replace(/\s+/g, "");
@@ -166,7 +166,7 @@ const movement = (quote) => {
     if (change === null || change === 0) return "flat";
     return change > 0 ? "positive" : "negative";
 };
-// A 股 / 港股按中国市场惯例红涨绿跌；美股等海外市场绿涨红跌。
+// A-share and Hong Kong markets render gains red and losses green; US and other overseas markets render gains green and losses red.
 const marketOf = (state, code) => text(state && state.market, String(code || "").slice(0, 2)).toUpperCase();
 const paletteFor = (market) => RED_UP_MARKETS.includes(String(market || "").toUpperCase())
     ? { up: COLORS.red, down: COLORS.green, redUp: true }

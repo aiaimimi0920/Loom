@@ -1,7 +1,7 @@
 {
   "id": "custom-1770131241684",
-  "name": "颜色迁移",
-  "description": "基于 OkLab LUT 的 GPU Shader 色彩迁移与实时调色。",
+  "name": "Color Transfer",
+  "description": "GPU shader color transfer and live grading with an OkLab LUT.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -10,13 +10,13 @@
   "inputs": [
     {
       "name": "input",
-      "label": "输入图",
+      "label": "Input Image",
       "type": "image",
       "execution_type": "image_buffer"
     },
     {
       "name": "reference",
-      "label": "参考图",
+      "label": "Reference Image",
       "type": "image",
       "execution_type": "image_buffer",
       "exposePort": true
@@ -25,7 +25,7 @@
   "outputs": [
     {
       "name": "output",
-      "label": "颜色迁移结果",
+      "label": "Color Transfer Result",
       "type": "image",
       "execution_type": "image_buffer"
     }
@@ -33,209 +33,209 @@
   "params": [
     {
       "id": "strength",
-      "label": "迁移强度",
+      "label": "Transfer Strength",
       "widget": "slider",
       "default": 100,
       "min": 0,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "基础"
+      "group": "Basic"
     },
     {
       "id": "gamma",
-      "label": "伽马",
+      "label": "Gamma",
       "widget": "slider",
       "default": 1,
       "min": 0.1,
       "max": 3,
       "step": 0.1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "exposure",
-      "label": "曝光",
+      "label": "Exposure",
       "widget": "slider",
       "default": 0,
       "min": -4,
       "max": 4,
       "step": 0.1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "contrast",
-      "label": "对比度",
+      "label": "Contrast",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "highlights",
-      "label": "高光",
+      "label": "Highlights",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "shadows",
-      "label": "阴影",
+      "label": "Shadows",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "whites",
-      "label": "白色色阶",
+      "label": "Whites",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "blacks",
-      "label": "黑色色阶",
+      "label": "Blacks",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "曝光 / 对比"
+      "group": "Exposure / Contrast"
     },
     {
       "id": "temperature",
-      "label": "色温",
+      "label": "Temperature",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "色彩"
+      "group": "Color"
     },
     {
       "id": "tint",
-      "label": "色偏",
+      "label": "Tint",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "色彩"
+      "group": "Color"
     },
     {
       "id": "saturation",
-      "label": "饱和度",
+      "label": "Saturation",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "色彩"
+      "group": "Color"
     },
     {
       "id": "vibrance",
-      "label": "自然饱和度",
+      "label": "Vibrance",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "色彩"
+      "group": "Color"
     },
     {
       "id": "hue",
-      "label": "色相偏移",
+      "label": "Hue Shift",
       "widget": "slider",
       "default": 0,
       "min": 0,
       "max": 360,
       "step": 1,
       "data_type": "number",
-      "group": "色彩"
+      "group": "Color"
     },
     {
       "id": "split_h_hue",
-      "label": "高光色相",
+      "label": "Highlight Hue",
       "widget": "slider",
       "default": 30,
       "min": 0,
       "max": 360,
       "step": 1,
       "data_type": "number",
-      "group": "分离色调 / 高级"
+      "group": "Split Toning / Advanced"
     },
     {
       "id": "split_h_sat",
-      "label": "高光饱和度",
+      "label": "Highlight Saturation",
       "widget": "slider",
       "default": 0,
       "min": 0,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "分离色调 / 高级"
+      "group": "Split Toning / Advanced"
     },
     {
       "id": "split_s_hue",
-      "label": "阴影色相",
+      "label": "Shadow Hue",
       "widget": "slider",
       "default": 210,
       "min": 0,
       "max": 360,
       "step": 1,
       "data_type": "number",
-      "group": "分离色调 / 高级"
+      "group": "Split Toning / Advanced"
     },
     {
       "id": "split_s_sat",
-      "label": "阴影饱和度",
+      "label": "Shadow Saturation",
       "widget": "slider",
       "default": 0,
       "min": 0,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "分离色调 / 高级"
+      "group": "Split Toning / Advanced"
     },
     {
       "id": "split_balance",
-      "label": "分离色调平衡",
+      "label": "Split Balance",
       "widget": "slider",
       "default": 0,
       "min": -100,
       "max": 100,
       "step": 1,
       "data_type": "number",
-      "group": "分离色调 / 高级"
+      "group": "Split Toning / Advanced"
     },
     {
       "id": "skin_protection",
-      "label": "肤色保护",
+      "label": "Skin Tone Protection",
       "widget": "checkbox",
       "default": false,
       "data_type": "boolean",
-      "group": "基础"
+      "group": "Basic"
     }
   ],
   "metadata": {
@@ -253,7 +253,7 @@
       "globalId": "NA20260802004"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "颜色迁移",
         "en-US": "Color Transfer"

@@ -1,4 +1,4 @@
-//! 仅显式图像调用提取MCP单PNG；不读输出路径、不应用effects。租约限制全部终态图片存储。
+//! Extracts a single MCP PNG only for explicit image-output calls without reading output paths or applying effects; leases bound all terminal image storage.
 use super::*;
 use loom_protocol::local_art::service::image_output as wire;
 use std::sync::atomic::AtomicUsize;
@@ -37,7 +37,7 @@ pub(super) fn prepare(
     let encoded = encoded
         .strip_prefix("data:image/png;base64,")
         .unwrap_or(encoded);
-    // 验编码上界后再解码；永不跟随URL、output_path或其他服务给出的文件身份。
+    // Validate the encoded size bound before decoding; never follow URLs, `output_path`, or service-supplied file identities.
     let provisional = wire::Image {
         width: 1,
         height: 1,

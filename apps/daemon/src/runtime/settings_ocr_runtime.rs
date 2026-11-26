@@ -92,21 +92,21 @@ impl Default for ProxySettings {
 impl ProxySettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if !matches!(self.mode.as_str(), "system" | "custom" | "disabled") {
-            return Err("代理模式必须是跟随系统、自定义或不使用代理".to_owned());
+            return Err("Proxy mode must be system, custom, or disabled".to_owned());
         }
         if !matches!(self.protocol.as_str(), "http" | "https" | "socks5") {
-            return Err("代理协议必须是 http、https 或 socks5".to_owned());
+            return Err("Proxy protocol must be http, https, or socks5".to_owned());
         }
         if self.mode == "custom" {
             let address = self.address.trim();
             if address.is_empty() {
-                return Err("自定义代理必须填写地址".to_owned());
+                return Err("Custom proxy requires an address".to_owned());
             }
             let url = format!("{}://{address}", self.protocol);
             let parsed = reqwest::Url::parse(&url)
-                .map_err(|error| format!("自定义代理地址无效：{error}"))?;
+                .map_err(|error| format!("Invalid custom proxy address: {error}"))?;
             if parsed.host_str().is_none() || parsed.port_or_known_default().is_none() {
-                return Err("自定义代理地址必须包含主机和端口".to_owned());
+                return Err("Custom proxy address must include host and port".to_owned());
             }
         }
         Ok(())
@@ -167,10 +167,10 @@ impl Default for McpSettings {
 impl McpSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if !(5..=600).contains(&self.request_timeout_seconds) {
-            return Err("MCP 请求超时必须介于 5 秒到 10 分钟之间".to_owned());
+            return Err("MCP request timeout must be between 5 seconds and 10 minutes".to_owned());
         }
         if !(64 * 1024 * 1024..=4 * 1024 * 1024 * 1024).contains(&self.memory_limit_bytes) {
-            return Err("MCP 子进程内存上限必须介于 64 MB 到 4 GB 之间".to_owned());
+            return Err("MCP child process memory limit must be between 64 MB and 4 GB".to_owned());
         }
         Ok(())
     }
@@ -213,13 +213,13 @@ impl LoomCacheSettings {
         if self.art_cache_max_bytes != 0
             && !(64 * 1024 * 1024..=64 * 1024 * 1024 * 1024).contains(&self.art_cache_max_bytes)
         {
-            return Err("Art 运行缓存上限必须为无限制或介于 64 MB 到 64 GB 之间".to_owned());
+            return Err("Art runtime cache limit must be unlimited or between 64 MB and 64 GB".to_owned());
         }
         if self.art_cache_retention_days > 3650 {
-            return Err("Art 运行缓存自动清理周期不能超过 3650 天".to_owned());
+            return Err("Art runtime cache retention period cannot exceed 3650 days".to_owned());
         }
         if self.framework_temp_retention_days > 3650 {
-            return Err("框架临时文件自动清理周期不能超过 3650 天".to_owned());
+            return Err("Framework temporary file retention period cannot exceed 3650 days".to_owned());
         }
         Ok(())
     }
@@ -241,18 +241,18 @@ impl Default for OtterCacheSettings {
 impl OtterCacheSettings {
     fn validate(&self) -> std::result::Result<(), String> {
         if self.recycle_bin_max_entries > 500 {
-            return Err("回收站上限必须为无限或不超过 500 项".to_owned());
+            return Err("Recycle bin limit must be unlimited or at most 500 entries".to_owned());
         }
         if self.recycle_bin_retention_days > 3650 {
-            return Err("回收站自动清理周期不能超过 3650 天".to_owned());
+            return Err("Recycle bin retention period cannot exceed 3650 days".to_owned());
         }
         if self.temp_cache_max_bytes != 0
             && !(32 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&self.temp_cache_max_bytes)
         {
-            return Err("临时缓存上限必须为无限制或介于 32 MB 到 16 GB 之间".to_owned());
+            return Err("Temporary cache limit must be unlimited or between 32 MB and 16 GB".to_owned());
         }
         if self.temp_cache_retention_days > 3650 {
-            return Err("临时缓存自动清理周期不能超过 3650 天".to_owned());
+            return Err("Temporary cache retention period cannot exceed 3650 days".to_owned());
         }
         Ok(())
     }
@@ -300,7 +300,7 @@ impl Default for LoomSettings {
             appearance_version: CURRENT_APPEARANCE_VERSION,
             general: LoomGeneralSettings {
                 theme: "dark".to_owned(),
-                language: "zh-Hans".to_owned(),
+                language: "en".to_owned(),
                 auto_start: false,
                 minimize_to_tray: true,
                 enable_tray_icon: true,

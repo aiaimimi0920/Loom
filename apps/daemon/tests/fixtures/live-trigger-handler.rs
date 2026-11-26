@@ -1,4 +1,4 @@
-//! 隔离联合门的实际Art进程；只读有界stdin，在本包目录登记一次调用并返回固定业务结果。
+//! Live Art process for the isolated joint gate; reads bounded stdin, records a single call in the package directory, and returns a fixed business result.
 use std::io::{Read, Write};
 fn main() {
     let mut request = String::new();

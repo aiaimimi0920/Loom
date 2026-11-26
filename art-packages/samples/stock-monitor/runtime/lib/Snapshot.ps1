@@ -17,7 +17,7 @@ function Get-StockSnapshot {
         $stock = Get-StockFromActionState -Action $script:SurfaceAction
     }
     if ($null -eq $stock) {
-        $quoteError = [string](Get-ObjectPropertyValue -Value $quoteAttempt -Name "error" -DefaultValue "stock-api 未返回股票报价")
+        $quoteError = [string](Get-ObjectPropertyValue -Value $quoteAttempt -Name "error" -DefaultValue "stock-api did not return a stock quote")
         throw $quoteError
     }
 
@@ -25,7 +25,7 @@ function Get-StockSnapshot {
     $name = ConvertTo-BoundedText -Value (Get-ObjectPropertyValue -Value $stock -Name "name") -MaxLength 128
     $price = Convert-NullableNumber (Get-ObjectPropertyValue -Value $stock -Name "now")
     if ([string]::IsNullOrWhiteSpace($name) -or $name -eq "---" -or $null -eq $price -or $price -le 0) {
-        throw "stock-api 未找到该代码的有效报价"
+        throw "stock-api found no valid quote for this symbol"
     }
     $fetchCompletedAt = [DateTimeOffset]::UtcNow.ToString("o")
     $quoteFetchedAt = Resolve-UtcTimestamp `
@@ -101,14 +101,15 @@ function Get-StockSnapshot {
         $lastTradingDate = Resolve-TradingDate -Value $latest.date
     }
     if ($null -eq $lastTradingDate) {
-        throw "stock-api 返回的最近交易日无效"
+        throw "stock-api returned an invalid last trading date"
     }
     $bookAttempt = Try-Get-McpToolContent -Request $Request -CallId "orderbook"
     $bookResponse = Get-ObjectPropertyValue -Value (Get-ObjectPropertyValue -Value $bookAttempt -Name "content") -Name "response"
     $bookFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "fetchedAt") -FallbackValue $fetchCompletedAt
     $orderBook = ConvertTo-OrderBook -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "orderBook") -Code $code -FetchedAt $bookFetchedAt
     $liveTape = ConvertTo-LiveTape -Value (Get-ObjectPropertyValue -Value $bookResponse -Name "realtime") -Code $code -FetchedAt $bookFetchedAt
-    # 盘口是可选增强：雪球对港股不返回十档，失败时沿用上一次快照而不是清空面板。
+    # Order-book depth is optional (Xueqiu omits ten-level depth for HK symbols); retain the last
+    # non-stale snapshot on transient failures instead of blanking the panel.
     if (($null -eq $orderBook -or $null -eq $liveTape) -and $null -ne $script:SurfaceAction) {
         $cachedBook = Get-ActionStateValue -Action $script:SurfaceAction -Name "orderBook"
         $cachedTape = Get-ActionStateValue -Action $script:SurfaceAction -Name "liveTape"
@@ -148,9 +149,9 @@ function Get-StockSnapshot {
     else { $quoteObservedAt }
     $effectiveFetchedAt = if ($usesLivePrice) { [string]$liveTape.fetchedAt } else { $quoteFetchedAt }
     $effectiveAgeSeconds = Get-ObservationAgeSeconds -Value $effectiveObservedAt
-    # 年龄未知（上游时间戳缺失或没有时区偏移）时按过期处理。PowerShell 里 $null -gt 90 是
-    # $false，少了这个判断，一份连观察时间都给不出的报价反而会被判成新鲜。休市时不强制判过期：
-    # 收盘价本来就旧。
+    # Fail closed as stale during open sessions when observation age is unknown (missing timestamp or
+    # missing UTC offset), since ($null -gt 90) is $false in PowerShell. Closed sessions are exempt
+    # because closing prices are expected to rest until the next session.
     $quoteStale = $quoteProviderStale -or ($marketStatus -eq "open" -and ($null -eq $effectiveAgeSeconds -or $effectiveAgeSeconds -gt $script:MaxLiveAgeSeconds))
     $effectivePreviousClose = if ($usesLivePrice -and $null -ne $liveTape.previousClose) { $liveTape.previousClose } else { $previousClose }
     $quote = [ordered]@{

@@ -1,6 +1,7 @@
 // Edits which workflow parameters remain runtime inputs versus baked constants.
 
 import { Checkbox, Input, Select } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { mapParamUiType } from "../../services/workflowStudio.ts";
 import type { NodeParamGroup } from "./otterCanvasThumbnailModel.ts";
 
@@ -19,10 +20,11 @@ export function OtterCanvasParamExposure({
   onExposureChange,
   onValueChange,
 }: OtterCanvasParamExposureProps) {
+  const { t, tf } = useUiText();
   if (!groups.length) return null;
   return (
     <fieldset className="otter-canvas-param-expose">
-      <legend>外露参数</legend>
+      <legend>{t("otter.exposure.legend")}</legend>
       {groups.map((group) => (
         <div key={group.workflowNodeId} className="otter-canvas-param-expose__group">
           <p className="otter-canvas-param-expose__node">{group.label}</p>
@@ -30,12 +32,18 @@ export function OtterCanvasParamExposure({
             const isExposed = exposed.has(row.key);
             const uiType = mapParamUiType(row.param);
             const value = values[row.key] ?? "";
-            const valueLabel = `${group.label} / ${row.label} 常量值`;
+            const valueLabel = tf("otter.exposure.constantValueAria", {
+              group: group.label,
+              param: row.label,
+            });
             return (
               <div key={row.key} className="otter-canvas-param-expose__row">
                 <Checkbox
                   label={row.label}
-                  aria-label={`外露参数 ${group.label} / ${row.label}`}
+                  aria-label={tf("otter.exposure.paramAria", {
+                    group: group.label,
+                    param: row.label,
+                  })}
                   checked={isExposed}
                   onChange={(event) => onExposureChange(row.key, event.target.checked)}
                 />
@@ -56,7 +64,7 @@ export function OtterCanvasParamExposure({
                     type="number"
                     value={value}
                     disabled={isExposed}
-                    placeholder={isExposed ? "运行时输入" : "常量值"}
+                    placeholder={isExposed ? t("otter.exposure.runtimeInput") : t("otter.exposure.constantValue")}
                     min={row.param.min}
                     max={row.param.max}
                     step={row.param.step ?? (uiType === "int" ? 1 : undefined)}
@@ -68,7 +76,7 @@ export function OtterCanvasParamExposure({
                     className="otter-canvas-param-expose__value"
                     value={value}
                     disabled={isExposed}
-                    placeholder={isExposed ? "运行时输入" : "常量值"}
+                    placeholder={isExposed ? t("otter.exposure.runtimeInput") : t("otter.exposure.constantValue")}
                     onChange={(event) => onValueChange(row.key, event.target.value)}
                     aria-label={valueLabel}
                   />

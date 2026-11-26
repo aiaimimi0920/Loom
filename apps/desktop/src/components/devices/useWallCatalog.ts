@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { uiFormat } from "../../i18n/index.ts";
 import { identifyWallEndpoint, readWallState, removeWallLayout, saveWallLayout, setWallPresentation } from "../../services/loomApi/walls.ts";
 import { loadWallSourceInventory, type WallSourceInventory } from "../../services/loomApi/wallSourceInventory.ts";
 import { errorMessage } from "../../services/loomApi/transport.ts";
@@ -61,7 +62,9 @@ export function useWallCatalog(baseUrl: string, online: boolean) {
       setState(next);
       setDraft(remove ? null : createWallDraft(next.revision, next.layouts.find((l) => l.wallId === draft.layout.wallId)));
     } catch (error) {
-      if (id === generation.current) setWriteError(`${errorMessage(error)}。草稿已保留；请核对目录版本后重新载入。`);
+      if (id === generation.current) {
+        setWriteError(uiFormat("devices.wall.error.mutateFailedDraftKept", { reason: errorMessage(error) }));
+      }
     } finally { writing.current = false; setBusy(false); }
   }
   function edit(layout: WallLayout) {
@@ -76,7 +79,9 @@ export function useWallCatalog(baseUrl: string, online: boolean) {
       if (id !== generation.current) return;
       setState(next); setDraft((current) => draftAfterPresentation(current, baseRevision, next));
     } catch (error) {
-      if (id === generation.current) setWriteError(`${errorMessage(error)}。显示操作未确认；草稿已保留，请核对目录状态。`);
+      if (id === generation.current) {
+        setWriteError(uiFormat("devices.wall.error.presentFailedDraftKept", { reason: errorMessage(error) }));
+      }
     } finally { writing.current = false; setBusy(false); }
   }
   async function identify(endpointId: string) {
@@ -87,7 +92,9 @@ export function useWallCatalog(baseUrl: string, online: boolean) {
       const next = await identifyWallEndpoint(baseUrl, endpointId);
       if (id === generation.current) setState(next);
     } catch (error) {
-      if (id === generation.current) setWriteError(`${errorMessage(error)}。屏幕识别未确认，布局草稿已保留。`);
+      if (id === generation.current) {
+        setWriteError(uiFormat("devices.wall.error.identifyFailedDraftKept", { reason: errorMessage(error) }));
+      }
     } finally { writing.current = false; setBusy(false); }
   }
   return { state, draft, inventory, sourcesLoading, error: writeError || error, busy, loading, edit, present, identify,

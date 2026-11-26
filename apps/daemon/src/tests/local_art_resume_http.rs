@@ -1,4 +1,4 @@
-// 当前 v3 包同时承载离线证明；没有单独的旧 resume 端点。
+// Current v3 package carries offline proof directly; there is no separate legacy resume endpoint.
 mod resume_tests {
     use super::*;
     use ed25519_dalek::SigningKey;
@@ -66,7 +66,7 @@ mod resume_tests {
     fn local_art_resume_http_requires_offline_approval_and_rejects_old_protocols() {
         let f = Fixture::new();
         assert_eq!(f.approve(0, true).0, 200);
-        // 通用 pair 已是公钥设备；必须明确关闭离线审批，不能把它误当作无公钥旧身份。
+        // The shared `pair` helper registers a keyed device; explicitly zero `offlineTtlMs` rather than mistaking it for an unkeyed legacy identity.
         let (status, mut approvals) = admin(f.port, "GET", "/v1/art/local/approvals", None);
         assert_eq!(status, 200);
         approvals["approvals"][0]["offlineTtlMs"] = 0.into();

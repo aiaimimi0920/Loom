@@ -1,5 +1,6 @@
 // Online polling, partial-data retention, and aggregate daemon snapshot orchestration.
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import { DEFAULT_LOOM_DAEMON_URL } from "./defaults.ts";
 import type {
   LoomCapability,
@@ -148,7 +149,7 @@ const readOptionalSnapshotArray = async <T>(
     if (!Array.isArray(value)) {
       return {
         value: [],
-        error: `Loom 本地服务模块 ${path} 响应字段 ${key} 必须是数组`,
+        error: uiFormat("shell.snapshot.moduleFieldMustBeArray", { path, key }),
       };
     }
     return { value: value as T[], error: null };
@@ -167,7 +168,7 @@ const readOptionalSnapshotObject = async <T extends object>(
     if (typeof response !== "object" || response === null || Array.isArray(response)) {
       return {
         value: null,
-        error: `Loom 本地服务模块 ${path} 响应必须是对象`,
+        error: uiFormat("shell.snapshot.moduleMustBeObject", { path }),
       };
     }
     return { value: response as T, error: null };
@@ -280,7 +281,7 @@ export async function readLoomSnapshot(
         workflows: [],
         hookBridge: null,
         settings,
-        error: `Loom 本地服务在读取模块状态期间离线：${errorMessage(error)}`,
+        error: uiFormat("shell.snapshot.offlineDuringModuleRead", { detail: errorMessage(error) }),
       };
     }
   }
@@ -299,7 +300,9 @@ export async function readLoomSnapshot(
     hookBridge: hookBridge.value,
     settings,
     error: degradedErrors.length > 0
-      ? `Loom 本地服务在线，但部分模块暂不可用：${degradedErrors.join("；")}`
+      ? uiFormat("shell.snapshot.degradedModules", {
+          details: degradedErrors.join(uiText("shell.snapshot.errorSeparator")),
+        })
       : null,
   };
 }

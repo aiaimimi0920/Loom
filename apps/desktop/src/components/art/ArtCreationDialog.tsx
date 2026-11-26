@@ -1,6 +1,7 @@
 // The standard dialog owns focus, dismissal and scroll locking; Loom owns creation state.
 import { Dialog, Notice } from "@neuro/ui";
 import type { ReactNode } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { StudioMessage } from "../app/appShell";
 
 export function ArtCreationDialog({
@@ -16,10 +17,11 @@ export function ArtCreationDialog({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const { t } = useUiText();
   return (
     <Dialog
       open={open}
-      title="创建 Art"
+      title={t("art.action.createArt")}
       busy={busy}
       className="loom-art-create-dialog"
       resolveReturnFocus={(target) => document.querySelector<HTMLButtonElement>(".framework-filter__create") ?? target}

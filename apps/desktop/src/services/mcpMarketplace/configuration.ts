@@ -1,5 +1,6 @@
 // Projects marketplace choices into installed server configuration and health state.
 
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../loomApi.ts";
 import { dedupeMarketplaceServers } from "./helpers.ts";
 import type {
@@ -25,7 +26,7 @@ export function buildMarketplaceServerConfig(
       (candidate.transport === "stdio" ? candidate.command === existing?.command : candidate.url === existing?.url)) ||
     marketItem.installOptions.find((candidate) => candidate.transport === existing?.transport) ||
     marketItem.installOptions[0];
-  if (!option) throw new Error(`MCP Registry entry ${marketItem.id} has no install option`);
+  if (!option) throw new Error(uiFormat("mcp.error.noInstallOption", { id: marketItem.id }));
   return {
     id: existing?.id || marketItem.id,
     name: marketItem.name,
@@ -60,28 +61,28 @@ export function getMarketplaceHealth(
   const tags: McpMarketplaceHealth["tags"] = [];
 
   if (configuredServer) {
-    tags.push({ label: "已安装", tone: "success" });
+    tags.push({ label: uiText("mcp.health.installed"), tone: "success" });
     tags.push({
-      label: configuredServer.enabled === false ? "已禁用" : "已启用",
+      label: configuredServer.enabled === false ? uiText("mcp.status.disabled") : uiText("mcp.status.enabled"),
       tone: configuredServer.enabled === false ? "neutral" : "success",
     });
   }
 
   if (installOption?.requiresManualConfiguration) {
-    tags.push({ label: "需要配置", tone: "warning" });
+    tags.push({ label: uiText("mcp.health.configRequired"), tone: "warning" });
   }
 
   if (requiredEnvKeys.length > 0 || requiredHeaderKeys.length > 0) {
     tags.push({
-      label: requiredEnvPresent ? "密钥已填" : "缺少密钥",
+      label: requiredEnvPresent ? uiText("mcp.health.secretConfigured") : uiText("mcp.health.secretMissing"),
       tone: requiredEnvPresent ? "success" : "error",
     });
   }
 
   if (testSnapshot?.status === "success") {
-    tags.push({ label: `已发现工具 ${testSnapshot.toolCount}`, tone: "success" });
+    tags.push({ label: uiFormat("mcp.health.toolsDiscovered", { count: testSnapshot.toolCount }), tone: "success" });
   } else if (testSnapshot?.status === "error") {
-    tags.push({ label: "测试失败", tone: "error" });
+    tags.push({ label: uiText("mcp.health.testFailed"), tone: "error" });
   }
 
   return {

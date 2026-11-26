@@ -1,4 +1,4 @@
-// 双仓真实联合门；只启动显式指定的 Otter 测试程序，不改生产入口或持久用户配置。
+// Dual-repository real joint gate; launches only the explicitly specified Otter test binary without altering production entrypoints or persistent user config.
 mod joint {
     use super::*;
     use ed25519_dalek::SigningKey;
@@ -105,7 +105,7 @@ NeuroSurface.define({async mount({root}) {
         f.device = device.clone();
         f.token = token;
         f.request["binding"]["deviceId"] = json!(device);
-        // 使用真正的生产 HTTPS 入口；不为联合测试放宽 Otter 的 HTTPS origin 合同。
+        // Use the real production HTTPS entrypoint rather than relaxing Otter's HTTPS origin contract for joint tests.
         let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let tls_port = reservation.local_addr().unwrap().port();
         drop(reservation);
@@ -126,7 +126,7 @@ NeuroSurface.define({async mount({root}) {
             "schemaVersion":1,"deviceId":f.device,"privateKey":BASE64.encode(key.to_bytes()),
             "publicKey":BASE64.encode(key.verifying_key().to_bytes())}});
         let input = f.root.join("otter-joint-input.json");
-        // 一次性合成身份只存在隔离测试目录；不通过命令行或日志交付凭据。
+        // Ephemeral synthetic identity lives solely in the isolated test directory; never pass credentials via CLI args or logs.
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

@@ -1,11 +1,11 @@
-//! 包体由进程内 libaria2 传输；宿主负责授权和最终完整性复验。
+//! Transfers archive payloads via in-process libaria2; the host retains authorization and final integrity verification.
 use super::{error, Result};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-// 只回收本次生成的两个引擎文件，不递归删除目录中的其他内容。
+// Reclaim only the two engine files created by this task without recursively deleting anything else in the directory.
 pub(super) fn cleanup(directory: &Path) {
     let Ok(metadata) = fs::symlink_metadata(directory) else {
         return;
@@ -35,7 +35,7 @@ pub(super) fn download(
     {
         return Err(error(400, "asset_library_request_invalid"));
     }
-    // 沿用有界 relay：凭据、远端重定向规则由宿主掌握，不因替换引擎而放宽。
+    // Keep the bounded relay: credentials and remote redirect rules remain owned by the host and are never relaxed by swapping engines.
     let relay =
         super::aria2_relay::Relay::start(client, url.into(), token.into(), ticket.into(), size)?;
     let directory = dir.join(format!("libaria2-{}", uuid::Uuid::new_v4().simple()));
@@ -51,7 +51,7 @@ pub(super) fn download(
         cleanup(&directory);
         error
     })?;
-    // 失败或超时由工作线程在关闭会话后清理，调用线程不删除仍在写入的文件。
+    // On failure or timeout, the worker thread cleans up after closing the session so the caller never deletes files still being written.
     task.wait().map_err(|failure| {
         if control
             .as_ref()

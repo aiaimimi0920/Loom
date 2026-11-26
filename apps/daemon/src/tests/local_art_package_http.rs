@@ -1,4 +1,4 @@
-// 包资源完整HTTP准入；使用独立固定PNG/像素oracle，不从待测渲染输出产生预期。
+// Full HTTP admission for package resources; uses independent fixed PNG/pixel oracles rather than deriving expectations from rendered output under test.
 mod package_http {
     use super::*;
     pub(super) const PNG:&str="iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP4z8DwHwyBNBAwNAAAR0sIeRPxYNAAAAAASUVORK5CYII=";

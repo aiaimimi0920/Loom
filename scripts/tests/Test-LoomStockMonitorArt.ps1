@@ -5,14 +5,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$automaticRefreshLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6Ieq5YqoIA=="))
-$turnoverLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5o2i5omL"))
-$amplitudeLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5oyv5bmF"))
-$undeclaredActionMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6KGM5oOF5Yqo5L2c5pyq6KKr5aOw5piO77yM5bey5ouS57ud5omn6KGM"))
-$dayPeriodLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5pelIEs="))
-$pendingCurveMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5puy57q/5bCG5Zyo5LiL5qyh5Yi35paw6KGl6b2Q"))
-$fiveMinutePeriodLabel = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("NSDliIbpkp8="))
-$periodMismatchMessage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("6KGM5oOF5ZGo5pyf5LiO6K+35rGC5LiN5LiA6Ie0"))
+$automaticRefreshLabel = "Auto "
+$turnoverLabel = "Turnover"
+$amplitudeLabel = "Amplitude"
+$undeclaredActionMessage = "Action is not declared in the manifest and was rejected"
+$dayPeriodLabel = "1D"
+$pendingCurveMessage = "Quote curve will refresh on the next cycle"
+$fiveMinutePeriodLabel = "5m"
+$periodMismatchMessage = "Action period does not match requested period"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptRoot "stock-monitor-art\Helpers.ps1")

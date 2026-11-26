@@ -1,6 +1,7 @@
 // Presentation only: the controller retains drafts, conflict checks, capture and apply semantics.
 import { Button, Dialog, Field, Notice, Select } from "@neuro/ui";
 import { useRef } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { ShortcutSlotsEditor } from "./ShortcutSlotsEditor";
 import { shortcutSlotCount } from "./settingsModel";
 import type { useSettingsPanelController } from "./useSettingsPanelController";
@@ -18,6 +19,7 @@ function captureEscape(event: KeyboardEvent) {
 }
 
 export function ShortcutEditDialog({ controller }: { controller: Controller }) {
+  const { t } = useUiText();
   const { shortcutEditor, setShortcutEditor, shortcutEditorConflict, applyShortcutEditor, handleShortcutCapture } =
     controller;
   const capture = useRef<HTMLButtonElement>(null),
@@ -25,7 +27,7 @@ export function ShortcutEditDialog({ controller }: { controller: Controller }) {
   const close = () => setShortcutEditor(null);
   return (
     <Dialog
-      title="修改快捷键"
+      title={t("settings.shortcuts.editDialogTitle")}
       open={Boolean(shortcutEditor)}
       onOpenChange={(open) => {
         if (!open) close();
@@ -65,11 +67,11 @@ export function ShortcutEditDialog({ controller }: { controller: Controller }) {
                 )
               }
             >
-              恢复默认
+              {t("settings.shortcuts.restoreDefault")}
             </Button>
             <span />
             <Button compact onClick={close}>
-              取消
+              {t("settings.shortcuts.cancel")}
             </Button>
             <Button
               compact
@@ -77,7 +79,7 @@ export function ShortcutEditDialog({ controller }: { controller: Controller }) {
               disabled={!shortcutEditor.keys.some((keys) => keys.trim()) || Boolean(shortcutEditorConflict)}
               onClick={applyShortcutEditor}
             >
-              应用
+              {t("settings.shortcuts.apply")}
             </Button>
           </footer>
         </>
@@ -87,6 +89,7 @@ export function ShortcutEditDialog({ controller }: { controller: Controller }) {
 }
 
 export function QuickBindingDialog({ controller }: { controller: Controller }) {
+  const { t } = useUiText();
   const {
     quickBindingEditor,
     setQuickBindingEditor,
@@ -99,7 +102,7 @@ export function QuickBindingDialog({ controller }: { controller: Controller }) {
   const close = () => setQuickBindingEditor(null);
   return (
     <Dialog
-      title="Art 快捷键"
+      title={t("settings.shortcuts.artDialogTitle")}
       open={Boolean(quickBindingEditor)}
       onOpenChange={(open) => {
         if (!open) close();
@@ -111,7 +114,7 @@ export function QuickBindingDialog({ controller }: { controller: Controller }) {
       {quickBindingEditor ? (
         <>
           <div className="shortcut-edit-dialog__body">
-            <Field label="Art">
+            <Field label={t("settings.shortcuts.artFieldLabel")}>
               <Select
                 value={quickBindingEditor.art}
                 onChange={(event) =>
@@ -127,7 +130,7 @@ export function QuickBindingDialog({ controller }: { controller: Controller }) {
             </Field>
             <ShortcutSlotsEditor
               value={quickBindingEditor}
-              label="Art"
+              label={t("settings.shortcuts.artFieldLabel")}
               captureRef={capture}
               onCapture={handleQuickBindingCapture}
               onChange={(patch) => setQuickBindingEditor((current) => (current ? { ...current, ...patch } : current))}
@@ -138,7 +141,7 @@ export function QuickBindingDialog({ controller }: { controller: Controller }) {
             <span />
             <span />
             <Button compact onClick={close}>
-              取消
+              {t("settings.shortcuts.cancel")}
             </Button>
             <Button
               compact
@@ -150,7 +153,7 @@ export function QuickBindingDialog({ controller }: { controller: Controller }) {
               }
               onClick={applyQuickBindingEditor}
             >
-              应用
+              {t("settings.shortcuts.apply")}
             </Button>
           </footer>
         </>

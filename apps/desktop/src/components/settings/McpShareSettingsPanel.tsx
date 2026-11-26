@@ -1,6 +1,7 @@
 // Outbound MCP Share Token & Cloud Relay settings panel inside Settings -> MCP.
 import { useCallback, useEffect, useState } from "react";
 import { Button, Input, Switch } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { deleteJson, getJson, postJson, putJson } from "../../services/loomApi/transport";
 import { SettingsSectionIcon } from "./settingsModel";
 
@@ -35,18 +36,19 @@ interface McpShareStatusResponse {
   cloudRelay: CloudRelayStatus;
 }
 
-const SCOPE_OPTIONS: { id: McpShareScope; label: string }[] = [
-  { id: "arts:execute", label: "流程包/Art 执行" },
-  { id: "capabilities:invoke", label: "能力包与全局 AI" },
-  { id: "screen:read", label: "实时画面读取" },
-  { id: "devices:control", label: "设备与 Otter 同步" },
-  { id: "projection:control", label: "投屏与屏幕墙控制" },
+const SCOPE_OPTIONS: readonly { id: McpShareScope; labelKey: string }[] = [
+  { id: "arts:execute", labelKey: "settings.mcpShare.scope.artsExecute" },
+  { id: "capabilities:invoke", labelKey: "settings.mcpShare.scope.capabilitiesInvoke" },
+  { id: "screen:read", labelKey: "settings.mcpShare.scope.screenRead" },
+  { id: "devices:control", labelKey: "settings.mcpShare.scope.devicesControl" },
+  { id: "projection:control", labelKey: "settings.mcpShare.scope.projectionControl" },
 ];
 
 export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
+  const { t, tf } = useUiText();
   const [status, setStatus] = useState<McpShareStatusResponse | null>(null);
   const [tokens, setTokens] = useState<ShareTokenSummary[]>([]);
-  const [label, setLabel] = useState("Claude / Cursor 共享令牌");
+  const [label, setLabel] = useState(() => t("settings.mcpShare.defaultTokenLabel"));
   const [selectedScopes, setSelectedScopes] = useState<McpShareScope[]>([
     "arts:execute",
     "capabilities:invoke",
@@ -125,16 +127,16 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
   };
 
   return (
-    <section className="settings-mcp-panel" aria-label="Loom 对外 MCP 共享">
+    <section className="settings-mcp-panel" aria-label={t("settings.mcpShare.panelAria")}>
       <header className="settings-mcp-panel__header">
         <SettingsSectionIcon kind="mcp" />
-        <strong>对外 MCP 服务共享与云中继</strong>
+        <strong>{t("settings.mcpShare.header")}</strong>
       </header>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>HTTP / Stdio 接入端点</strong>
+          <strong>{t("settings.mcpShare.endpointsTitle")}</strong>
           <span>
-            HTTP: <code>{status?.httpEndpoint ?? `${baseUrl}/mcp`}</code> ｜ Stdio:{" "}
+            HTTP: <code>{status?.httpEndpoint ?? `${baseUrl}/mcp`}</code> | Stdio:{" "}
             <code>{status?.stdioCommand ?? "loom mcp-stdio"}</code>
           </span>
         </div>
@@ -142,14 +144,12 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
 
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>NAccount 互联网云中继</strong>
-          <span>
-            登录态下支持异地三层投射中转（Otter → Loom 1 → 云中继 → Loom 2 → Otter）与远程 MCP 调用
-          </span>
+          <strong>{t("settings.mcpShare.cloudRelayTitle")}</strong>
+          <span>{t("settings.mcpShare.cloudRelayDescription")}</span>
         </div>
         <Switch
           className="settings-general-toggle"
-          aria-label="启用 NAccount 云中继"
+          aria-label={t("settings.mcpShare.enableCloudRelayAria")}
           checked={Boolean(status?.cloudRelay.enabled)}
           disabled={busy}
           onChange={(event) => void handleRelayPatch({ enabled: event.target.checked })}
@@ -159,12 +159,12 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
       {status?.cloudRelay.enabled ? (
         <div className="settings-network-row">
           <div className="settings-network-row__label">
-            <strong>允许经云中继转发 MCP</strong>
-            <span>仍强制校验下方签发的最小权限 MCP 共享令牌</span>
+            <strong>{t("settings.mcpShare.exposeMcpTitle")}</strong>
+            <span>{t("settings.mcpShare.exposeMcpDescription")}</span>
           </div>
           <Switch
             className="settings-general-toggle"
-            aria-label="允许经云中继转发 MCP"
+            aria-label={t("settings.mcpShare.exposeMcpTitle")}
             checked={Boolean(status.cloudRelay.exposeMcp)}
             disabled={busy}
             onChange={(event) => void handleRelayPatch({ exposeMcp: event.target.checked })}
@@ -174,8 +174,8 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
 
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>签发权限范围令牌</strong>
-          <span>按需勾选暴露给外部 MCP 客户端的能力范围</span>
+          <strong>{t("settings.mcpShare.scopeTokenTitle")}</strong>
+          <span>{t("settings.mcpShare.scopeTokenDescription")}</span>
         </div>
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           {SCOPE_OPTIONS.map((opt) => (
@@ -185,7 +185,7 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
                 checked={selectedScopes.includes(opt.id)}
                 onChange={() => toggleScope(opt.id)}
               />
-              {opt.label}
+              {t(opt.labelKey)}
             </label>
           ))}
         </div>
@@ -193,20 +193,20 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
 
       <div className="settings-network-row">
         <Input
-          aria-label="MCP 共享令牌名称"
+          aria-label={t("settings.mcpShare.tokenLabelAria")}
           value={label}
-          placeholder="令牌备注名称"
+          placeholder={t("settings.mcpShare.tokenLabelPlaceholder")}
           onChange={(event) => setLabel(event.target.value)}
         />
         <Button disabled={busy || selectedScopes.length === 0} onClick={() => void handleCreateToken()}>
-          生成共享令牌
+          {t("settings.mcpShare.createToken")}
         </Button>
       </div>
 
       {newlyIssuedToken ? (
         <div className="settings-network-row" role="status">
           <div className="settings-network-row__label">
-            <strong>新生成令牌（仅显示一次）</strong>
+            <strong>{t("settings.mcpShare.newlyIssuedTitle")}</strong>
             <code>{newlyIssuedToken}</code>
           </div>
         </div>
@@ -218,10 +218,10 @@ export function McpShareSettingsPanel({ baseUrl }: { baseUrl: string }) {
             <strong>
               {tok.label} (<code>{tok.tokenPrefix}…</code>)
             </strong>
-            <span>权限: {tok.scopes.join(", ")}</span>
+            <span>{tf("settings.mcpShare.tokenScopes", { scopes: tok.scopes.join(", ") })}</span>
           </div>
           <Button disabled={busy} onClick={() => void handleRevoke(tok.id)}>
-            吊销
+            {t("settings.mcpShare.revoke")}
           </Button>
         </div>
       ))}

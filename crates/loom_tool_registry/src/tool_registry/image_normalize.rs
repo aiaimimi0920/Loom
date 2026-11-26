@@ -132,7 +132,7 @@ pub(super) fn friendly_mcp_image_result_message(value: &serde_json::Value) -> Op
     }
     let candidates = collect_mcp_image_candidates(value);
     if !candidates.is_empty() {
-        return Some("图片搜索已返回候选结果，但图片下载失败，请稍后重试。".to_owned());
+        return Some("Image search returned candidates, but downloading the image failed; please try again later.".to_owned());
     }
     None
 }
@@ -196,10 +196,10 @@ pub(super) fn mcp_image_search_empty_result_message_from_payload(
         .unwrap_or(false);
     if provider_flagged_sensitive {
         return Some(
-            "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。".to_owned(),
+            "Image search returned no usable results: the search provider flagged this query as potentially sensitive; try different keywords.".to_owned(),
         );
     }
-    Some("图片搜索未返回可用结果，请尝试更换关键词。".to_owned())
+    Some("Image search returned no usable results; try different keywords.".to_owned())
 }
 
 pub(super) fn mcp_image_search_items_len(value: &serde_json::Value) -> Option<usize> {

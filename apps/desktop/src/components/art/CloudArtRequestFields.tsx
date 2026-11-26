@@ -1,8 +1,10 @@
 // Cloud request composition; parsing and draft ownership remain in the wizard controller.
 import { Button, Field, Input, Select, Textarea } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { useAddArtWizardController } from "./useAddArtWizardController";
 
 export function CloudArtRequestFields({ controller }: { controller: ReturnType<typeof useAddArtWizardController> }) {
+  const { t } = useUiText();
   const {
     bodyText,
     cloudCurlText,
@@ -23,7 +25,7 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
   return (
     <div className="art-creator-fields">
       <div className="art-creator-field--wide">
-        <Field label="Endpoint">
+        <Field label={t("art.wizard.cloud.endpoint")}>
           <Input
             value={endpoint}
             onChange={(event) => setEndpoint(event.target.value)}
@@ -31,7 +33,7 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
           />
         </Field>
       </div>
-      <Field label="方法">
+      <Field label={t("art.wizard.cloud.method")}>
         <Select value={method} onChange={(event) => setMethod(event.target.value)}>
           <option value="POST">POST</option>
           <option value="PUT">PUT</option>
@@ -40,10 +42,10 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
           <option value="DELETE">DELETE</option>
         </Select>
       </Field>
-      <Field label="Content-Type">
+      <Field label={t("art.wizard.cloud.contentType")}>
         <Input value={contentType} onChange={(event) => setContentType(event.target.value)} />
       </Field>
-      <Field label="Headers">
+      <Field label={t("art.wizard.cloud.headers")}>
         <Textarea
           compact
           value={headersText}
@@ -51,10 +53,10 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
           spellCheck={false}
         />
       </Field>
-      <Field label="Body">
+      <Field label={t("art.wizard.cloud.body")}>
         <Textarea compact value={bodyText} onChange={(event) => setBodyText(event.target.value)} spellCheck={false} />
       </Field>
-      <Field label="cURL">
+      <Field label={t("art.wizard.cloud.curl")}>
         <Textarea
           compact
           value={cloudCurlText}
@@ -62,7 +64,7 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
           spellCheck={false}
         />
       </Field>
-      <Field label="响应示例">
+      <Field label={t("art.wizard.cloud.responseSample")}>
         <Textarea
           compact
           value={cloudResponseText}
@@ -72,7 +74,7 @@ export function CloudArtRequestFields({ controller }: { controller: ReturnType<t
       </Field>
       <div className="art-creator-inline-action">
         <Button variant="secondary" type="button" onClick={importCloudSmartTemplate}>
-          导入 cURL
+          {t("art.wizard.cloud.importCurl")}
         </Button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 // Typed parameter and credential editors; values and bindings remain controlled by Loom.
 import { Badge, Checkbox, Input, Panel, Select, Switch, Textarea } from "@neuro/ui";
 import { useId } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomArtManagementParameter } from "../../services/loomApi";
 import { credentialMatchesArtParameter } from "./artEditModel";
 import type { useArtEditDialogController } from "./useArtEditDialogController";
@@ -21,6 +22,7 @@ function ArtEditLiteralInput({
   disabled: boolean;
   id: string;
 }) {
+  const { t, tf } = useUiText();
   const options = Array.isArray(parameter.options) ? parameter.options : [];
   if (parameter.parameterType === "boolean") {
     if (!parameter.required) {
@@ -32,9 +34,9 @@ function ArtEditLiteralInput({
           onChange={(event) => setValue(event.target.value === "" ? "" : event.target.value === "true")}
           disabled={disabled}
         >
-          <option value="">使用默认值</option>
-          <option value="true">启用</option>
-          <option value="false">禁用</option>
+          <option value="">{t("art.edit.param.useDefault")}</option>
+          <option value="true">{t("art.action.enable")}</option>
+          <option value="false">{t("art.action.disable")}</option>
         </Select>
       );
     }
@@ -45,7 +47,7 @@ function ArtEditLiteralInput({
         checked={Boolean(value)}
         onChange={(event) => setValue(event.target.checked)}
         disabled={disabled}
-        label="启用"
+        label={t("art.action.enable")}
       />
     );
   }
@@ -59,7 +61,7 @@ function ArtEditLiteralInput({
         disabled={disabled}
         required={parameter.required}
       >
-        {!parameter.required ? <option value="">使用默认值</option> : null}
+        {!parameter.required ? <option value="">{t("art.edit.param.useDefault")}</option> : null}
         {options.map((option, index) => {
           const optionValue =
             typeof option === "object" && option !== null && "value" in option
@@ -104,7 +106,9 @@ function ArtEditLiteralInput({
       max={typeof parameter.maximum === "number" ? parameter.maximum : undefined}
       step={typeof parameter.step === "number" ? parameter.step : parameter.parameterType === "integer" ? 1 : undefined}
       placeholder={
-        !parameter.required && parameter.default !== undefined ? `默认：${String(parameter.default)}` : undefined
+        !parameter.required && parameter.default !== undefined
+          ? tf("art.edit.param.defaultPlaceholder", { value: String(parameter.default) })
+          : undefined
       }
       onChange={(event) =>
         setValue(numericInput ? (event.target.value === "" ? "" : Number(event.target.value)) : event.target.value)
@@ -116,6 +120,7 @@ function ArtEditLiteralInput({
 }
 
 export function ArtEditParameter({ parameter, controller }: ParameterProps) {
+  const { t, tf } = useUiText();
   const {
     parameterValues,
     setParameterValues,
@@ -146,8 +151,8 @@ export function ArtEditParameter({ parameter, controller }: ParameterProps) {
         <Checkbox
           checked={usingGlobal}
           disabled={busy}
-          label="引用"
-          aria-label={`${parameter.label} 引用全局值`}
+          label={t("art.edit.param.reference")}
+          aria-label={tf("art.edit.param.referenceGlobalValueAria", { label: parameter.label })}
           onChange={(event) => {
             const checked = event.target.checked;
             setUseGlobalValues((current) => ({ ...current, [parameter.id]: checked }));
@@ -169,12 +174,16 @@ export function ArtEditParameter({ parameter, controller }: ParameterProps) {
         <div data-active={usingGlobal} aria-hidden={!usingGlobal} inert={!usingGlobal}>
           <Select
             id={globalId}
-            aria-label={`${parameter.label} 使用的全局值`}
+            aria-label={tf("art.edit.param.selectedGlobalValueAria", { label: parameter.label })}
             value={selectedBindingAvailable ? selectedBinding : ""}
             onChange={(event) => setValueBindings((current) => ({ ...current, [parameter.id]: event.target.value }))}
             disabled={busy || !usingGlobal}
           >
-            <option value="">{compatibleCredentials.length ? "选择全局值" : "暂无匹配的全局值"}</option>
+            <option value="">
+              {compatibleCredentials.length
+                ? t("art.edit.param.selectGlobalValue")
+                : t("art.edit.param.noMatchingGlobalValue")}
+            </option>
             {compatibleCredentials.map((credential) => (
               <option key={credential.name} value={credential.name}>
                 {credential.name}
@@ -188,6 +197,7 @@ export function ArtEditParameter({ parameter, controller }: ParameterProps) {
 }
 
 export function ArtEditSecretParameter({ parameter, controller }: ParameterProps) {
+  const { t, tf } = useUiText();
   const { secretDrafts, setSecretDrafts, globalCredentials, busy } = controller;
   const id = useId(),
     globalId = `${id}-global`;
@@ -209,8 +219,8 @@ export function ArtEditSecretParameter({ parameter, controller }: ParameterProps
         <Checkbox
           checked={draft.useGlobal}
           disabled={busy}
-          label="引用"
-          aria-label={`${parameter.label} 引用全局机密`}
+          label={t("art.edit.param.reference")}
+          aria-label={tf("art.edit.param.referenceGlobalSecretAria", { label: parameter.label })}
           onChange={(event) =>
             setDraft({
               useGlobal: event.target.checked,
@@ -229,8 +239,12 @@ export function ArtEditSecretParameter({ parameter, controller }: ParameterProps
             id={id}
             type="password"
             autoComplete="new-password"
-            aria-label={`${parameter.label} 的默认机密值`}
-            placeholder={draft.storedCredential ? "已保存；输入新值可替换" : "输入机密值"}
+            aria-label={tf("art.edit.param.defaultSecretAria", { label: parameter.label })}
+            placeholder={
+              draft.storedCredential
+                ? t("art.edit.param.secretSavedPlaceholder")
+                : t("art.edit.param.secretEnterPlaceholder")
+            }
             value={draft.value}
             onChange={(event) => setDraft({ value: event.target.value })}
             disabled={busy || draft.useGlobal}
@@ -239,12 +253,16 @@ export function ArtEditSecretParameter({ parameter, controller }: ParameterProps
         <div data-active={draft.useGlobal} aria-hidden={!draft.useGlobal} inert={!draft.useGlobal}>
           <Select
             id={globalId}
-            aria-label={`${parameter.label} 使用的全局机密`}
+            aria-label={tf("art.edit.param.selectedGlobalSecretAria", { label: parameter.label })}
             value={globalCredentialExists ? draft.credential : ""}
             onChange={(event) => setDraft({ credential: event.target.value })}
             disabled={busy || !draft.useGlobal}
           >
-            <option value="">{compatibleCredentials.length ? "选择全局机密" : "暂无匹配的全局机密"}</option>
+            <option value="">
+              {compatibleCredentials.length
+                ? t("art.edit.param.selectGlobalSecret")
+                : t("art.edit.param.noMatchingGlobalSecret")}
+            </option>
             {compatibleCredentials.map((credential) => (
               <option key={credential.name} value={credential.name}>
                 {credential.name}
@@ -254,7 +272,7 @@ export function ArtEditSecretParameter({ parameter, controller }: ParameterProps
         </div>
       </div>
       <div className="art-edit-dialog__secret-status" data-active={showStoredStatus} aria-hidden={!showStoredStatus}>
-        <Badge tone="success">已安全保存到当前 Art</Badge>
+        <Badge tone="success">{t("art.edit.param.savedToArt")}</Badge>
       </div>
     </Panel>
   );

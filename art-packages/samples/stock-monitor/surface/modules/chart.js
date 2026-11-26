@@ -13,9 +13,8 @@ const drawChart = () => {
     const deviceRatio = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
     const pixelRatio = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height));
     const ratio = Math.max(1, Math.min(deviceRatio, pixelRatio));
-    // 给 canvas.width/height 赋值会重新分配后备位图，即使赋的是同一个数字。两块画布在
-    // 上限尺寸下各约 16 MB，而重绘每秒至少一次，还会被 resize 和悬浮额外触发。只在尺寸真的
-    // 变化时赋值；尺寸不变时下面的 clearRect + fillRect 依旧把整块画布清干净。
+    // Assigning canvas.width/height reallocates the backing bitmap even when the value is unchanged
+    // (~16 MB per canvas at the cap). Gate assignment on actual size changes and clear via clearRect + fillRect.
     const nextWidth = Math.floor(width * ratio);
     const nextHeight = Math.floor(height * ratio);
     if (canvas.width !== nextWidth) canvas.width = nextWidth;
@@ -65,9 +64,9 @@ const drawChart = () => {
         chartGeometry = null;
         hideChartTip();
         context.fillStyle = COLORS.muted;
-        context.font = "11px Segoe UI, Microsoft YaHei, sans-serif";
+        context.font = "11px Segoe UI, sans-serif";
         context.textAlign = "center";
-        context.fillText("等待 " + periodLabel + " 行情", width / 2, top + (volumeTop - top) / 2);
+        context.fillText("Waiting for " + periodLabel + " data", width / 2, top + (volumeTop - top) / 2);
         return;
     }
 

@@ -1,4 +1,4 @@
-//! 原生Tile精确Device LAN路由；动作沿既有Wall权限校验，不开放管理员发起。
+//! Exact Device LAN routes for native Tile; actions follow existing Wall permission checks without opening admin initiation.
 use super::lan_http::Request;
 use anyhow::{ensure, Result};
 pub(super) fn allowed(method: &str, path: &str) -> bool {
@@ -55,7 +55,7 @@ pub(super) fn validate(request: &Request) -> Result<()> {
             .is_some_and(|s| !s.is_empty() && s.len() <= 256),
         "Device nonce required"
     );
-    // 原 runtime 独占身份/nonce重放、端点归属、CAS、租约、布局与资源授权，不在 adapter 重造。
+    // The runtime exclusively owns identity/nonce replay, endpoint ownership, CAS, leases, layout, and resource authorization rather than duplicating them in the adapter.
     Ok(())
 }
 pub(super) fn media(path: &str) -> bool {

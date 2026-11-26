@@ -7,22 +7,22 @@ fn otter_art_lists_restore_workflow_param_widget_schema_from_child_art() {
 
     let mut child = ToolDefinition::new(
         "color-transfer",
-        "颜色迁移",
-        "颜色迁移子节点",
+        "Color Transfer",
+        "Color transfer child node",
         ToolExecution::FrameworkArt {
             framework: "process".to_owned(),
         },
     );
     child.params = vec![json!({
         "id": "strength",
-        "label": "迁移强度",
+        "label": "Transfer Strength",
         "widget": "slider",
         "data_type": "number",
         "default": 100,
         "min": 0,
         "max": 100,
         "step": 1,
-        "group": "基础"
+        "group": "Basic"
     })];
     child.outputs = vec![json!({ "name": "output", "type": "image" })];
     child.metadata = Some(json!({
@@ -48,8 +48,8 @@ nodes:
 
     let mut composite = ToolDefinition::new(
         "transfer-composite-art",
-        "颜色迁移复合 Art",
-        "旧版复合 Art 参数元数据不完整",
+        "Color Transfer Composite Art",
+        "Legacy composite Art with incomplete parameter metadata",
         ToolExecution::Workflow {
             workflow_id: "transfer-composite".to_owned(),
             workflow_bindings: Some(WorkflowExecutionBindings {
@@ -73,7 +73,7 @@ nodes:
     composite.params = vec![json!({
         "id": "strength",
         "name": "strength",
-        "label": "迁移强度",
+        "label": "Transfer Strength",
         "widget": "number",
         "type": "number",
         "default": 35
@@ -81,13 +81,13 @@ nodes:
     composite.inputs = vec![
         json!({
             "name": "input",
-            "label": "源图",
+            "label": "Source Image",
             "type": "image",
             "executionType": "image_buffer"
         }),
         json!({
             "name": "input_2",
-            "label": "参考图",
+            "label": "Reference Image",
             "type": "image",
             "executionType": "image_buffer"
         }),
@@ -106,14 +106,14 @@ nodes:
     let capability = serde_json::to_value(capability).expect("serialize capability");
     let param = &capability["parameters"][0];
     assert_eq!(param["id"], "strength");
-    assert_eq!(param["label"], "迁移强度");
+    assert_eq!(param["label"], "Transfer Strength");
     assert_eq!(param["default"], 35);
     assert_eq!(param["widget"], "slider");
     assert_eq!(param["data_type"], "number");
     assert_eq!(param["min"], 0);
     assert_eq!(param["max"], 100);
     assert_eq!(param["step"], 1);
-    assert_eq!(param["group"], "基础");
+    assert_eq!(param["group"], "Basic");
     assert_eq!(capability["metadata"]["capabilities"]["preview"], "shader");
     assert_eq!(
         capability["metadata"]["capabilities"]["requiresFormalExecution"],

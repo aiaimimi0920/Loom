@@ -1,11 +1,11 @@
 // Owns plugin trust, credentials, and publisher identity controls.
 import { Badge, Button, EmptyState, Field, IconButton, Input, Panel, Select } from "@neuro/ui";
+import { uiText, useUiText } from "../../i18n/index.ts";
 import {
   deletePluginCredential,
   getPublisherIdentity,
   listPluginCredentials,
   listPluginTrust,
-  type LoomCredentialDetails,
   type LoomCredentialSummary,
   type LoomPluginTrustPolicy,
   type LoomPluginTrustStore,
@@ -35,6 +35,7 @@ export function PluginSecurityPanel({ baseUrl }: { baseUrl: string }) {
 
 // Drafts, secrets and busy state belong to one daemon; changing it starts a fresh UI session.
 function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
+  const { t, tf } = useUiText();
   const [trust, setTrust] = useState<LoomPluginTrustStore>(defaultPluginTrustStore);
   const [credentials, setCredentials] = useState<LoomCredentialSummary[]>([]);
   const [identityState, setIdentityState] = useState<LoomPublisherIdentityState>({
@@ -81,7 +82,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       setIdentityState(nextIdentity);
     } catch (err) {
       if (version === loadVersion.current) {
-        pushAppToast({ level: "error", text: err instanceof Error ? err.message : "无法读取密钥与安全设置。" });
+        pushAppToast({ level: "error", text: err instanceof Error ? err.message : uiText("security.error.loadFailed") });
       }
     }
   }, [baseUrl]);
@@ -108,7 +109,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     try {
       const details = await revealPluginCredential(baseUrl, credential.name, credential.scope);
       if (revealVersion !== secretRevealVersion.current) return;
-      if (!details) throw new Error("凭据不存在或已被移除。");
+      if (!details) throw new Error(t("security.error.credentialNotFound"));
       setCredentialDraft({
         name: details.name,
         value: details.value,
@@ -117,7 +118,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       });
     } catch (err) {
       if (revealVersion === secretRevealVersion.current) {
-        pushAppToast({ level: "error", text: err instanceof Error ? err.message : "无法读取凭据。" });
+        pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.revealCredentialFailed") });
       }
     } finally {
       if (revealVersion === secretRevealVersion.current) setBusy(null);
@@ -140,7 +141,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       setShowPrivateKey(true);
     } catch (err) {
       if (revealVersion === secretRevealVersion.current) {
-        pushAppToast({ level: "error", text: err instanceof Error ? err.message : "无法读取私钥。" });
+        pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.revealPrivateKeyFailed") });
       }
     } finally {
       if (revealVersion === secretRevealVersion.current) setBusy(null);
@@ -163,9 +164,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       }
       await load();
       setCredentialDraft(null);
-      pushAppToast({ level: "info", text: "已保存" });
+      pushAppToast({ level: "info", text: t("common.saved") });
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "保存失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.saveFailed") });
     } finally {
       setBusy(null);
     }
@@ -177,9 +178,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     const version = loadVersion.current;
     if (
       !(await requestAppConfirmation({
-        title: "删除凭据",
-        message: `删除 ${credential.name} 后，引用该凭据的 Art 可能无法运行。`,
-        confirmLabel: "删除",
+        title: t("security.credential.deleteConfirmTitle"),
+        message: tf("security.credential.deleteConfirmMessage", { name: credential.name }),
+        confirmLabel: t("common.delete"),
       }))
     )
       return;
@@ -189,9 +190,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       await deletePluginCredential(baseUrl, credential.name, credential.scope);
       await load();
       setCredentialDraft(null);
-      pushAppToast({ level: "info", text: "已删除" });
+      pushAppToast({ level: "info", text: t("common.deleted") });
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "删除失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.deleteFailed") });
     } finally {
       setBusy(null);
     }
@@ -202,7 +203,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     try {
       setTrust(await setPluginTrustPolicy(baseUrl, policy));
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "策略保存失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.savePolicyFailed") });
     } finally {
       setBusy(null);
     }
@@ -215,7 +216,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
       setTrust(await trustPluginUser(baseUrl, userId));
       setTrustedUserId("");
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "添加可信用户失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.addTrustedUserFailed") });
     } finally {
       setBusy(null);
     }
@@ -225,9 +226,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     const version = loadVersion.current;
     if (
       !(await requestAppConfirmation({
-        title: "移除可信用户",
-        message: `从信任库移除 ${userId} 后，该用户后续发布的 Art 将不再被自动信任。`,
-        confirmLabel: "移除",
+        title: t("security.trustedUser.removeConfirmTitle"),
+        message: tf("security.trustedUser.removeConfirmMessage", { userId }),
+        confirmLabel: t("common.remove"),
       }))
     )
       return;
@@ -237,7 +238,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     try {
       setTrust(await untrustPluginUser(baseUrl, userId));
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "移除可信用户失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.removeTrustedUserFailed") });
     } finally {
       setBusy(null);
     }
@@ -247,9 +248,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     const version = loadVersion.current;
     if (
       !(await requestAppConfirmation({
-        title: "重置密钥",
-        message: "重置会生成新的私钥和公钥。平台仍需保留旧公钥，才能验证旧版本 Art。",
-        confirmLabel: "重置",
+        title: t("security.identity.resetConfirmTitle"),
+        message: t("security.identity.resetConfirmMessage"),
+        confirmLabel: t("common.reset"),
       }))
     )
       return;
@@ -258,9 +259,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
     try {
       setIdentityState(await rotatePublisherIdentity(baseUrl));
       await load();
-      pushAppToast({ level: "info", text: "密钥已重置" });
+      pushAppToast({ level: "info", text: t("security.identity.resetSuccess") });
     } catch (err) {
-      pushAppToast({ level: "error", text: err instanceof Error ? err.message : "密钥重置失败。" });
+      pushAppToast({ level: "error", text: err instanceof Error ? err.message : t("security.error.resetKeysFailed") });
     } finally {
       setBusy(null);
     }
@@ -282,16 +283,16 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
 
       <section className="security-section security-section--policy">
         <div className="security-policy-row">
-          <Field label="安装策略">
+          <Field label={t("security.policy.label")}>
             <Select
-              aria-label="Art 安装信任原则"
+              aria-label={t("security.policy.ariaLabel")}
               value={trust.policy}
               disabled={busy !== null}
               onChange={(event) => void updatePolicy(event.target.value as LoomPluginTrustPolicy)}
             >
-              <option value="require_signed">安装签名认证成功的</option>
-              <option value="require_trusted">安装签名认证成功且在信任库中用户发布的 Art</option>
-              <option value="allow_unsigned">可安装无签名 Art</option>
+              <option value="require_signed">{t("security.policy.requireSigned")}</option>
+              <option value="require_trusted">{t("security.policy.requireTrusted")}</option>
+              <option value="allow_unsigned">{t("security.policy.allowUnsigned")}</option>
             </Select>
           </Field>
         </div>
@@ -301,14 +302,14 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
             <div className="trusted-user-library__add">
               <Input
                 ref={trustedUserInput}
-                aria-label="可信用户 ID"
+                aria-label={t("security.trustedUser.idAria")}
                 placeholder="L0000000000"
                 value={trustedUserId}
                 onChange={(event) => setTrustedUserId(event.target.value)}
               />
               <IconButton
-                label="添加可信用户"
-                title="添加"
+                label={t("security.trustedUser.addAria")}
+                title={t("common.add")}
                 loading={busy === "trusted-user"}
                 disabled={busy !== null || !/^(?:NU\d{11}|L\d{10})$/.test(trustedUserId.trim())}
                 onClick={() => void addTrustedUser()}
@@ -321,11 +322,13 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
                 <Panel className="trusted-user-library__row" key={userId}>
                   <code title={userId}>{userId}</code>
                   <Badge>
-                    {trust.publishers.filter((key) => key.publisherId === userId && !key.revoked).length} keys
+                    {tf("security.trustedUser.keyCount", {
+                      count: trust.publishers.filter((key) => key.publisherId === userId && !key.revoked).length,
+                    })}
                   </Badge>
                   <IconButton
-                    label={`移除 ${userId}`}
-                    title="移除"
+                    label={tf("security.trustedUser.removeAria", { userId })}
+                    title={t("common.remove")}
                     loading={busy === userId}
                     disabled={busy !== null}
                     onClick={() => void removeTrustedUser(userId)}
@@ -334,7 +337,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
                   </IconButton>
                 </Panel>
               ))}
-              {trust.trustedPublishers.length === 0 ? <EmptyState title="暂无可信用户" /> : null}
+              {trust.trustedPublishers.length === 0 ? <EmptyState title={t("security.trustedUser.empty")} /> : null}
             </div>
           </div>
         ) : null}
@@ -342,7 +345,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
         <div className="publisher-identity">
           <div className="publisher-identity__id-row">
             <div className="publisher-identity__id">
-              <strong>用户 ID：</strong>
+              <strong>{t("security.identity.userIdLabel")}</strong>
               <code title={identity?.userId ?? "L0000000000"}>{identity?.userId ?? "L0000000000"}</code>
             </div>
             <Button
@@ -351,12 +354,12 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
               disabled={busy !== null}
               onClick={() => void resetIdentity()}
             >
-              重置密钥
+              {t("security.identity.resetAction")}
             </Button>
           </div>
           <div className="publisher-identity__keys">
             <div className="publisher-identity__secret">
-              <Field label="私钥">
+              <Field label={t("security.identity.privateKey")}>
                 <Input
                   className="mono-line"
                   readOnly
@@ -366,9 +369,9 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
                 />
               </Field>
               <IconButton
-                label={showPrivateKey ? "隐藏私钥" : "显示私钥"}
+                label={showPrivateKey ? t("security.identity.hidePrivateKey") : t("security.identity.showPrivateKey")}
                 aria-pressed={showPrivateKey}
-                title={showPrivateKey ? "隐藏" : "显示"}
+                title={showPrivateKey ? t("common.hide") : t("common.show")}
                 loading={busy === "private-key"}
                 disabled={busy !== null || !identityState.hasPrivateKey}
                 onClick={() => void togglePrivateKey()}
@@ -376,7 +379,7 @@ function PluginSecuritySession({ baseUrl }: { baseUrl: string }) {
                 <ArtIcon kind="eye" />
               </IconButton>
             </div>
-            <Field label="公钥">
+            <Field label={t("security.identity.publicKey")}>
               <Input className="mono-line" readOnly value={identity?.publicKey ?? ""} />
             </Field>
           </div>

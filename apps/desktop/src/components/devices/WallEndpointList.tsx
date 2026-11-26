@@ -1,5 +1,6 @@
 import type { WallState } from "../../services/loomApi/wallTypes.ts";
 import { Badge, Button, EmptyState, Panel } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { wallOutputStatus } from "./WallPresentationControls.tsx";
 
 export function WallEndpointList({
@@ -11,10 +12,11 @@ export function WallEndpointList({
   disabled: boolean;
   identify: (endpointId: string) => Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   return (
-    <section aria-label="终端输出">
-      <h3>已注册输出 · {state.endpoints.length}</h3>
-      {!state.endpoints.length && <EmptyState title="暂无已注册输出" />}
+    <section aria-label={t("devices.wall.endpoints.ariaLabel")}>
+      <h3>{tf("devices.wall.endpoints.heading", { count: state.endpoints.length })}</h3>
+      {!state.endpoints.length && <EmptyState title={t("devices.wall.endpoints.empty")} />}
       <div className="wall-endpoints">
         {state.endpoints.map((status) => {
           const { endpoint, online, identification } = status;
@@ -26,7 +28,9 @@ export function WallEndpointList({
             <Panel className="wall-endpoint" key={endpoint.endpointId} data-endpoint-id={endpoint.endpointId}>
               <strong>{endpoint.display?.name ?? endpoint.outputId}</strong>
               <div className="wall-endpoint-status">
-                <Badge tone={online ? "success" : "neutral"}>{online ? "在线" : "离线"}</Badge>
+                <Badge tone={online ? "success" : "neutral"}>
+                  {online ? t("devices.status.online") : t("devices.status.offline")}
+                </Badge>
                 <span>
                   {endpoint.pixelSize.width} × {endpoint.pixelSize.height}
                 </span>
@@ -35,36 +39,60 @@ export function WallEndpointList({
                 {endpoint.deviceId} / {endpoint.outputId}
               </span>
               <span>
-                显示：{endpoint.renderModes.join(" / ")}；输入：{endpoint.inputCapabilities.join(" / ") || "无"}
+                {tf("devices.wall.endpoints.capabilities", {
+                  render: endpoint.renderModes.join(" / "),
+                  input: endpoint.inputCapabilities.join(" / ") || t("devices.common.none"),
+                })}
               </span>
               <span className="n-muted">
-                场景调度：{endpoint.scheduledPresentation ? "支持" : "未声明"}
+                {tf("devices.wall.endpoints.scheduling", {
+                  status: endpoint.scheduledPresentation
+                    ? t("devices.wall.endpoints.schedulingSupported")
+                    : t("devices.wall.endpoints.schedulingUndeclared"),
+                })}
                 {status.scene
-                  ? ` · v${status.scene.revision} ${status.scene.appliedAtMs !== null ? "已提交绘制" : status.scene.prepared ? "准备就绪" : "准备中"}`
+                  ? tf("devices.wall.endpoints.sceneStatus", {
+                      revision: status.scene.revision,
+                      state:
+                        status.scene.appliedAtMs !== null
+                          ? t("devices.wall.endpoints.sceneCommitted")
+                          : status.scene.prepared
+                            ? t("devices.wall.endpoints.scenePrepared")
+                            : t("devices.wall.endpoints.scenePreparing"),
+                    })
                   : ""}
-                {status.scene?.clockUncertaintyMs != null ? ` · 时钟估计 ±${status.scene.clockUncertaintyMs} ms` : ""}
+                {status.scene?.clockUncertaintyMs != null
+                  ? tf("devices.wall.endpoints.clockUncertainty", { ms: status.scene.clockUncertaintyMs })
+                  : ""}
               </span>
               <div className="wall-endpoint-assignment">
                 <Badge tone={control ? "warning" : "neutral"}>
-                  {wall ? wallOutputStatus(wall, control, status) : "未分配墙面"}
+                  {wall ? wallOutputStatus(wall, control, status) : t("devices.wall.endpoints.unassigned")}
                 </Badge>
                 {wall && <code>{wall.wallId}</code>}
               </div>
               <div className="wall-endpoint-action">
                 <Button
-                  aria-label={`识别屏幕 ${endpoint.display?.name ?? endpoint.outputId}`}
+                  aria-label={tf("devices.wall.endpoints.identifyAriaLabel", {
+                    name: endpoint.display?.name ?? endpoint.outputId,
+                  })}
                   disabled={disabled || !online || !endpoint.display?.canIdentify || Boolean(control || identification)}
                   onClick={() => void identify(endpoint.endpointId)}
                 >
-                  识别屏幕
+                  {t("devices.wall.endpoints.identifyAction")}
                 </Button>
                 {(identification || !endpoint.display?.canIdentify || control) && (
                   <span role="status">
                     {identification
-                      ? `${identification.applied ? "正在识别" : "等待输出确认"} · ${Math.ceil(identification.remainingMs / 1000)} 秒`
+                      ? tf("devices.wall.endpoints.identifyingStatus", {
+                          state: identification.applied
+                            ? t("devices.wall.endpoints.identifyingActive")
+                            : t("devices.wall.endpoints.identifyingWaiting"),
+                          seconds: Math.ceil(identification.remainingMs / 1000),
+                        })
                       : !endpoint.display?.canIdentify
-                        ? "终端未声明识别能力"
-                        : "恢复显示后可识别"}
+                        ? t("devices.wall.endpoints.cannotIdentify")
+                        : t("devices.wall.endpoints.resumeBeforeIdentify")}
                   </span>
                 )}
               </div>

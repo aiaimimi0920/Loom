@@ -39,7 +39,7 @@ test("MCP panels and navigation use standard components, retaining domain layout
     assert.match(text, /<Panel\b/);
     assert.doesNotMatch(text, /glass-card|art-(?:registry|store)-card|<article\b/);
   }
-  assert.match(services, /<Badge tone=\{enabled \? "success" : "neutral"\}>\s*\{enabled \? "已启用" : "已禁用"\}\s*<\/Badge>/);
+  assert.match(services, /<Badge tone=\{enabled \? "success" : "neutral"\}>/);
   const layout = readFileSync(new URL("../styles/mcp-hub.css", import.meta.url), "utf8");
   assert.match(layout, /\.mcp-card__status > \.n-badge \{[^}]*max-width: 100%/);
   assert.match(layout, /\.mcp-card__status-text \{[^}]*overflow: hidden;\s*text-overflow: ellipsis/);

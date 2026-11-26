@@ -1,4 +1,4 @@
-// 云端来源不授予额外信任：转给与手动安装相同的宿主生命周期入口。
+// Cloud origin grants no extra trust: forward through the same host lifecycle entrypoints as manual installation.
 #[allow(clippy::too_many_arguments)]
 fn install_asset_library_package(
     package: asset_library::InstallPackage,
@@ -39,7 +39,7 @@ fn install_asset_library_package(
         body: serde_json::to_string(&json!({"zipBase64": BASE64.encode(&package.bytes)}))?,
     };
     let response = if package.kind == "capability" {
-        // 复用原路由的变更锁和清单广播；安装后不自动批准权限或启用。
+        // Reuse the original route's mutation lock and manifest broadcast; never auto-approve permissions or enable after installation.
         route_capability_plugins(
             &request,
             path,
@@ -50,7 +50,7 @@ fn install_asset_library_package(
         )
         .expect("fixed capability install route")?
     } else if package.kind == "mcp" {
-        // 复用宿主验签和配置持久化；更新保留已有启用状态与凭据绑定。
+        // Reuse host signature verification and config persistence; updates preserve existing enabled state and credential bindings.
         install_mcp_server_package(
             &request.body,
             mcp_servers,
@@ -58,7 +58,7 @@ fn install_asset_library_package(
             &mcp_server_store_path(control_plane_root),
         )?
     } else {
-        // 请求不含 bundledCatalog，且 allowlist 显式为空，不能走内置包信任旁路。
+        // Request omits bundledCatalog and passes an explicitly empty allowlist so bundled package trust bypass is never used.
         install_art(
             &request.body,
             tool_registry,

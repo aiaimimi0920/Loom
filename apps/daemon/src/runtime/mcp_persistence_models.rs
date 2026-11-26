@@ -436,7 +436,7 @@ impl Default for OtterGeneralSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_owned(),
-            language: "zh-Hans".to_owned(),
+            language: "en".to_owned(),
             close_to_tray: true,
         }
     }

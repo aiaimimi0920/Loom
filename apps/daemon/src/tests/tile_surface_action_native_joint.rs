@@ -1,4 +1,4 @@
-// 真实LAN→离屏Tile实际点击/显式选择→原executor→真实framework/Art；独立核权威正式结果。
+// Real LAN -> offscreen Tile clicks and explicit choices -> original executor -> live framework/Art; independently verifies authoritative formal results.
 mod actions {
     use super::*;
     include!("tile_surface_value_native_joint.rs");
@@ -10,7 +10,7 @@ mod actions {
     impl RootGuard {
         fn new(root: &Path) -> Self {
             let mut previous = Vec::new();
-            // 现有受管环境只继承TEMP/TMP；测试产物在独占root，不写Art安装包。
+            // Managed child environment inherits only TEMP/TMP; test artifacts stay in the isolated root without writing into Art package directories.
             for key in ["LOOM_CONTROL_PLANE_ROOT", "TEMP", "TMP"] {
                 previous.push((key, std::env::var_os(key)));
                 std::env::set_var(key, root);
@@ -162,7 +162,7 @@ mod actions {
             source(&f, instance)["eventAcks"][&rejected]["status"],
             "awaiting_confirmation"
         );
-        // 识别不更换layout/view；待确认身份必须在暂停/真实paint/恢复后仍可显式拒绝。
+        // Identification preserves the layout/view; pending confirmation identity must remain explicitly rejectable across pause, real paint, and resume.
         let (status, identifying) = admin(
             f.port,
             "POST",

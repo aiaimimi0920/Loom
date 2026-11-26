@@ -1,4 +1,4 @@
-//! 单次调用的取消与最新进度槽；不执行用户回调、不轮询，不为进度建立无界队列。
+//! Per-invocation cancellation and latest-progress slot; executes no user callbacks, avoids polling, and never builds unbounded progress queues.
 use crate::error::{CapabilityHostError as Error, HostResult};
 use loom_protocol::{CapabilityRuntimeMessage, CapabilityRuntimeStatus};
 use serde_json::Value;
@@ -36,7 +36,7 @@ impl InvocationControl {
     pub fn new() -> Self {
         Self::default()
     }
-    /// 可在调用登记前取消；终态后的取消无效，不会改变已经交付的成功。
+    /// May be cancelled before invocation registration; cancellation after a terminal state is a no-op and never alters an already delivered success.
     pub fn cancel(&self) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -112,7 +112,7 @@ impl InvocationControl {
         }
     }
     pub(crate) fn publish(&self, status: CapabilityRuntimeStatus, payload: &Option<Value>) -> bool {
-        // Frame 已有 4 MiB 上限；快照另限 4 KiB，禁止持久保留大 payload。
+        // Frames already carry a 4 MiB ceiling; snapshots are further capped at 4 KiB so large payloads are never retained persistently.
         if !matches!(
             status,
             CapabilityRuntimeStatus::Accepted | CapabilityRuntimeStatus::Progress

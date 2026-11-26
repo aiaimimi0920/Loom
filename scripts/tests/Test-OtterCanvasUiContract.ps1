@@ -55,8 +55,8 @@ $desktopRust = ($desktopRustPaths | ForEach-Object {
     Get-Content -Raw -Encoding UTF8 $_
 }) -join "`n"
 $visualWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x6253, 0x5F00, 0x53EF, 0x89C6, 0x5316, 0x5DE5, 0x4F5C, 0x6D41)
-$saveWorkflowLabel = ConvertFrom-UnicodeCodePoints @(0x4FDD, 0x5B58, 0x5DE5, 0x4F5C, 0x6D41)
-$executionFailureLabel = ConvertFrom-UnicodeCodePoints @(0x6267, 0x884C, 0x5931, 0x8D25)
+$saveWorkflowLabel = 't("otter.canvas.saveWorkflow")'
+$executionFailureLabel = "Execution failed"
 $quotaExceededErrorMessage = ConvertFrom-UnicodeCodePoints @(
     0x989D, 0x5EA6, 0x4E0D, 0x8DB3, 0xFF08, 0x0048, 0x0054, 0x0054, 0x0050,
     0x0020, 0x0034, 0x0030, 0x0032, 0xFF09

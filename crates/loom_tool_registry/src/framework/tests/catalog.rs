@@ -3,10 +3,10 @@ use super::*;
 
 #[test]
 fn official_framework_names_match_ui_vocabulary() {
-    assert_eq!(framework_name("cloud_api"), "云端");
+    assert_eq!(framework_name("cloud_api"), "Cloud");
     assert_eq!(framework_name("mcp"), "MCP");
-    assert_eq!(framework_name("process"), "脚本");
-    assert_eq!(framework_name("workflow"), "流程");
+    assert_eq!(framework_name("process"), "Script");
+    assert_eq!(framework_name("workflow"), "Workflow");
 }
 
 #[test]

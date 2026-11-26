@@ -1,4 +1,4 @@
-//! 确认状态归原Task；仅一个挑战和决定，不创建另一任务表、线程或授权期限。
+//! Confirmation state belongs to the owning Task: one challenge and one decision, without spawning a separate task table, thread, or grant lifetime.
 use super::*;
 use loom_capability_runtime::{CapabilityHostError, CommandScope};
 use loom_protocol::local_art::service::confirmation as wire;
@@ -48,7 +48,7 @@ impl Gate {
         })
     }
     pub fn current(&self) -> bool {
-        // 不阻塞初始化持有的package锁；任一贡献换代均保守撤销本次待确认/在途调用。
+        // Never block on the package lock held during initialization; any contribution generation change conservatively revokes pending or in-flight calls.
         self.runtime.generation() == self.generation
     }
     pub fn wake(&self) {

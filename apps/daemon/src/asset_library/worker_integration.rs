@@ -1,4 +1,4 @@
-//! 显式运行的跨仓库测试；仅连接独占回环 Worker，不改变正式服务地址或准入。
+//! Explicitly invoked cross-repository test; connects only to an isolated loopback Worker without altering production service origins or admission.
 use super::*;
 
 #[test]

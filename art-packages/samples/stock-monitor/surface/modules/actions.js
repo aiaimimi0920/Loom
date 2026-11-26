@@ -1,7 +1,7 @@
 // Surface action dispatch, deadlines and refresh scheduling.
-// 客户端兜底计时器必须晚于宿主的动作预算：优先用运行时回传的真实预算，没有回传时
-// 退回镜像常量。宿主超时既不会推补丁也不会推进 revision，所以这条计时器早于宿主
-// 触发就会在请求仍在运行时解锁控件，允许第二次并发请求。
+// Keep the client fallback deadline later than the host action budget: prefer the runtime-published
+// budget and fall back to mirrored constants before the first response arrives. Host timeouts emit
+// neither patches nor revision bumps, so firing earlier would unlock controls while a request is still in flight.
 const hostBudgetOf = (action) => {
     const published = asObject(stateOf(snapshotValue).actionBudgetsMillis);
     const declared = asNumber(published[action]);
@@ -54,7 +54,7 @@ const emitAction = (nodeId, eventName, action, eventClass, payload) => {
             pendingPeriod = null;
             pendingRequestId = null;
             if (refs.status) {
-                refs.status.textContent = action === "stock_period_commit" ? "周期切换超时" : "刷新超时";
+                refs.status.textContent = action === "stock_period_commit" ? "Period switch timed out" : "Refresh timed out";
                 refs.status.className = "stock-status is-error";
             }
         }, clientDeadlineOf(action));
@@ -65,7 +65,7 @@ const emitAction = (nodeId, eventName, action, eventClass, payload) => {
         event: eventName,
         action: action,
         class: eventClass,
-        // requestId 让运行时把结果标注回状态里，render 才能只解锁真正属于这次动作的 revision。
+        // Echo requestId through authoritativeState so render() only unlocks on the revision produced by this action.
         payload: Object.assign({}, payload || {}, { requestId: requestId })
     });
     if (!accepted) {
@@ -94,7 +94,7 @@ const requestRefresh = () => emitAction("refresh", "click", "stock_refresh", "di
     code: normalizeCode(refs.symbol && refs.symbol.value)
 });
 
-// 准实时通道：只拉最新一笔报价，不重取整段 K 线，所以可以按秒级触发。
+// Near-realtime channel: fetches only the latest order book/tape without refetching full K-lines.
 const requestTick = () => {
     if (!tickChannelEnabled()) return requestRefresh();
     const accepted = emitAction("refresh", "tick", TICK_ACTION, "discrete", {
@@ -105,7 +105,7 @@ const requestTick = () => {
         ticksSinceFullRefresh += 1;
         return true;
     }
-    // 只有这次拒绝真的关掉了通道才退回整段刷新；被 pending 挡住时保持静默。
+    // Fall back to a full refresh only when rejection disabled the tick channel; stay quiet if blocked by pending.
     if (!tickChannelEnabled()) return requestRefresh();
     return false;
 };
@@ -116,9 +116,9 @@ const refreshPlan = (intervalSeconds, marketStatusValue) => {
         : DEFAULT_INTERVAL_SECONDS;
     const marketStatus = text(marketStatusValue, text(stateOf(snapshotValue).marketStatus, "closed"));
     const tickCapable = tickChannelEnabled();
-    // 休市时秒级轮询没有新成交，退到 30 秒，避免空转打上游。
+    // Closed markets produce no new trades at second-level cadence; floor at 30s to avoid idle upstream load.
     const requested = marketStatus === "open" ? normalized : Math.max(normalized, CLOSED_MARKET_MIN_SECONDS);
-    // 没有准实时通道时不能继续按秒级发整段快照（每次四路 MCP 调用），把节奏抬到整段刷新周期。
+    // Without the tick channel, raise cadence to the full-refresh period so 1s polling never triggers four MCP calls per second.
     const cadence = tickCapable ? requested : Math.max(requested, FULL_REFRESH_SECONDS);
     const usesTick = tickCapable && cadence < FULL_REFRESH_SECONDS;
     return {
@@ -140,8 +140,8 @@ const setRefreshTimer = (intervalSeconds) => {
     if (refreshTimer !== null) clearInterval(refreshTimer);
     refreshTimer = null;
     if (disposed || suspended) return;
-    // 单通道：tick 只更新报价，所以每累计满一个整段刷新周期就把这一拍升级为整段刷新补齐
-    // K 线。两个独立定时器同频时慢通道会被 tick 永久抢占，K 线从此不再推进。
+    // Single timer channel: promote every N-th tick to a full refresh so K-lines advance without a
+    // separate slow timer getting perpetually starved by in-flight ticks.
     refreshTimer = setInterval(() => {
         if (pending || tickPending) return;
         if (plan.usesTick && ticksSinceFullRefresh < plan.ticksPerFullRefresh) requestTick();

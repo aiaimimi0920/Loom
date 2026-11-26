@@ -1,4 +1,4 @@
-//! 显式可询问调用；请求询问不是批准，挑战不混入不可信runtime进度。
+//! Explicit promptable service call; requesting a prompt is not approval, and confirmation challenges are never mixed into untrusted runtime progress.
 use super::{image_output, images, Control, Error, Owner, Reply, Status, Submit};
 use serde::{Deserialize, Serialize};
 pub const PROTOCOL: &str = "loom.art.local.service.confirmation.v1";

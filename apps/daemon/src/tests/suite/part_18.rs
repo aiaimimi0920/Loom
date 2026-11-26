@@ -38,7 +38,7 @@ fn daemon_otter_bridge_executes_mcp_image_search_art_node_image_output() {
                 Some(
                     r#"{
               "id": "fixture-image-search-art",
-              "name": "图片搜索",
+              "name": "Image Search",
               "description": "Execute fixture MCP image search through Otter bridge",
               "enabled": true,
               "execution": {

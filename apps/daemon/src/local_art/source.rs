@@ -112,7 +112,7 @@ pub(super) fn resolve(s: &Services<'_>, grant: &Grant) -> LocalResult<Loaded> {
         return Err(fail(409, "local_art_source_invalid"));
     }
     Ok(Loaded {
-        // 旧协议不消费端口；无效声明仅在显式新协议被请求时拒绝，不改旧执行合同。
+        // Legacy protocols do not consume ports; invalid declarations fail only when the new protocol is explicitly requested, preserving legacy execution contracts.
         ports: super::source_ports::resolve(&tool).ok(),
         visibility: super::source_ports::visibility(&tool).ok(),
         bytes,

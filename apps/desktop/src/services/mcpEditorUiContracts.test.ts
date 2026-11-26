@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { uiTextFor } from "../i18n/index.ts";
 
 const server = readFileSync(new URL("../components/mcp/McpServerDialog.tsx", import.meta.url), "utf8");
 const credentials = readFileSync(new URL("../components/mcp/McpCredentialDialog.tsx", import.meta.url), "utf8");
@@ -10,15 +11,27 @@ const shortcutsStyle = readFileSync(new URL("../styles/settings-shortcuts.css", 
 const hub = readFileSync(new URL("../components/mcp/McpHub.tsx", import.meta.url), "utf8");
 
 test("MCP editor fields delegate labels and identity to standard Field", () => {
-  for (const label of ["名称", "ID", "描述", "连接方式", "启动命令", "参数", "环境变量", "MCP 地址", "请求头"]) {
-    assert.ok(server.includes(`<Field label="${label}">`), label);
+  for (const key of [
+    "mcp.dialog.field.name",
+    "mcp.dialog.field.id",
+    "mcp.dialog.field.description",
+    "mcp.dialog.field.transport",
+    "mcp.dialog.field.command",
+    "mcp.dialog.field.args",
+    "mcp.dialog.field.environment",
+    "mcp.dialog.field.url",
+    "mcp.dialog.field.headers",
+  ]) {
+    assert.ok(server.includes(`<Field label={t("${key}")}>`), key);
+    assert.ok(uiTextFor("en", key).length > 0);
+    assert.ok(uiTextFor("zh-Hans", key).length > 0);
   }
   for (const source of [server, credentials]) {
     assert.match(source, /\bField\b[^;]+from "@neuro\/ui"/);
     assert.doesNotMatch(source, /<label\b|mcp-server-dialog__warning/);
   }
-  assert.match(credentials, /<Field label=\{`\$\{requirement\.label\}/);
-  assert.match(credentials, /<EmptyState title="此 MCP 服务没有声明凭据槽位。"/);
+  assert.match(credentials, /<Field\s+label=\{tf\(/);
+  assert.match(credentials, /<EmptyState title=\{t\("mcp\.credentials\.empty"\)\} \/>/);
   assert.doesNotMatch(
     mcpStyle,
     /\.mcp-server-dialog__(?:scroll|grid|credential)\s*>\s*label|\.mcp-server-dialog__warning/,
@@ -51,17 +64,17 @@ test("all seven MCP diagnostics remain standard notices with stable IDs and fiel
 test("loading keeps MCP action labels while mutation and secret handling remain application-owned", () => {
   for (const source of [server, credentials]) {
     assert.match(source, /type="submit" loading=\{busy\} disabled=\{!canSave\}/);
-    assert.doesNotMatch(source, /busy \? "(?:处理中|保存中)"/);
+    assert.doesNotMatch(source, /busy \?/);
   }
-  assert.match(server, /editor\.mode === "install" \? "安装" : "保存"/);
-  assert.match(credentials, />\s*保存凭据\s*<\/Button>/);
+  assert.match(server, /editor\.mode === "install" \? t\("mcp\.action\.install"\) : t\("mcp\.action\.save"\)/);
+  assert.match(credentials, />\s*\{t\("mcp\.credentials\.save"\)\}\s*<\/Button>/);
   assert.match(credentials, /void onSave\(enteredValues, \[\.\.\.clear\]\)/);
   assert.match(credentials, /type="password"/);
   assert.match(credentials, /disabled=\{clear\.has\(requirement\.id\)\}/);
 });
 
 test("quick binding uses standard Field without moving business key capture into the package", () => {
-  assert.match(shortcuts, /<Field label="Art">/);
+  assert.match(shortcuts, /<Field label=(?:"Art"|\{t\([^)]+\)\})>/);
   assert.doesNotMatch(shortcuts + shortcutsStyle, /quick-binding-dialog__art/);
   assert.match(shortcuts, /<ShortcutSlotsEditor\s+value=\{quickBindingEditor\}/);
   assert.match(shortcuts, /onEscapeKeyDown=\{captureEscape\}/);
@@ -77,14 +90,17 @@ test("MCP success closes only after actions unlock and failed mutations keep the
     /finally \{[\s\S]*?setBusyServerId\(null\);\s*setBusyMarketplaceId\(null\);[\s\S]*?setEditor\(null\);/,
   );
   assert.equal((persist.match(/setEditor\(null\)/g) || []).length, 1);
-  const credentials = hub.slice(hub.indexOf("const saveCredentials ="), hub.indexOf("const normalizedServiceSearch ="));
-  assert.match(credentials, /let updated = false;/);
+  const credentialSave = hub.slice(
+    hub.indexOf("const saveCredentials ="),
+    hub.indexOf("const normalizedServiceSearch ="),
+  );
+  assert.match(credentialSave, /let updated = false;/);
   assert.match(
-    credentials,
+    credentialSave,
     /await updateMcpServerCredentials\(baseUrl, server\.id, values, clear\);\s*updated = true;/,
   );
   assert.match(
-    credentials,
+    credentialSave,
     /finally \{[\s\S]*?setBusyServerId\(null\);[\s\S]*?if \(updated\) setCredentialServer\(null\);/,
   );
 });

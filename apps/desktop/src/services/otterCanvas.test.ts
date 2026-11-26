@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { setLanguage, uiTextFor } from "../i18n/index.ts";
 import {
   buildOtterWorkflowInstantiationGraph,
   edgeEndpoints,
@@ -89,7 +90,7 @@ test("restores a saved Otter canvas as a desktop instantiation graph", () => {
       {
         id: "resize",
         kind: "art",
-        label: "调整尺寸",
+        label: "Resize",
         artId: "resize-art",
         x: 640,
         y: 220,
@@ -119,7 +120,7 @@ test("restores a saved Otter canvas as a desktop instantiation graph", () => {
     position: { x: 100, y: 200 },
     measured: { width: 500, height: 250 },
     data: {
-      label: "截图节点",
+      label: "Screenshot node",
       w: 500,
       h: 250,
       params: {},
@@ -137,7 +138,7 @@ test("restores a saved Otter canvas as a desktop instantiation graph", () => {
     measured: { width: 260, height: 180 },
     data: {
       artId: "resize-art",
-      label: "调整尺寸",
+      label: "Resize",
       w: 260,
       h: 180,
       params: { width: 512 },
@@ -173,7 +174,7 @@ test("art error nodes surface execution failure instead of reusing the preview i
       kind: "art",
       artId: "cloud-upscale",
       status: "error",
-      errorMessage: "额度不足（HTTP 402）",
+      errorMessage: "Quota exceeded (HTTP 402)",
       previewAvailable: true,
       previewUrl: "/v1/hook-bridge/canvas/nodes/failed-art/preview",
     },
@@ -182,32 +183,44 @@ test("art error nodes surface execution failure instead of reusing the preview i
 
   assert.deepEqual(presentation, {
     showPreviewImage: false,
-    placeholderText: "执行失败",
-    detailText: "额度不足（HTTP 402）",
+    placeholderText: "Execution failed",
+    detailText: "Quota exceeded (HTTP 402)",
     placeholderTone: "error",
   });
 });
 
-test("ready nodes still use preview unavailable when no preview can be rendered", () => {
+test("ready nodes still use preview unavailable when no preview can be rendered", (context) => {
+  context.after(() => {
+    setLanguage("en");
+  });
+
+  const failedPreviewNode = {
+    ...snapshot.nodes[0],
+    id: "ready-art",
+    kind: "art" as const,
+    artId: "cloud-upscale",
+    status: "ready" as const,
+    previewAvailable: true,
+    previewUrl: "/v1/hook-bridge/canvas/nodes/ready-art/preview",
+  };
   const presentation = getOtterCanvasNodePresentation(
-    {
-      ...snapshot.nodes[0],
-      id: "ready-art",
-      kind: "art",
-      artId: "cloud-upscale",
-      status: "ready",
-      previewAvailable: true,
-      previewUrl: "/v1/hook-bridge/canvas/nodes/ready-art/preview",
-    },
+    failedPreviewNode,
     { hasResolvedPreview: false, previewFailed: true },
   );
 
   assert.deepEqual(presentation, {
     showPreviewImage: false,
-    placeholderText: "预览不可用",
+    placeholderText: "Preview unavailable",
     detailText: null,
     placeholderTone: "neutral",
   });
+
+  setLanguage("zh-Hans");
+  const localizedPresentation = getOtterCanvasNodePresentation(
+    failedPreviewNode,
+    { hasResolvedPreview: false, previewFailed: true },
+  );
+  assert.equal(localizedPresentation.placeholderText, uiTextFor("zh-Hans", "otter.node.previewUnavailable"));
 });
 
 test("resolves edge endpoints from fitted node centers", () => {

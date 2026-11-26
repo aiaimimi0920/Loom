@@ -1,6 +1,7 @@
 // Desktop/Web server connection mode selector (`local` bundled core vs `remote` LAN Loom server).
 import { Button } from "@neuro/ui";
 import { useEffect, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { pushAppToast } from "../feedback/AppFeedback";
 import {
   getLoomConnectionProfile,
@@ -11,6 +12,7 @@ import {
 } from "../../services/loomRuntimeTarget";
 
 export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
+  const { t, tf } = useUiText();
   const desktopShell = isDesktopTauriShell();
   const [status, setStatus] = useState<LoomConnectionStatus | null>(null);
   const [mode, setMode] = useState<LoomConnectionMode>("local");
@@ -37,11 +39,11 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
 
   if (!desktopShell) {
     return (
-      <section className="settings-card" aria-label="Loom 服务端连接模式">
+      <section className="settings-card" aria-label={t("settings.connection.ariaLabel")}>
         <div className="settings-row">
           <div>
-            <strong>当前运行形态：Web 管理控制台</strong>
-            <p className="settings-muted">已通过浏览器直连当前 Loom 服务端（{baseUrl}）。</p>
+            <strong>{t("settings.connection.webTitle")}</strong>
+            <p className="settings-muted">{tf("settings.connection.webDescription", { baseUrl })}</p>
           </div>
         </div>
       </section>
@@ -63,8 +65,8 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
       pushAppToast({
         level: "info",
         text: updated.mode === "remote"
-          ? `已切换至远程 Loom 服务端：${updated.activeUrl}`
-          : "已切换回本机内置 Loom 核心服务",
+          ? tf("settings.connection.switchedRemote", { url: updated.activeUrl })
+          : t("settings.connection.switchedLocal"),
       });
     } catch (error) {
       pushAppToast({
@@ -77,34 +79,36 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
   };
 
   return (
-    <section className="settings-card" aria-label="Loom 服务端连接模式">
+    <section className="settings-card" aria-label={t("settings.connection.ariaLabel")}>
       <div className="settings-row">
         <div>
-          <strong>Loom 核心连接模式</strong>
+          <strong>{t("settings.connection.modeTitle")}</strong>
           <p className="settings-muted">
-            可管理本机内置 <code>loom-daemon</code>，或连接家庭局域网 NAS / Linux 主机上的远程 Loom 服务端。
+            {t("settings.connection.modeDescriptionPrefix")}
+            <code>loom-daemon</code>
+            {t("settings.connection.modeDescriptionSuffix")}
           </p>
         </div>
         <select
-          aria-label="核心连接模式"
+          aria-label={t("settings.connection.modeSelectAria")}
           value={mode}
           onChange={(event) => setMode(event.target.value as LoomConnectionMode)}
         >
-          <option value="local">本机内置核心（默认）</option>
-          <option value="remote">连接局域网 / 远程 Loom 服务端</option>
+          <option value="local">{t("settings.connection.modeLocal")}</option>
+          <option value="remote">{t("settings.connection.modeRemote")}</option>
         </select>
       </div>
       {mode === "remote" ? (
         <div className="settings-stack" style={{ display: "grid", gap: "0.65rem", marginTop: "0.75rem" }}>
           <input
             type="url"
-            placeholder="例如 http://192.168.1.50:8765 或 https://loom.example.com"
+            placeholder={t("settings.connection.remoteUrlPlaceholder")}
             value={remoteUrl}
             onChange={(event) => setRemoteUrl(event.target.value)}
           />
           <input
             type="text"
-            placeholder="服务端备注名称（可选，如 客厅 NAS）"
+            placeholder={t("settings.connection.serverLabelPlaceholder")}
             value={serverLabel}
             onChange={(event) => setServerLabel(event.target.value)}
           />
@@ -112,8 +116,8 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
             type="password"
             placeholder={
               status?.hasRemoteToken
-                ? "已保存远程令牌（留空保持不变，输入新值覆盖）"
-                : "输入远程 Loom daemon-token"
+                ? t("settings.connection.remoteTokenSavedPlaceholder")
+                : t("settings.connection.remoteTokenPlaceholder")
             }
             value={remoteToken}
             onChange={(event) => setRemoteToken(event.target.value)}
@@ -122,7 +126,7 @@ export function ConnectionModeSettingsPanel({ baseUrl }: { baseUrl: string }) {
       ) : null}
       <div className="settings-row" style={{ marginTop: "0.75rem", justifyContent: "flex-end" }}>
         <Button variant="primary" disabled={saving} onClick={() => void handleSave()}>
-          {saving ? "正在切换..." : "保存连接模式"}
+          {saving ? t("settings.connection.saving") : t("settings.connection.save")}
         </Button>
       </div>
     </section>

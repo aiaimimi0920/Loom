@@ -1,4 +1,4 @@
-//! 仅转发一个已授权对象；aria2 不持有远端凭据，也不能选择远端地址。
+//! Relays only a single authorized object; aria2 holds no remote credentials and cannot choose remote endpoints.
 use super::{error, Result};
 #[cfg(test)]
 #[path = "aria2_relay_tests.rs"]
@@ -107,7 +107,7 @@ fn forward(
     path: &str,
     size: u64,
 ) -> std::io::Result<()> {
-    // Windows 的 accept 会继承监听器非阻塞模式；转发线程需要有超时的阻塞 I/O。
+    // Windows `accept` inherits nonblocking mode from the listener; relay worker threads require blocking I/O with timeouts.
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;

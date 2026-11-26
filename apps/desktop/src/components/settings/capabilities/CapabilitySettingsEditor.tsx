@@ -1,6 +1,7 @@
 // Renders bounded, manifest-declared fields without loading plugin UI code.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Disclosure, EmptyState, Field, Input, Notice, Select, Switch } from "@neuro/ui";
+import { uiText, useUiText } from "../../../i18n/index.ts";
 import {
   getCapabilitySettings,
   saveCapabilitySettings,
@@ -64,6 +65,7 @@ export function CapabilitySettingsEditor({
   qualifiedId: string;
   disabled: boolean;
 }) {
+  const { t } = useUiText();
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<CapabilitySettingsSnapshot | null>(null);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -83,7 +85,7 @@ export function CapabilitySettingsEditor({
       setError(null);
     }).catch((reason: unknown) => {
       if (generation === generationRef.current) {
-        setError(reason instanceof Error ? reason.message : "无法读取能力扩展设置。");
+        setError(reason instanceof Error ? reason.message : uiText("settings.capabilities.pluginSettings.loadFailed"));
       }
     }).finally(() => {
       if (generation === generationRef.current) setLoading(false);
@@ -116,20 +118,20 @@ export function CapabilitySettingsEditor({
       );
       setSnapshot({ ...snapshot, settings });
       setDraft(settings.values);
-      pushAppToast({ level: "info", text: "能力扩展设置已保存。" });
+      pushAppToast({ level: "info", text: uiText("settings.capabilities.pluginSettings.savedToast") });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "无法保存能力扩展设置。");
+      setError(reason instanceof Error ? reason.message : uiText("settings.capabilities.pluginSettings.saveFailed"));
     } finally {
       setSaving(false);
     }
   }, [baseUrl, draft, editableFields, qualifiedId, saving, snapshot]);
 
   return (
-    <Disclosure className="capability-plugin-settings" title="插件设置" open={open} onOpenChange={setOpen}>
+    <Disclosure className="capability-plugin-settings" title={t("settings.capabilities.pluginSettings.title")} open={open} onOpenChange={setOpen}>
       {open ? <div className="capability-plugin-settings__body">
-        {loading ? <Notice>正在验证并读取设置…</Notice> : null}
+        {loading ? <Notice>{t("settings.capabilities.pluginSettings.loading")}</Notice> : null}
         {error ? <Notice tone="danger">{error}</Notice> : null}
-        {!loading && snapshot && editableFields.length === 0 ? <EmptyState title="此扩展未声明可编辑设置。" /> : null}
+        {!loading && snapshot && editableFields.length === 0 ? <EmptyState title={t("settings.capabilities.pluginSettings.empty")} /> : null}
         {editableFields.map((field) => <CapabilitySettingControl
           key={field.id}
           field={field}
@@ -137,7 +139,7 @@ export function CapabilitySettingsEditor({
           disabled={disabled || saving}
           onChange={(value) => setDraft((current) => ({ ...current, [field.id]: value }))}
         />)}
-        {editableFields.length ? <Button compact variant="primary" loading={saving} disabled={disabled || loading} onClick={() => void save()}>保存插件设置</Button> : null}
+        {editableFields.length ? <Button compact variant="primary" loading={saving} disabled={disabled || loading} onClick={() => void save()}>{t("settings.capabilities.pluginSettings.saveAction")}</Button> : null}
       </div> : null}
     </Disclosure>
   );

@@ -1,4 +1,4 @@
-// 真实Source UIA/两端WSS/原生独立授权/公开SDK签名child/正式结果和服务端ACK。
+// Real Source UIA, dual-ended WSS, native independent grant, public SDK-signed child, formal result, and server ACK.
 mod local_trigger_joint {
     use super::*;
     fn spawn(

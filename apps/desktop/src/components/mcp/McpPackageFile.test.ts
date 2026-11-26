@@ -2,18 +2,32 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import test from "node:test";
 
+import { currentLanguage, setLanguage, uiTextFor } from "../../i18n/index.ts";
 import {
   MAX_MCP_PACKAGE_FILE_BYTES,
   assertMcpPackageFileSize,
   encodeMcpPackageBytes,
 } from "./McpPackageFile.ts";
 
-test("bounds MCP package files before reading or encoding them", () => {
+test("bounds MCP package files before reading or encoding them", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
   assert.doesNotThrow(() => assertMcpPackageFileSize(0));
   assert.doesNotThrow(() => assertMcpPackageFileSize(MAX_MCP_PACKAGE_FILE_BYTES));
-  assert.throws(() => assertMcpPackageFileSize(MAX_MCP_PACKAGE_FILE_BYTES + 1), /不能超过 64 MiB/);
-  assert.throws(() => assertMcpPackageFileSize(-1), /大小无效/);
-  assert.throws(() => assertMcpPackageFileSize(Number.POSITIVE_INFINITY), /大小无效/);
+
+  for (const language of ["en", "zh-Hans"] as const) {
+    setLanguage(language);
+    assert.throws(() => assertMcpPackageFileSize(MAX_MCP_PACKAGE_FILE_BYTES + 1), {
+      message: uiTextFor(language, "mcp.package.exceedsMaxSize"),
+    });
+    assert.throws(() => assertMcpPackageFileSize(-1), {
+      message: uiTextFor(language, "mcp.package.invalidSize"),
+    });
+    assert.throws(() => assertMcpPackageFileSize(Number.POSITIVE_INFINITY), {
+      message: uiTextFor(language, "mcp.package.invalidSize"),
+    });
+  }
 });
 
 test("encodes binary MCP packages without one archive-sized intermediate string", () => {

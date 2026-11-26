@@ -1,4 +1,4 @@
-// Otter单侧执行SDK；不合并旧loom.surface.v1，也不声明浏览器/文件/任意网络权限。
+// Otter single-side execution SDK; neither merges legacy loom.surface.v1 nor declares browser, file, or arbitrary network capabilities.
 import type { ArtCanvas, ArtDocument, ArtElement, ArtImage } from "./native-dom";
 import type { ArtLiveTriggerEvent } from "./native-live-trigger";
 export type { ArtCanvas, ArtDocument, ArtElement, ArtImage } from "./native-dom";
@@ -57,7 +57,7 @@ export interface ArtModule {
     suspend?(): void | Promise<void>;
     resume?(): void | Promise<void>;
     dispose?(): void | Promise<void>;
-    /** 只由可信宿主显式自动授权触发；不是click，不授gesture或自动恢复timer。 */
+    /** Invoked only by explicit trusted-host live-trigger grants; not a click event, grants no user gesture, and does not auto-resume timers. */
     onLiveTrigger?(event: ArtLiveTriggerEvent): void | Promise<void>;
 }
 
@@ -78,16 +78,16 @@ export interface NativeArtApi {
     resource(resourceId: string): string | undefined;
     image(resourceId: string): ArtImage;
     service(service: string, input: JsonValue, timeoutMs?: number): Promise<JsonValue>;
-    /** 仅当前安装的image句柄，按数组顺序成为服务resourceRefs；最多4图，结果仍为JSON。 */
+    /** Accepts only currently installed ArtImage handles as ordered service resourceRefs (up to 4 images); result remains JSON. */
     serviceImages(service: string, input: JsonValue, images: readonly ArtImage[], timeoutMs?: number): Promise<JsonValue>;
-    /** 同步冻结当前Canvas位图，异步交原图片服务；不使用CSS尺寸或屏幕截图，结果仍为JSON。 */
+    /** Synchronously freezes current Canvas bitmaps and forwards them asynchronously to the image service; ignores CSS sizing and screen capture, returning JSON. */
     serviceCanvases(service: string, input: JsonValue, canvases: readonly ArtCanvas[], timeoutMs?: number): Promise<JsonValue>;
-    /** 显式单PNG结果；复用当前安装图片或调用时Canvas输入，结果句柄占同一会话图片预算。 */
+    /** Explicit single-PNG output reusing installed images or call-time Canvas snapshots; the returned handle counts against the session image budget. */
     serviceImage(service: string, input: JsonValue, options?: ServiceImageOptions): Promise<ServiceImageResult>;
-    /** 请求可信宿主询问用户；这不是批准，不接受gesture token，离线仍拒绝服务。 */
+    /** Requests user confirmation from the trusted host; not self-approval, accepts no gesture token, and rejects calls while offline. */
     serviceWithConfirmation(service: string, input: JsonValue, options: ServiceImageOptions & { readonly imageOutput: true }): Promise<ServiceImageResult>;
     serviceWithConfirmation(service: string, input: JsonValue, options?: ServiceImageOptions & { readonly imageOutput?: false }): Promise<JsonValue>;
-    /** true仅表示本operation已排队；参数可能立即抛错，权限/端口仍由宿主后验，不等于接纳或保存成功。 */
+    /** Returning true only confirms the operation was queued; invalid arguments may throw synchronously while permissions and ports are still validated asynchronously by the host. */
     commitResult(outputs: Readonly<Record<string, ArtOutput>>): true;
 }
 

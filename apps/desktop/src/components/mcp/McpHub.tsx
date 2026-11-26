@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { TabsRoot } from "@neuro/ui";
 
+import { useUiText } from "../../i18n/index.ts";
 import { normalizeHttpsExternalUrl } from "../../services/externalUrl";
 import {
   deleteMcpServer,
@@ -45,6 +46,7 @@ interface McpHubProps {
 const MCP_STORE_PAGE_SIZE = 24;
 
 export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: McpHubProps) {
+  const { t, tf, language } = useUiText();
   const [activeWorkspace, setActiveWorkspace] = useState<McpWorkspaceId>("services");
   const [serviceSearchText, setServiceSearchText] = useState("");
   const [storeSearchText, setStoreSearchText] = useState("");
@@ -75,10 +77,10 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
       assertMcpPackageFileSize(file.size);
       const bytes = new Uint8Array(await file.arrayBuffer());
       const installed = await installMcpServerPackage(baseUrl, encodeMcpPackageBytes(bytes));
-      notify("info", `${installed.name || installed.id} 已作为独立 MCP 服务安装。`);
+      notify("info", tf("mcp.toast.packageInstalled", { name: installed.name || installed.id }));
       await refresh();
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "无法安装 MCP 服务包。");
+      notify("error", error instanceof Error ? error.message : t("mcp.toast.packageInstallFailed"));
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
@@ -97,8 +99,8 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
       notify(
         "error",
         error instanceof Error
-          ? `无法打开 ${marketItem.name} 的介绍页面：${error.message}`
-          : `无法打开 ${marketItem.name} 的介绍页面。`,
+          ? tf("mcp.toast.openSourceFailedWithReason", { name: marketItem.name, reason: error.message })
+          : tf("mcp.toast.openSourceFailed", { name: marketItem.name }),
       );
     }
   };
@@ -115,14 +117,14 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
         status: result.success === false ? "error" : "success",
         toolCount: tools.length,
         testedAt: new Date().toISOString(),
-        error: result.success === false ? result.error || "MCP 测试失败" : undefined,
+        error: result.success === false ? result.error || t("mcp.test.failed") : undefined,
       },
     }));
     return tools.length;
   };
 
   const recordTestError = (server: LoomMcpServer, error: unknown) => {
-    const message = error instanceof Error ? error.message : "MCP 测试失败";
+    const message = error instanceof Error ? error.message : t("mcp.test.failed");
     setTestSnapshots((current) => ({
       ...current,
       [server.id]: {
@@ -145,12 +147,15 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
       notify(
         result.success === false ? "error" : "info",
         result.success === false
-          ? `${server.name} 连接失败：${result.error || "未知错误"}`
-          : `${server.name} 已连接，发现 ${toolCount} 个工具。`,
+          ? tf("mcp.toast.connectionFailed", {
+              name: server.name,
+              reason: result.error || t("mcp.error.unknown"),
+            })
+          : tf("mcp.toast.connectedWithTools", { name: server.name, count: toolCount }),
       );
     } catch (error) {
       const message = recordTestError(server, error);
-      notify("error", `${server.name} 连接失败：${message}`);
+      notify("error", tf("mcp.toast.connectionFailed", { name: server.name, reason: message }));
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
@@ -165,7 +170,7 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       saved = await saveMcpServer(baseUrl, server);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "无法保存 MCP 服务。");
+      notify("error", error instanceof Error ? error.message : t("mcp.toast.saveFailed"));
       serverOperationRef.current = false;
       setBusyServerId(null);
       setBusyMarketplaceId(null);
@@ -175,7 +180,12 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       await refresh();
     } catch (error) {
-      notify("warning", error instanceof Error ? `${saved.name} 已保存，但列表刷新失败：${error.message}` : `${saved.name} 已保存，但列表刷新失败。`);
+      notify(
+        "warning",
+        error instanceof Error
+          ? tf("mcp.toast.savedRefreshFailedWithReason", { name: saved.name, reason: error.message })
+          : tf("mcp.toast.savedRefreshFailed", { name: saved.name }),
+      );
     }
 
     try {
@@ -186,15 +196,18 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
           notify(
             result.success === false ? "error" : "info",
             result.success === false
-              ? `${saved.name} 已安装，但连接测试失败：${result.error || "未知错误"}`
-              : `${saved.name} 已安装，发现 ${toolCount} 个工具。`,
+              ? tf("mcp.toast.installedTestFailed", {
+                  name: saved.name,
+                  reason: result.error || t("mcp.error.unknown"),
+                })
+              : tf("mcp.toast.installedWithTools", { name: saved.name, count: toolCount }),
           );
         } catch (error) {
           const message = recordTestError(saved, error);
-          notify("error", `${saved.name} 已安装，但连接测试失败：${message}`);
+          notify("error", tf("mcp.toast.installedTestFailed", { name: saved.name, reason: message }));
         }
       } else {
-        notify("info", `${saved.name} 已保存。`);
+        notify("info", tf("mcp.toast.saved", { name: saved.name }));
       }
     } finally {
       serverOperationRef.current = false;
@@ -225,10 +238,10 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       const enabled = server.enabled === false;
       await setMcpServerEnabled(baseUrl, server.id, enabled);
-      notify("info", `${server.name} 已${enabled ? "启用" : "禁用"}。`);
+      notify("info", tf(enabled ? "mcp.toast.enabled" : "mcp.toast.disabled", { name: server.name }));
       await refresh();
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "无法更新 MCP 服务状态。");
+      notify("error", error instanceof Error ? error.message : t("mcp.toast.statusUpdateFailed"));
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
@@ -240,12 +253,12 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     serverOperationRef.current = true;
     setBusyServerId(server.id);
     try {
-      if (!await confirmRemove(server)) return;
+      if (!(await confirmRemove(server))) return;
       await deleteMcpServer(baseUrl, server.id);
-      notify("info", `${server.name} 已删除。`);
+      notify("info", tf("mcp.toast.deleted", { name: server.name }));
       await refresh();
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "无法删除 MCP 服务。");
+      notify("error", error instanceof Error ? error.message : t("mcp.toast.deleteFailed"));
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
@@ -264,10 +277,10 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
     try {
       await updateMcpServerCredentials(baseUrl, server.id, values, clear);
       updated = true;
-      notify("info", `${server.name} 的凭据已更新。`);
+      notify("info", tf("mcp.toast.credentialsUpdated", { name: server.name }));
       await refresh();
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "无法保存 MCP 凭据。");
+      notify("error", error instanceof Error ? error.message : t("mcp.toast.credentialsSaveFailed"));
     } finally {
       serverOperationRef.current = false;
       setBusyServerId(null);
@@ -278,18 +291,32 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
 
   const normalizedServiceSearch = serviceSearchText.trim().toLowerCase();
   const normalizedStoreSearch = storeSearchText.trim().toLowerCase();
-  const filteredServers = useMemo(() => servers.filter((server) => !normalizedServiceSearch ||
-    server.name.toLowerCase().includes(normalizedServiceSearch) ||
-    server.id.toLowerCase().includes(normalizedServiceSearch) ||
-    (server.serverId || "").toLowerCase().includes(normalizedServiceSearch) ||
-    (server.package?.qualifiedId || "").toLowerCase().includes(normalizedServiceSearch) ||
-    (server.tools || []).some((tool) => tool.toLowerCase().includes(normalizedServiceSearch)) ||
-    (server.description || "").toLowerCase().includes(normalizedServiceSearch)), [normalizedServiceSearch, servers]);
-  const filteredMarketServers = useMemo(() => MCP_MARKET_SERVERS.filter((server) => {
-    const matchesSearch = !normalizedStoreSearch || server.name.toLowerCase().includes(normalizedStoreSearch) ||
-      server.id.toLowerCase().includes(normalizedStoreSearch) || server.description.toLowerCase().includes(normalizedStoreSearch);
-    return matchesSearch && (marketCategory === "All" || server.category === marketCategory);
-  }), [marketCategory, normalizedStoreSearch]);
+  const filteredServers = useMemo(
+    () =>
+      servers.filter(
+        (server) =>
+          !normalizedServiceSearch ||
+          server.name.toLowerCase().includes(normalizedServiceSearch) ||
+          server.id.toLowerCase().includes(normalizedServiceSearch) ||
+          (server.serverId || "").toLowerCase().includes(normalizedServiceSearch) ||
+          (server.package?.qualifiedId || "").toLowerCase().includes(normalizedServiceSearch) ||
+          (server.tools || []).some((tool) => tool.toLowerCase().includes(normalizedServiceSearch)) ||
+          (server.description || "").toLowerCase().includes(normalizedServiceSearch),
+      ),
+    [normalizedServiceSearch, servers],
+  );
+  const filteredMarketServers = useMemo(
+    () =>
+      MCP_MARKET_SERVERS.filter((server) => {
+        const matchesSearch =
+          !normalizedStoreSearch ||
+          server.name.toLowerCase().includes(normalizedStoreSearch) ||
+          server.id.toLowerCase().includes(normalizedStoreSearch) ||
+          server.description.toLowerCase().includes(normalizedStoreSearch);
+        return matchesSearch && (marketCategory === "All" || server.category === marketCategory);
+      }),
+    [language, marketCategory, normalizedStoreSearch],
+  );
   const marketTotalPages = Math.ceil(filteredMarketServers.length / MCP_STORE_PAGE_SIZE);
   const resolvedMarketPage = marketTotalPages > 0 ? Math.min(marketPage, marketTotalPages) : 1;
   const pagedMarketServers = useMemo(() => {
@@ -306,8 +333,8 @@ export function McpHub({ servers, baseUrl, refresh, notify, confirmRemove }: Mcp
   }, [marketPage, marketTotalPages]);
 
   return (
-    <TabsRoot asChild value={activeWorkspace} onValueChange={value => setActiveWorkspace(value as McpWorkspaceId)}>
-      <section className="art-hub mcp-hub" aria-label="MCP">
+    <TabsRoot asChild value={activeWorkspace} onValueChange={(value) => setActiveWorkspace(value as McpWorkspaceId)}>
+      <section className="art-hub mcp-hub" aria-label={t("mcp.hub.ariaLabel")}>
         <McpHubToolbar
           activeWorkspace={activeWorkspace}
           operationBusy={operationBusy}

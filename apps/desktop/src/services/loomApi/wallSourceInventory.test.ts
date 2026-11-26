@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWallSourceInventory, type WallSourceInventory } from "./wallSourceInventory.ts";
 
-const busy: WallSourceInventory = { sources: [], errors: ["Art / 图片：HTTP 503 daemon_busy"] };
+const busy: WallSourceInventory = { sources: [], errors: ["Art / Images: HTTP 503 daemon_busy"] };
 const loaded: WallSourceInventory = { sources: [{ source: { kind: "surface", id: "form-1" }, label: "Form", status: "form-1" }], errors: [] };
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 

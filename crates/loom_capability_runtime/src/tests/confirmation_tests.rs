@@ -1,4 +1,4 @@
-//! 原runtime真实进程确认链；批准不跳过schema/预取消，同包重注册也不能借旧批准。
+//! Real-process confirmation chain on the native runtime; approval never bypasses schema validation or pre-cancellation, and re-registering the same package cannot reuse a prior approval.
 use super::*;
 fn invocation() -> CapabilityInvocation {
     CapabilityInvocation {

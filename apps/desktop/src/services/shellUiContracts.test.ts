@@ -25,9 +25,9 @@ test("shell navigation uses the standard current-page contract without decorativ
 test("shell refresh keeps a stable name and delegates loading to the standard button", () => {
   assert.match(
     app,
-    /<IconButton\s+className="loom-window-control loom-window-control--refresh"[\s\S]*?label="刷新"[\s\S]*?loading=\{loading\}[\s\S]*?onClick=\{\(\) => void refresh\(\)\}/,
+    /<IconButton\s+className="loom-window-control loom-window-control--refresh"[\s\S]*?label=\{t\("common\.refresh"\)\}[\s\S]*?loading=\{loading\}[\s\S]*?onClick=\{\(\) => void refresh\(\)\}/,
   );
-  assert.doesNotMatch(app, /正在刷新|window-control--loading/);
+  assert.doesNotMatch(app, /window-control--loading/);
   assert.doesNotMatch(
     shellStyles,
     /shell-refresh-spin|\.window-control(?::|\s*\{)|\.rail-item--active|\.rail-item:focus/,
@@ -42,7 +42,7 @@ test("native window commands and the settings return still belong to Loom", () =
   assert.match(app, /data-tauri-drag-region\s+onDoubleClick=\{\(\) => void runWindowCommand\("toggle-maximize"\)\}/);
   assert.match(
     app,
-    /label="返回 MCP"[\s\S]*?onDoubleClick=\{\(event\) => event.stopPropagation\(\)\}[\s\S]*?onClick=\{\(\) => setActiveSection\("mcp"\)\}/,
+    /label=\{t\("shell\.titlebar\.backToMcp"\)\}[\s\S]*?onDoubleClick=\{\(event\) => event.stopPropagation\(\)\}[\s\S]*?onClick=\{\(\) => setActiveSection\("mcp"\)\}/,
   );
 });
 

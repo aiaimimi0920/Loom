@@ -1,5 +1,7 @@
 // Renders marketplace cards and pagination from already-filtered catalog data.
 
+import { ActionTooltip, Badge, Button, EmptyState, IconButton, Panel, TabPanel } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../../services/loomApi";
 import {
   buildMarketplaceServerConfig,
@@ -11,7 +13,6 @@ import {
   type McpPaginationItem,
 } from "../../services/mcpMarketplace";
 import { McpIcon } from "./McpIcon";
-import { ActionTooltip, Badge, Button, EmptyState, IconButton, Panel, TabPanel } from "@neuro/ui";
 
 interface McpStorePanelProps {
   hidden: boolean;
@@ -50,6 +51,7 @@ export function McpStorePanel({
   onInstall,
   onTest,
 }: McpStorePanelProps) {
+  const { t, tf } = useUiText();
   const resolvedMarketPage = currentPage;
   const marketTotalPages = totalPages;
   return (
@@ -64,12 +66,16 @@ export function McpStorePanel({
             const health = getMarketplaceHealth(marketItem, server, configuredSnapshot);
             const requiresConfiguration = marketItem.requiresManualConfiguration || !health.requiredEnvPresent;
             const sourceTone = configured ? "installed" : marketItem.sourceKind;
-            const sourceLabel = configured ? "已安装" : marketItem.sourceKind === "registry" ? "官方仓库" : "Loom 精选";
+            const sourceLabel = configured
+              ? t("mcp.health.installed")
+              : marketItem.sourceKind === "registry"
+                ? t("mcp.market.source.registry")
+                : t("mcp.market.source.curated");
             const categoryLabel = mcpMarketCategoryLabel(marketItem.category);
             const connectionLabel =
               marketItem.installOptions.length > 1
-                ? `${marketItem.installOptions.length} 种连接方式`
-                : marketItem.installOptions[0]?.label || "待配置";
+                ? tf("mcp.store.connectionCount", { count: marketItem.installOptions.length })
+                : marketItem.installOptions[0]?.label || t("mcp.store.pendingConfig");
             const identityLabel = connectionLabel.startsWith(`${categoryLabel} ·`)
               ? connectionLabel
               : `${categoryLabel} · ${connectionLabel}`;
@@ -86,7 +92,7 @@ export function McpStorePanel({
                     <Badge tone={configured ? "success" : marketItem.sourceKind === "registry" ? "info" : "neutral"}>
                       {sourceLabel}
                     </Badge>
-                    <span className="mcp-card__icon" title="MCP" aria-label="MCP">
+                    <span className="mcp-card__icon" title={t("mcp.icon.label")} aria-label={t("mcp.icon.label")}>
                       <McpIcon kind="plug" />
                     </span>
                   </div>
@@ -103,12 +109,12 @@ export function McpStorePanel({
                   </p>
                 </div>
                 <div className="mcp-card__actions">
-                  <ActionTooltip label="打开介绍">
+                  <ActionTooltip label={t("mcp.store.openOverview")}>
                     <IconButton
                       className="mcp-store-card__source-action"
                       compact
                       variant="quiet"
-                      label={`打开 ${marketItem.name} 介绍`}
+                      label={tf("mcp.store.openOverviewFor", { name: marketItem.name })}
                       onClick={() => onOpenSource(marketItem)}
                     >
                       <McpIcon kind="external" />
@@ -118,11 +124,11 @@ export function McpStorePanel({
                     <Button
                       compact
                       variant="quiet"
-                      aria-label={`配置 ${marketItem.name}`}
+                      aria-label={tf("mcp.store.configureFor", { name: marketItem.name })}
                       disabled={operationBusy}
                       onClick={() => onConfigure(marketItem, server)}
                     >
-                      安装前需配置
+                      {t("mcp.store.configureBeforeInstall")}
                     </Button>
                   ) : null}
                   {configured ? (
@@ -130,18 +136,26 @@ export function McpStorePanel({
                       compact
                       variant="primary"
                       loading={configuredBusy}
-                      aria-label={`${configuredSnapshot?.status === "error" ? "重试连接" : "连接"} ${marketItem.name}`}
-                      title={configured.enabled === false ? "请先在服务页面启用" : "测试连接"}
+                      aria-label={
+                        configuredSnapshot?.status === "error"
+                          ? tf("mcp.store.retryConnectionFor", { name: marketItem.name })
+                          : tf("mcp.store.connectFor", { name: marketItem.name })
+                      }
+                      title={
+                        configured.enabled === false
+                          ? t("mcp.store.enableInServicesFirst")
+                          : t("mcp.action.testConnection")
+                      }
                       disabled={operationBusy || configured.enabled === false}
                       onClick={() => onTest(configured)}
                     >
                       {configuredSnapshot?.status === "success"
-                        ? "已连接"
+                        ? t("mcp.store.connected")
                         : configuredSnapshot?.status === "error"
-                          ? "重试"
+                          ? t("mcp.action.retry")
                           : configured.enabled === false
-                            ? "已禁用"
-                            : "连接"}
+                            ? t("mcp.status.disabled")
+                            : t("mcp.action.connect")}
                     </Button>
                   ) : (
                     <Button
@@ -151,7 +165,7 @@ export function McpStorePanel({
                       disabled={operationBusy}
                       onClick={() => onInstall(marketItem)}
                     >
-                      安装
+                      {t("mcp.action.install")}
                     </Button>
                   )}
                 </div>
@@ -159,31 +173,35 @@ export function McpStorePanel({
             );
           })
         ) : (
-          <EmptyState title="没有匹配的 MCP 服务" />
+          <EmptyState title={t("mcp.store.empty")} />
         )}
       </div>
-      <nav className="mcp-hub__pagination" aria-label="MCP 商店分页">
+      <nav className="mcp-hub__pagination" aria-label={t("mcp.store.paginationAria")}>
         <span className="mcp-hub__pagination-summary" aria-live="polite">
           {marketTotalPages > 0
-            ? `共 ${filteredCount} 个 · 第 ${resolvedMarketPage}/${marketTotalPages} 页`
-            : "共 0 个"}
+            ? tf("mcp.store.paginationSummary", {
+                count: filteredCount,
+                page: resolvedMarketPage,
+                totalPages: marketTotalPages,
+              })
+            : t("mcp.store.paginationZero")}
         </span>
         {marketTotalPages > 1 ? (
           <div className="mcp-hub__pagination-controls">
             <Button
               compact
-              aria-label="上一页"
+              aria-label={t("mcp.store.prevPage")}
               disabled={resolvedMarketPage <= 1}
               onClick={() => onPageChange(Math.max(1, resolvedMarketPage - 1))}
             >
-              上一页
+              {t("mcp.store.prevPage")}
             </Button>
             {paginationItems.map((item) =>
               typeof item === "number" ? (
                 <Button
                   compact
                   key={item}
-                  aria-label={`第 ${item} 页`}
+                  aria-label={tf("mcp.store.pageNumber", { page: item })}
                   aria-current={item === resolvedMarketPage ? "page" : undefined}
                   onClick={() => onPageChange(item)}
                 >
@@ -197,11 +215,11 @@ export function McpStorePanel({
             )}
             <Button
               compact
-              aria-label="下一页"
+              aria-label={t("mcp.store.nextPage")}
               disabled={resolvedMarketPage >= marketTotalPages}
               onClick={() => onPageChange(Math.min(marketTotalPages, resolvedMarketPage + 1))}
             >
-              下一页
+              {t("mcp.store.nextPage")}
             </Button>
           </div>
         ) : null}

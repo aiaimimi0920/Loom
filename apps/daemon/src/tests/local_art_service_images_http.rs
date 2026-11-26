@@ -1,4 +1,4 @@
-// 新图像请求经过原Device/issuer/任务表和真正Capability进程；独立字节oracle。
+// Image-input requests traverse the real Device, issuer, task table, and Capability process against an independent byte oracle.
 fn image_bytes() -> Vec<u8> {
     BASE64.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6x0AAAAASUVORK5CYII=").unwrap()
 }

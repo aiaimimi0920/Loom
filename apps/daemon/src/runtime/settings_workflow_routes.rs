@@ -43,7 +43,7 @@ fn put_settings(
         settings.system.hook_log_level.as_str(),
         "error" | "warn" | "info" | "debug"
     ) {
-        return invalid_request("日志级别必须是 error、warn、info 或 debug");
+        return invalid_request("Log level must be error, warn, info, or debug");
     }
     let mut store = settings_store
         .lock()
@@ -92,7 +92,7 @@ fn broadcast_otter_cache_control(
     };
     let action = request.action.trim();
     if !matches!(action, "clearRecycleBin" | "clearReferenceLibrary") {
-        return invalid_request("不支持的 Otter 缓存控制操作");
+        return invalid_request("Unsupported Otter cache control action");
     }
     let broadcast = HookEvent {
         protocol_version: loom_protocol::HOOK_PROTOCOL_VERSION.to_owned(),
@@ -112,7 +112,7 @@ fn broadcast_otter_cache_control(
             409,
             json!({
                 "code": "hook_client_not_connected",
-                "message": "Otter 当前未连接，无法修改正在使用的回收站或参考图。"
+                "message": "Otter is not connected; cannot modify the active recycle bin or reference library."
             }),
         );
     }

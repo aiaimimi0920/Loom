@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Badge, Button, Checkbox, Disclosure, Field, Input, Notice, Select } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { WallLayout, WallSourceOption, WallState, WallRotation } from "../../services/loomApi/wallTypes.ts";
 import { addWallPlacement, addWallTile, boundingWall } from "./wallDraft.ts";
 import { WallGeometryFields, WallNumber } from "./WallGeometryFields.tsx";
@@ -22,6 +23,7 @@ export function WallLayoutEditor({
   persisted: boolean;
   onChange: (layout: WallLayout) => void;
 }) {
+  const { t, tf } = useUiText();
   const [sourceKey, setSourceKey] = useState("");
   const [imported, setImported] = useState<WallSourceOption[]>([]);
   const sources = [
@@ -41,7 +43,7 @@ export function WallLayoutEditor({
   const source = sources.find((entry) => `${entry.source.kind}:${entry.source.id}` === sourceKey);
   return (
     <div className="wall-editor">
-      <Field label="墙面 ID">
+      <Field label={t("devices.wall.editor.wallIdLabel")}>
         <Input
           value={layout.wallId}
           disabled={persisted}
@@ -50,15 +52,15 @@ export function WallLayoutEditor({
         />
       </Field>
       <WallGeometryFields
-        label="墙面范围（逻辑坐标）"
+        label={t("devices.wall.editor.boundsLabel")}
         rect={layout.bounds}
         onChange={(bounds) => onChange({ ...layout, bounds })}
       />
       <WallLayoutPreview layout={layout} />
-      <section aria-label="排列瓷砖">
+      <section aria-label={t("devices.wall.editor.arrangeTilesAriaLabel")}>
         <div className="wall-toolbar">
           <div className="wall-section-heading">
-            <h3>瓷砖</h3>
+            <h3>{t("devices.wall.editor.tilesHeading")}</h3>
             <Badge>{layout.tiles.length} / 64</Badge>
           </div>
           <Button
@@ -66,10 +68,10 @@ export function WallLayoutEditor({
             disabled={!layout.tiles.length}
             onClick={() => onChange({ ...layout, bounds: boundingWall(layout.tiles.map((t) => t.rect)) })}
           >
-            墙面适应瓷砖
+            {t("devices.wall.editor.fitWallToTiles")}
           </Button>
         </div>
-        <Field label="添加输出">
+        <Field label={t("devices.wall.editor.addOutputLabel")}>
           <Select
             value=""
             disabled={layout.tiles.length >= 64}
@@ -78,10 +80,12 @@ export function WallLayoutEditor({
               if (selected) onChange(addWallTile(layout, selected.endpoint));
             }}
           >
-            <option value="">{available.length ? "选择输出" : "没有未分配的输出"}</option>
+            <option value="">
+              {available.length ? t("devices.wall.editor.selectOutputPlaceholder") : t("devices.wall.editor.noUnassignedOutputs")}
+            </option>
             {available.map(({ endpoint, online }) => (
               <option key={endpoint.endpointId} value={endpoint.endpointId}>
-                {endpoint.deviceId} / {endpoint.outputId} · {online ? "在线" : "离线"}
+                {endpoint.deviceId} / {endpoint.outputId} · {online ? t("devices.status.online") : t("devices.status.offline")}
               </option>
             ))}
           </Select>
@@ -98,14 +102,14 @@ export function WallLayoutEditor({
             }
           >
             <WallGeometryFields
-              label="瓷砖占地（旋转后的宽高）"
+              label={t("devices.wall.editor.tileFootprintLabel")}
               rect={tile.rect}
               onChange={(rect) =>
                 onChange({ ...layout, tiles: layout.tiles.map((t) => (t.tileId === tile.tileId ? { ...t, rect } : t)) })
               }
             />
             <div className="wall-toolbar">
-              <Field label="顺时针朝向">
+              <Field label={t("devices.wall.editor.clockwiseRotationLabel")}>
                 <Select
                   value={tile.rotation}
                   onChange={(event) =>
@@ -126,18 +130,18 @@ export function WallLayoutEditor({
               </Field>
               <Button
                 variant="quiet"
-                aria-label={`移除瓷砖 ${tile.tileId}`}
+                aria-label={tf("devices.wall.editor.removeTileAriaLabel", { id: tile.tileId })}
                 onClick={() => onChange({ ...layout, tiles: layout.tiles.filter((t) => t.tileId !== tile.tileId) })}
               >
-                从草稿移除
+                {t("devices.wall.editor.removeFromDraft")}
               </Button>
             </div>
           </Disclosure>
         ))}
       </section>
-      <section aria-label="放置内容">
+      <section aria-label={t("devices.wall.editor.placeContentAriaLabel")}>
         <div className="wall-section-heading">
-          <h3>内容</h3>
+          <h3>{t("devices.wall.editor.contentHeading")}</h3>
           <Badge>{layout.placements.length} / 256</Badge>
         </div>
         <WallImageImport
@@ -150,9 +154,9 @@ export function WallLayoutEditor({
           }}
         />
         <div className="wall-toolbar">
-          <Field label="已有内容">
+          <Field label={t("devices.wall.editor.availableContentLabel")}>
             <Select value={sourceKey} onChange={(event) => setSourceKey(event.target.value)}>
-              <option value="">选择来源</option>
+              <option value="">{t("devices.wall.editor.selectSourcePlaceholder")}</option>
               {sources.map((entry) => (
                 <option
                   key={`${entry.source.kind}:${entry.source.id}`}
@@ -169,7 +173,7 @@ export function WallLayoutEditor({
               if (source) onChange(addWallPlacement(layout, source.source));
             }}
           >
-            放置到墙面
+            {t("devices.wall.editor.placeOnWallAction")}
           </Button>
         </div>
         {layout.placements.map((p) => {
@@ -192,39 +196,38 @@ export function WallLayoutEditor({
                 </span>
               }
             >
-              {!listed && (
-                <Notice tone="warning">
-                  当前目录未列出来源，原有引用仍保留。请先刷新内容来源；仍在运行的 Otter
-                  采集可重新连接，已关闭的来源需要重新发布并选择。
-                </Notice>
-              )}
+              {!listed && <Notice tone="warning">{t("devices.wall.editor.missingSourceNotice")}</Notice>}
               {listed && p.source.kind === "live" && (
                 <div role="status">
                   <Badge tone="info">{listed.status}</Badge>
                 </div>
               )}
-              <WallGeometryFields label="墙面位置" rect={p.rect} onChange={(rect) => update({ rect })} />
               <WallGeometryFields
-                label="源裁剪（0 到 1）"
+                label={t("devices.wall.editor.placementRectLabel")}
+                rect={p.rect}
+                onChange={(rect) => update({ rect })}
+              />
+              <WallGeometryFields
+                label={t("devices.wall.editor.sourceCropLabel")}
                 rect={p.sourceCrop}
                 onChange={(sourceCrop) => update({ sourceCrop })}
               />
               <div className="wall-toolbar">
                 <WallNumber
-                  label="层级（较大在上）"
+                  label={t("devices.wall.editor.zIndexLabel")}
                   value={p.zIndex}
                   integer
                   onChange={(zIndex) => update({ zIndex })}
                 />
                 <Checkbox
-                  label="允许交互（仍需来源授权）"
+                  label={t("devices.wall.editor.interactiveLabel")}
                   disabled={p.source.kind === "image"}
                   checked={p.interactive}
                   onChange={(event) => update({ interactive: event.target.checked })}
                 />
                 <Button
                   variant="quiet"
-                  aria-label={`移除内容 ${p.placementId}`}
+                  aria-label={tf("devices.wall.editor.removePlacementAriaLabel", { id: p.placementId })}
                   onClick={() =>
                     onChange({
                       ...layout,
@@ -232,7 +235,7 @@ export function WallLayoutEditor({
                     })
                   }
                 >
-                  从草稿移除
+                  {t("devices.wall.editor.removeFromDraft")}
                 </Button>
               </div>
             </Disclosure>

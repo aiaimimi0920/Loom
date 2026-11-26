@@ -115,7 +115,7 @@ where
 {
     tauri::async_runtime::spawn_blocking(operation)
         .await
-        .map_err(|error| format!("Loom 桌面后台任务异常结束：{error}"))?
+        .map_err(|error| format!("Loom desktop background task terminated unexpectedly: {error}"))?
 }
 
 pub(super) fn read_loom_snapshot_blocking(base_url: Option<String>) -> LoomSnapshot {
@@ -172,7 +172,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if LOOM_EXITING.load(Ordering::Acquire) {
-        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+        return Err("Loom is exiting; canceled local service startup.".to_owned());
     }
     if is_remote_connection_mode() {
         let remote_url = normalize_base_url(configured_loom_daemon_url());
@@ -180,13 +180,14 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
             started: false,
             base_url: remote_url,
             path: String::new(),
-            message: "当前处于远程 Loom 服务端连接模式，无需启动本机进程。".to_owned(),
+            message: "Connected to a remote Loom server; no local process needs to be started."
+                .to_owned(),
         });
     }
     let mut base_url = normalize_base_url(configured_loom_daemon_url());
     let mut isolated_otter_bridge_url = None;
     let current_exe =
-        std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+        std::env::current_exe().map_err(|error| format!("Failed to locate Loom.exe: {error}"))?;
     if http_get_json(&base_url, "/health").is_ok() {
         let status = http_get_json(&base_url, "/status")?;
         if daemon_path_mismatch_warning(&current_exe, &status).is_none() {
@@ -194,22 +195,24 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
                 started: false,
                 base_url,
                 path: String::new(),
-                message: "Loom 本地服务已运行。".to_string(),
+                message: "Loom local service is already running.".to_string(),
             });
         }
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("无法为当前 Loom 分配本地服务端口：{error}"))?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| {
+            format!("Failed to allocate a local service port for Loom: {error}")
+        })?;
         let port = listener
             .local_addr()
-            .map_err(|error| format!("无法读取 Loom 本地服务端口：{error}"))?
+            .map_err(|error| format!("Failed to read the Loom local service port: {error}"))?
             .port();
         drop(listener);
         base_url = format!("http://127.0.0.1:{port}");
-        let otter_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("无法为当前 Loom 分配 Otter Bridge 端口：{error}"))?;
+        let otter_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| {
+            format!("Failed to allocate an Otter Bridge port for Loom: {error}")
+        })?;
         let otter_port = otter_listener
             .local_addr()
-            .map_err(|error| format!("无法读取 Loom Otter Bridge 端口：{error}"))?
+            .map_err(|error| format!("Failed to read the Loom Otter Bridge port: {error}"))?
             .port();
         drop(otter_listener);
         isolated_otter_bridge_url = Some(format!("ws://127.0.0.1:{otter_port}"));
@@ -230,7 +233,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
             .collect::<Vec<_>>()
             .join("; ");
         format!(
-            "未找到 loom-daemon.exe，请检查 LOOM_DAEMON_EXECUTABLE、桌面程序 runtime 目录或开发构建路径：{searched}"
+            "Could not find loom-daemon.exe; check LOOM_DAEMON_EXECUTABLE, the desktop runtime directory, or the development build path: {searched}"
         )
     })?;
     let (host, port) = parse_loopback_http_url(&base_url)?;
@@ -286,7 +289,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
 
     let child = command
         .spawn()
-        .map_err(|error| format!("启动 Loom 本地服务失败：{error}"))?;
+        .map_err(|error| format!("Failed to start Loom local service: {error}"))?;
     register_owned_daemon_process(child)?;
 
     if let Ok(mut active_url) = ACTIVE_DAEMON_URL.get_or_init(|| Mutex::new(None)).lock() {
@@ -305,7 +308,7 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
         started: true,
         base_url,
         path: daemon_path.display().to_string(),
-        message: "已启动 Loom 本地服务。".to_string(),
+        message: "Started Loom local service.".to_string(),
     })
 }
 
@@ -313,7 +316,7 @@ pub(super) fn register_owned_daemon_process(mut child: std::process::Child) -> R
     if LOOM_EXITING.load(Ordering::Acquire) {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+        return Err("Loom is exiting; canceled local service startup.".to_owned());
     }
     let processes = OWNED_DAEMON_PROCESS.get_or_init(|| Mutex::new(None));
     let mut owned = processes
@@ -326,7 +329,7 @@ pub(super) fn register_owned_daemon_process(mut child: std::process::Child) -> R
     if LOOM_EXITING.load(Ordering::Acquire) {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
+        return Err("Loom is exiting; canceled local service startup.".to_owned());
     }
 
     if let Some(mut previous) = owned.take() {
@@ -338,7 +341,7 @@ pub(super) fn register_owned_daemon_process(mut child: std::process::Child) -> R
                 let _ = child.kill();
                 let _ = child.wait();
                 *owned = Some(previous);
-                return Err("当前 Loom 已经拥有一个本地服务进程。".to_owned());
+                return Err("Loom already owns a local service process.".to_owned());
             }
         }
     }

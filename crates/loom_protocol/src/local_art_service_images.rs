@@ -1,4 +1,4 @@
-//! 独立图像输入请求；旧service.v1读写者保持严格，控制和JSON结果仍沿原owner合同。
+//! Dedicated image-input service request; legacy `service.v1` readers and writers remain strict while control and JSON results keep the original owner contract.
 use super::{Error, Grant, Submit};
 use serde::{Deserialize, Serialize};
 

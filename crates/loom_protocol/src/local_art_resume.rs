@@ -1,4 +1,4 @@
-//! 可重建宿主请求的显式离线许可；独立签名域，不改变一次性grant的绑定语义。
+//! Explicit offline capability for reconstructible host requests; uses an independent signature domain without altering single-use grant binding semantics.
 use super::{Error, Grant, Permission};
 use serde::{Deserialize, Serialize};
 

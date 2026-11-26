@@ -1,4 +1,4 @@
-//! 原生Live viewer宿主必需的Surface LAN接缝；不开放实例管理、任意事件或管理员读取。
+//! Surface LAN seam required by the native Live viewer host; exposes no instance management, arbitrary events, or admin reads.
 use super::lan_http::Request;
 use anyhow::{ensure, Result};
 
@@ -13,7 +13,7 @@ pub(super) fn allowed(method: &str, path: &str) -> bool {
         else {
             return false;
         };
-        // Runtime owner使用原始segment；不让reqwest改写dot、转义或路径别名。
+        // Runtime owner consumes the raw segment; never let reqwest normalize dot segments, escapes, or path aliases.
         return !matches!(id, "" | "." | "..")
             && id
                 .bytes()
@@ -71,6 +71,6 @@ pub(super) fn validate(request: &Request) -> Result<()> {
             .is_some_and(|s| !s.is_empty() && s.len() <= 256),
         "Device nonce required"
     );
-    // 身份、nonce重放、设备撤权、Surface附件归属及生命周期版本仍由runtime原owner核验。
+    // Identity, nonce replay, device revocation, Surface attachment ownership, and lifecycle versions remain verified by the runtime owner.
     Ok(())
 }

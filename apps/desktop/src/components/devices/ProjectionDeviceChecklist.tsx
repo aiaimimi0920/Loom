@@ -5,6 +5,7 @@ import {
 } from "../../services/loomApi/projectionSettings.ts";
 import { CheckboxGroup, EmptyState, MultiSelect } from "@neuro/ui";
 import { useEffect, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 
 export function ProjectionDeviceChecklist(props: {
   label: string;
@@ -13,6 +14,7 @@ export function ProjectionDeviceChecklist(props: {
   onChange: (value: ProjectionDeviceRef[]) => void;
   disabled: boolean;
 }) {
+  const { t, tf } = useUiText();
   const [dismissed, setDismissed] = useState<ProjectionDeviceRef[]>([]);
   // Explicit catalog reloads may replace candidates; a local uncheck must not remove its own DOM.
   useEffect(() => setDismissed((current) => (current.length ? [] : current)), [props.devices]);
@@ -20,7 +22,7 @@ export function ProjectionDeviceChecklist(props: {
   const available = new Set(options.keys());
   for (const device of [...props.value, ...dismissed]) {
     const key = projectionDeviceKey(device);
-    if (!options.has(key)) options.set(key, { ...device, name: device.deviceId + "（不可用）" });
+    if (!options.has(key)) options.set(key, { ...device, name: tf("devices.projection.unavailableDevice", { id: device.deviceId }) });
   }
   const checked = new Set(props.value.map(projectionDeviceKey));
   const change = (values: string[]) => {
@@ -51,7 +53,7 @@ export function ProjectionDeviceChecklist(props: {
   return (
     <div className="projection-device-checklist">
       {!choices.length ? (
-        <EmptyState title="暂无可选设备" />
+        <EmptyState title={t("devices.projection.noSelectableDevices")} />
       ) : choices.length > 6 ? (
         <MultiSelect
           label={props.label}
@@ -59,7 +61,10 @@ export function ProjectionDeviceChecklist(props: {
           values={[...checked]}
           options={choices}
           onValuesChange={change}
-          search={{ label: `搜索${props.label}`, emptyMessage: "没有匹配设备" }}
+          search={{
+            label: tf("devices.projection.searchLabel", { label: props.label }),
+            emptyMessage: t("devices.common.noMatchingDevices"),
+          }}
         />
       ) : (
         <CheckboxGroup

@@ -148,17 +148,17 @@ fn recognize(
     if !full_text.is_empty() {
         effects.push(json!({ "type": "clipboard.writeText", "payload": { "text": &full_text } }));
         let message = if code_count == 0 {
-            "OCR 全文已复制".to_owned()
+            "Copied full OCR text".to_owned()
         } else {
-            format!("OCR 全文已复制；已标记 {code_count} 个二维码或条码")
+            format!("Copied full OCR text; marked {code_count} QR/barcodes")
         };
         effects.push(notice_effect(&message));
     } else if code_count > 0 {
         effects.push(notice_effect(&format!(
-            "未识别到文本；已标记 {code_count} 个二维码或条码"
+            "No text detected; marked {code_count} QR/barcodes"
         )));
     } else {
-        effects.push(notice_effect("OCR 未识别到文本或二维码/条码"));
+        effects.push(notice_effect("OCR detected no text or QR/barcodes"));
     }
     Ok(json!({
         "output": {
@@ -241,9 +241,9 @@ fn scan_codes(request: &CommandEnvelope) -> Result<Value, CommandFailure> {
         current_code_attachment(&request.unit_attachments).map_or(0, |value| value.revision);
     let result_count = attachment.results.len();
     let message = if result_count == 0 {
-        "未识别到二维码或条码".to_owned()
+        "No QR codes or barcodes detected".to_owned()
     } else {
-        format!("已识别 {result_count} 个二维码或条码；点击中心标记可选择操作")
+        format!("Detected {result_count} QR/barcodes; click a center marker for actions")
     };
     Ok(json!({
         "output": { "resultCount": result_count },
@@ -255,7 +255,7 @@ fn scan_codes(request: &CommandEnvelope) -> Result<Value, CommandFailure> {
                 CODES_RENDERER_ID,
                 &attachment,
             ),
-            notice_effect_with_title("OCR · 二维码/条码", &message),
+            notice_effect_with_title("OCR · QR/Barcode", &message),
         ],
     }))
 }
@@ -315,7 +315,7 @@ fn code_action(request: &CommandEnvelope) -> Result<Value, CommandFailure> {
             }));
         }
         return Ok(json!({
-            "effects": copy_effects(text, "二维码/条码内容已复制")
+            "effects": copy_effects(text, "Copied QR/barcode content")
         }));
     }
     legacy_copy_code(&request.input)
@@ -336,7 +336,7 @@ fn legacy_copy_code(input: &Value) -> Result<Value, CommandFailure> {
             )
         })?;
     Ok(json!({
-        "effects": copy_effects(text, "二维码/条码内容已复制")
+        "effects": copy_effects(text, "Copied QR/barcode content")
     }))
 }
 

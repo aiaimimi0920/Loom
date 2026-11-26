@@ -53,11 +53,11 @@ function Resolve-StockCode {
 
     if ($Value -is [System.Collections.IDictionary] -or $Value -is [System.Collections.IList] -or
         $Value -is [pscustomobject] -or $Value -is [bool]) {
-        throw "股票代码格式无效；支持 SZ000034、SH600519、BJ430047、HK00700 和 USAAPL 等统一代码"
+        throw "Invalid stock code format; unified codes such as SZ000034, SH600519, BJ430047, HK00700, and USAAPL are supported"
     }
     $input = ([string]$Value).Trim().ToUpperInvariant().Replace(" ", "")
     if ([string]::IsNullOrWhiteSpace($input)) {
-        throw "请输入股票代码，例如 SZ000034、SH600519、BJ430047、HK00700 或 USAAPL"
+        throw "Enter a stock code, such as SZ000034, SH600519, BJ430047, HK00700, or USAAPL"
     }
     if ($input -match '^(SH|SZ|BJ)[:._-]?(\d{6})$') {
         return "$($Matches[1])$($Matches[2])"
@@ -81,7 +81,7 @@ function Resolve-StockCode {
     if ($input -match '^US[:_-]?([A-Z][A-Z0-9.-]{0,19})$') {
         return "US$($Matches[1])"
     }
-    throw "股票代码格式无效；支持 SZ000034、SH600519、BJ430047、HK00700 和 USAAPL 等统一代码"
+    throw "Invalid stock code format; unified codes such as SZ000034, SH600519, BJ430047, HK00700, and USAAPL are supported"
 }
 
 function Get-MarketFromCode {
@@ -101,21 +101,21 @@ function Get-CurrencyForMarket {
 function Get-ProviderName {
     param([string]$Source)
     switch ($Source.ToLowerInvariant()) {
-        "tencent" { return "腾讯行情" }
-        "sina" { return "新浪财经" }
-        "eastmoney" { return "东方财富" }
-        "xueqiu" { return "雪球" }
-        "pysnowball" { return "pysnowball / 雪球" }
-        "mixed" { return "pysnowball + 雪球" }
+        "tencent" { return "Tencent Quotes" }
+        "sina" { return "Sina Finance" }
+        "eastmoney" { return "Eastmoney" }
+        "xueqiu" { return "Xueqiu" }
+        "pysnowball" { return "pysnowball / Xueqiu" }
+        "mixed" { return "pysnowball + Xueqiu" }
         default { return $Source }
     }
 }
 
 function Resolve-UtcTimestamp {
-    # 上游时间戳必须自带时区偏移（Z 或 ±HH[:]MM）。之前用 AssumeUniversal 解析，等于把无偏移
-    # 的本地时间当成 UTC：东八区的 "2026-08-21 15:00:00" 会被当作 UTC 15:00，凭空多出 8 小时
-    # 的"新鲜度"，一个已经过期的报价因此显示为最新。没有偏移就当作不可判定，返回 $null，让
-    # 调用方按过期处理。
+    # Upstream timestamps must carry an explicit UTC offset (Z or +/-HH[:]MM). Parsing naive local
+    # strings with AssumeUniversal would misread a UTC+8 timestamp as UTC and understate record age
+    # by 8 hours, making stale quotes appear fresh. Return $null when offset is missing so callers
+    # fail closed as stale.
     param(
         [AllowNull()][object]$Value,
         [AllowNull()][object]$FallbackValue = $null
@@ -138,9 +138,9 @@ function Resolve-UtcTimestamp {
 }
 
 function Get-ObservationAgeSeconds {
-    # 时间戳不可判定时返回 $null，不返回 [double]::PositiveInfinity：ConvertTo-Json 会把它写成
-    # 裸 Infinity，那不是合法 JSON，宿主解析整份响应都会失败。调用方必须显式处理 $null，
-    # 因为 PowerShell 里 $null -gt 90 是 $false，直接比较会把未知年龄判成"新鲜"。
+    # Return $null rather than [double]::PositiveInfinity when age is unknown: ConvertTo-Json emits
+    # bare Infinity, which is invalid JSON and breaks host parsing. Callers must check $null
+    # explicitly because ($null -gt 90) evaluates to $false in PowerShell.
     param([AllowNull()][object]$Value)
 
     $timestamp = Resolve-UtcTimestamp -Value $Value
@@ -171,20 +171,20 @@ function Get-MarketPeriodLabel {
     param([string]$Period)
 
     switch ($Period) {
-        "minute" { return "分时" }
-        "five-day" { return "五日" }
-        "day" { return "日 K" }
-        "week" { return "周 K" }
-        "month" { return "月 K" }
-        "quarter" { return "季 K" }
-        "year" { return "年 K" }
-        "minute-120" { return "120 分钟" }
-        "minute-60" { return "60 分钟" }
-        "minute-30" { return "30 分钟" }
-        "minute-15" { return "15 分钟" }
-        "minute-5" { return "5 分钟" }
-        "minute-1" { return "1 分钟" }
-        default { return "日 K" }
+        "minute" { return "Intraday" }
+        "five-day" { return "5D" }
+        "day" { return "1D" }
+        "week" { return "1W" }
+        "month" { return "1M" }
+        "quarter" { return "1Q" }
+        "year" { return "1Y" }
+        "minute-120" { return "120m" }
+        "minute-60" { return "60m" }
+        "minute-30" { return "30m" }
+        "minute-15" { return "15m" }
+        "minute-5" { return "5m" }
+        "minute-1" { return "1m" }
+        default { return "1D" }
     }
 }
 

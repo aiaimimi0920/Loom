@@ -53,10 +53,13 @@ pub(super) fn validate_packaged_mcp_server_entry(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err(format!("打包 MCP 服务 ID 无效：{}", entry.id));
+        return Err(format!("Invalid bundled MCP server ID: {}", entry.id));
     }
     let Some((publisher, package_id)) = entry.qualified_id.split_once('/') else {
-        return Err(format!("打包 MCP 包 ID 无效：{}", entry.qualified_id));
+        return Err(format!(
+            "Invalid bundled MCP package ID: {}",
+            entry.qualified_id
+        ));
     };
     if publisher.is_empty()
         || package_id != entry.id
@@ -64,13 +67,22 @@ pub(super) fn validate_packaged_mcp_server_entry(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err(format!("打包 MCP 包 ID 无效：{}", entry.qualified_id));
+        return Err(format!(
+            "Invalid bundled MCP package ID: {}",
+            entry.qualified_id
+        ));
     }
     if entry.version.is_empty() || entry.zip != format!("{}.zip", entry.id) {
-        return Err(format!("打包 MCP 服务 `{}` 的版本或 ZIP 无效。", entry.id));
+        return Err(format!(
+            "Bundled MCP server `{}` has an invalid version or ZIP filename.",
+            entry.id
+        ));
     }
     if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("打包 MCP 服务 `{}` 的 SHA-256 无效。", entry.id));
+        return Err(format!(
+            "Bundled MCP server `{}` has an invalid SHA-256.",
+            entry.id
+        ));
     }
     Ok(())
 }
@@ -89,7 +101,7 @@ pub(super) fn bootstrap_packaged_mcp_servers(
     let catalog_bytes = read_bounded_regular_file(
         &catalog_path,
         MAX_PACKAGE_CATALOG_BYTES,
-        "打包 MCP 服务目录",
+        "bundled MCP server catalog",
     )?;
     let catalog_hash = format!("{:x}", Sha256::digest(&catalog_bytes));
     // The MCP installer changed its immutable version-directory suffix from the
@@ -107,7 +119,7 @@ pub(super) fn bootstrap_packaged_mcp_servers(
     let marker_path = control_plane_root
         .join("migrations")
         .join("packaged-mcp-servers.sha256");
-    if read_bounded_utf8_file(&marker_path, 128, "打包 MCP 服务迁移标记")
+    if read_bounded_utf8_file(&marker_path, 128, "bundled MCP server migration marker")
         .ok()
         .is_some_and(|value| value.trim().eq_ignore_ascii_case(&migration_marker))
     {
@@ -116,25 +128,34 @@ pub(super) fn bootstrap_packaged_mcp_servers(
     let catalog: PackagedMcpServerCatalog =
         serde_json::from_slice(&catalog_bytes).map_err(|error| {
             format!(
-                "无法解析打包 MCP 服务目录 `{}`：{error}",
+                "Failed to parse bundled MCP server catalog `{}`: {error}",
                 catalog_path.display()
             )
         })?;
     if catalog.servers.is_empty() {
-        return Err(format!("打包 MCP 服务目录为空：{}", catalog_path.display()));
+        return Err(format!(
+            "Bundled MCP server catalog is empty: {}",
+            catalog_path.display()
+        ));
     }
     let catalog_root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
     let mut installed_ids = Vec::new();
     for entry in &catalog.servers {
         validate_packaged_mcp_server_entry(entry)?;
         if installed_ids.contains(&entry.id) {
-            return Err(format!("打包 MCP 服务目录包含重复 ID：{}", entry.id));
+            return Err(format!(
+                "Bundled MCP server catalog contains duplicate ID: {}",
+                entry.id
+            ));
         }
         let package_path = catalog_root.join(&entry.zip);
         let package = read_verified_mcp_server_package(&entry.id, &package_path)?;
         let actual_hash = format!("{:x}", Sha256::digest(&package));
         if !actual_hash.eq_ignore_ascii_case(&entry.sha256) {
-            return Err(format!("打包 MCP 服务 `{}` 的目录哈希不匹配。", entry.id));
+            return Err(format!(
+                "Bundled MCP server `{}` catalog hash mismatch.",
+                entry.id
+            ));
         }
         http_post_json_with_timeout(
             base_url,
@@ -147,7 +168,7 @@ pub(super) fn bootstrap_packaged_mcp_servers(
     write_utf8_regular_file(
         &marker_path,
         &format!("{migration_marker}\n"),
-        "打包 MCP 服务迁移标记",
+        "bundled MCP server migration marker",
     )?;
     Ok(installed_ids)
 }
@@ -160,7 +181,7 @@ pub(super) fn packaged_art_ids_needing_integrity_repair(
     let statuses = response
         .get("arts")
         .and_then(Value::as_array)
-        .ok_or_else(|| "Loom 本地服务没有返回 Art 诊断数组。".to_string())?;
+        .ok_or_else(|| "Loom local service did not return an Art diagnostics array.".to_string())?;
     Ok(catalog
         .packages
         .iter()
@@ -182,16 +203,22 @@ pub(super) fn packaged_art_sha256_allowlist(current_exe: &Path) -> Result<Vec<St
     else {
         return Ok(Vec::new());
     };
-    let catalog_bytes =
-        read_bounded_regular_file(&catalog_path, MAX_PACKAGE_CATALOG_BYTES, "打包 Art 目录")?;
+    let catalog_bytes = read_bounded_regular_file(
+        &catalog_path,
+        MAX_PACKAGE_CATALOG_BYTES,
+        "bundled Art catalog",
+    )?;
     let catalog: PackagedArtCatalog = serde_json::from_slice(&catalog_bytes).map_err(|error| {
         format!(
-            "无法解析打包 Art 目录 `{}`：{error}",
+            "Failed to parse bundled Art catalog `{}`: {error}",
             catalog_path.display()
         )
     })?;
     if catalog.packages.is_empty() {
-        return Err(format!("打包 Art 目录为空：{}", catalog_path.display()));
+        return Err(format!(
+            "Bundled Art catalog is empty: {}",
+            catalog_path.display()
+        ));
     }
 
     let mut art_ids = BTreeSet::new();
@@ -199,7 +226,10 @@ pub(super) fn packaged_art_sha256_allowlist(current_exe: &Path) -> Result<Vec<St
     for entry in &catalog.packages {
         validate_packaged_art_entry(entry)?;
         if !art_ids.insert(entry.id.as_str()) {
-            return Err(format!("打包 Art 目录包含重复 ID：{}", entry.id));
+            return Err(format!(
+                "Bundled Art catalog contains duplicate ID: {}",
+                entry.id
+            ));
         }
         hashes.push(entry.sha256.to_ascii_lowercase());
     }
@@ -228,10 +258,12 @@ pub(super) fn desktop_control_plane_root() -> PathBuf {
 pub(super) fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<String, String> {
     let token = value.trim();
     if token.is_empty() {
-        return Err(format!("Loom 本地服务认证令牌为空：{source}"));
+        return Err(format!("Loom local service auth token is empty: {source}"));
     }
     if token.len() > 4096 || token.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
-        return Err(format!("Loom 本地服务认证令牌格式无效：{source}"));
+        return Err(format!(
+            "Loom local service auth token format is invalid: {source}"
+        ));
     }
     Ok(token.to_owned())
 }
@@ -250,11 +282,11 @@ pub(super) fn daemon_auth_token() -> Result<Option<String>, String> {
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!(
-            "无法检查 Loom 本地服务认证令牌 {}：{error}",
+            "Failed to inspect Loom local service auth token {}: {error}",
             path.display()
         )),
         Ok(_) => {
-            let value = read_bounded_utf8_file(&path, 8192, "Loom 本地服务认证令牌")?;
+            let value = read_bounded_utf8_file(&path, 8192, "Loom local service auth token")?;
             normalize_daemon_auth_token(&value, &format!("{}", path.display())).map(Some)
         }
     }
@@ -270,7 +302,7 @@ pub(super) fn settings_url_with_daemon_token(url: &str) -> String {
 pub(super) fn validate_packaged_art_entry(entry: &PackagedArtCatalogEntry) -> Result<(), String> {
     for (kind, value) in [
         ("Art", entry.id.as_str()),
-        ("框架", entry.framework.as_str()),
+        ("framework", entry.framework.as_str()),
     ] {
         if value.is_empty()
             || value.len() > 256
@@ -279,14 +311,20 @@ pub(super) fn validate_packaged_art_entry(entry: &PackagedArtCatalogEntry) -> Re
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         {
-            return Err(format!("打包{kind} ID 无效：{value}"));
+            return Err(format!("Invalid bundled {kind} ID: {value}"));
         }
     }
     if entry.zip != format!("{}.zip", entry.id) {
-        return Err(format!("打包 Art `{}` 的 ZIP 文件名无效。", entry.id));
+        return Err(format!(
+            "Bundled Art `{}` has an invalid ZIP filename.",
+            entry.id
+        ));
     }
     if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("打包 Art `{}` 的 SHA-256 无效。", entry.id));
+        return Err(format!(
+            "Bundled Art `{}` has an invalid SHA-256.",
+            entry.id
+        ));
     }
     Ok(())
 }
@@ -307,7 +345,7 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
     }
     let _bootstrap_guard = PACKAGED_ART_BOOTSTRAP_LOCK
         .lock()
-        .map_err(|_| "打包 Art 初始化锁已损坏。".to_string())?;
+        .map_err(|_| "Bundled Art bootstrap lock is poisoned.".to_string())?;
     let Some(catalog_path) = packaged_art_catalog_candidates(current_exe)
         .into_iter()
         .find(|path| path.is_file())
@@ -320,17 +358,23 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
             art_ids: Vec::new(),
         });
     };
-    let catalog_bytes =
-        read_bounded_regular_file(&catalog_path, MAX_PACKAGE_CATALOG_BYTES, "打包 Art 目录")?;
+    let catalog_bytes = read_bounded_regular_file(
+        &catalog_path,
+        MAX_PACKAGE_CATALOG_BYTES,
+        "bundled Art catalog",
+    )?;
     let catalog_hash = format!("{:x}", Sha256::digest(&catalog_bytes));
     let catalog: PackagedArtCatalog = serde_json::from_slice(&catalog_bytes).map_err(|error| {
         format!(
-            "无法解析打包 Art 目录 `{}`：{error}",
+            "Failed to parse bundled Art catalog `{}`: {error}",
             catalog_path.display()
         )
     })?;
     if catalog.packages.is_empty() {
-        return Err(format!("打包 Art 目录为空：{}", catalog_path.display()));
+        return Err(format!(
+            "Bundled Art catalog is empty: {}",
+            catalog_path.display()
+        ));
     }
 
     let mut art_ids = Vec::new();
@@ -338,7 +382,10 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
     for entry in &catalog.packages {
         validate_packaged_art_entry(entry)?;
         if art_ids.contains(&entry.id) {
-            return Err(format!("打包 Art 目录包含重复 ID：{}", entry.id));
+            return Err(format!(
+                "Bundled Art catalog contains duplicate ID: {}",
+                entry.id
+            ));
         }
         art_ids.push(entry.id.clone());
         if !framework_ids.contains(&entry.framework) {
@@ -357,15 +404,16 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
     let marker_path = control_plane_root
         .join("migrations")
         .join("packaged-arts.sha256");
-    let catalog_already_applied = read_bounded_utf8_file(&marker_path, 128, "打包 Art 迁移标记")
-        .ok()
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case(&catalog_hash));
+    let catalog_already_applied =
+        read_bounded_utf8_file(&marker_path, 128, "bundled Art migration marker")
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case(&catalog_hash));
 
     let framework_response = http_get_json(base_url, "/v1/frameworks")?;
     let framework_statuses = framework_response
         .get("frameworks")
         .and_then(Value::as_array)
-        .ok_or_else(|| "Loom 本地服务没有返回框架数组。".to_string())?;
+        .ok_or_else(|| "Loom local service did not return a frameworks array.".to_string())?;
     let mut framework_changed = false;
     for framework_id in &framework_ids {
         let official_qualified_id = format!("neuro.official/{framework_id}");
@@ -447,7 +495,7 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
         let package = read_verified_art_package(&entry.id, &package_path)?;
         let actual_hash = format!("{:x}", Sha256::digest(&package));
         if !actual_hash.eq_ignore_ascii_case(&entry.sha256) {
-            return Err(format!("打包 Art `{}` 的目录哈希不匹配。", entry.id));
+            return Err(format!("Bundled Art `{}` catalog hash mismatch.", entry.id));
         }
         http_post_json_with_timeout(
             base_url,
@@ -463,7 +511,7 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
     write_utf8_regular_file(
         &marker_path,
         &format!("{catalog_hash}\n"),
-        "打包 Art 迁移标记",
+        "bundled Art migration marker",
     )?;
 
     Ok(PackagedArtBootstrapResult {

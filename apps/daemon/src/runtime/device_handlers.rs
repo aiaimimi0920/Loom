@@ -16,7 +16,7 @@ fn managed_devices_response(
     let mut devices = Vec::new();
     let mut pending = Vec::new();
     for device in store.devices.values().cloned() {
-        // 在线是近期经过认证的活动，不是持久化的“曾连接”标记或尚未过期的凭据。
+        // Online reflects recent authenticated activity, not a persisted "ever connected" flag or an unexpired credential.
         let activity = store
             .sessions
             .values()

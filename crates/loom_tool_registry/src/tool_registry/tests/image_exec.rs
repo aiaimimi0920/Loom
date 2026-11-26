@@ -167,7 +167,7 @@ pub(super) fn normalize_mcp_image_search_retains_candidate_metadata_when_all_dow
     assert_eq!(result["content"][0]["type"], "text");
     assert_eq!(
         result["content"][0]["text"],
-        "图片搜索已返回候选结果，但图片下载失败，请稍后重试。"
+        "Image search returned candidates, but downloading the image failed; please try again later."
     );
     assert_eq!(result["loomMetadata"]["candidates"]["selectedIndex"], 0);
     assert_eq!(

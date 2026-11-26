@@ -26,7 +26,7 @@ fn packaged_framework_checksum_mismatch_is_rejected() {
     let error = read_verified_framework_package("cloud_api", &package_path)
         .expect_err("mismatched checksum must fail");
 
-    assert!(error.contains("SHA-256 不匹配"), "{error}");
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
     fs::remove_dir_all(root).expect("cleanup checksum fixture");
 }
 
@@ -44,7 +44,7 @@ fn packaged_art_checksum_mismatch_is_rejected() {
     let error = read_verified_art_package("sample-art", &package_path)
         .expect_err("mismatched checksum must fail");
 
-    assert!(error.contains("SHA-256 不匹配"), "{error}");
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
     fs::remove_dir_all(root).expect("cleanup checksum fixture");
 }
 
@@ -54,16 +54,16 @@ fn verified_package_rejects_growth_and_oversized_checksum_inputs() {
     let package_path = root.join("bounded.zip");
     let package = fs::File::create(&package_path).expect("create sparse package");
     package.set_len(9).expect("grow sparse package");
-    let error = read_verified_package("测试", "bounded", &package_path, 8)
+    let error = read_verified_package("Test", "bounded", &package_path, 8)
         .expect_err("oversized package must fail before allocation");
-    assert!(error.contains("超过 8 字节限制"), "{error}");
+    assert!(error.contains("exceeds the 8-byte limit"), "{error}");
 
     fs::write(&package_path, b"small").expect("replace package");
     fs::write(package_path.with_extension("zip.sha256"), vec![b'a'; 4097])
         .expect("write oversized checksum");
-    let error = read_verified_package("测试", "bounded", &package_path, 8)
+    let error = read_verified_package("Test", "bounded", &package_path, 8)
         .expect_err("oversized checksum must fail");
-    assert!(error.contains("超过 4096 字节限制"), "{error}");
+    assert!(error.contains("exceeds the 4096-byte limit"), "{error}");
     fs::remove_dir_all(root).expect("cleanup bounded package fixture");
 }
 
@@ -75,7 +75,7 @@ fn packaged_framework_upgrade_rejects_path_traversal_id() {
         Path::new(r"C:\Release\Loom.exe"),
     )
     .expect_err("traversal framework id must fail before package lookup");
-    assert!(error.contains("框架 ID 无效"), "{error}");
+    assert!(error.contains("Invalid framework ID"), "{error}");
 }
 
 #[test]

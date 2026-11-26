@@ -162,6 +162,7 @@ fn libaria2_real_library_progress_pause_resume_cancel_and_shutdown() {
         "cancelled task files were not reclaimed"
     );
     for index in 0..2 {
+        // Intentional non-ASCII/CJK directory literal to exercise UTF-8 path handling in native aria2.
         let directory = root.join(format!("颜色迁移-{index}"));
         fs::create_dir(&directory).unwrap();
         let state = Arc::new(State::default());

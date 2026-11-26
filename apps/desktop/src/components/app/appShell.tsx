@@ -1,4 +1,5 @@
 // Shared shell models, safe helpers, and compact visual primitives.
+import { uiText } from "../../i18n/index.ts";
 import {
   artPublisherIconSource,
   type ArtPublisherIdentity,
@@ -32,16 +33,37 @@ export type ShellIconKind =
 export interface NavigationItem {
   id: SectionId;
   label: string;
+  labelKey: string;
   icon: ShellIconKind;
 }
 
+function createNavigationItem(id: SectionId, labelKey: string, icon: ShellIconKind): NavigationItem {
+  return {
+    id,
+    labelKey,
+    icon,
+    get label(): string {
+      return uiText(labelKey);
+    },
+  };
+}
+
 export const navigationItems: NavigationItem[] = [
-  { id: "mcp", label: "MCP", icon: "mcp" },
-  { id: "registry", label: "Art", icon: "registry" },
-  { id: "otter-bridge", label: "Otter 同步", icon: "otter-bridge" },
-  { id: "devices", label: "设备管理", icon: "device" },
-  { id: "settings", label: "设置", icon: "settings" },
+  createNavigationItem("mcp", "shell.nav.mcp", "mcp"),
+  createNavigationItem("registry", "shell.nav.art", "registry"),
+  createNavigationItem("otter-bridge", "shell.nav.otterSync", "otter-bridge"),
+  createNavigationItem("devices", "shell.nav.devices", "device"),
+  createNavigationItem("settings", "shell.nav.settings", "settings"),
 ];
+
+export function getNavigationItems(t: (id: string) => string = uiText): NavigationItem[] {
+  return navigationItems.map((item) => ({
+    id: item.id,
+    labelKey: item.labelKey,
+    label: t(item.labelKey),
+    icon: item.icon,
+  }));
+}
 
 export const primaryNavigationItems = navigationItems.filter((item) => item.id !== "settings" && item.id !== "devices");
 export const utilityNavigationItems = navigationItems.filter((item) => item.id === "settings");
@@ -64,7 +86,9 @@ export const fallbackSnapshot: LoomSnapshot = {
     hook: `${DEFAULT_LOOM_DAEMON_URL}/settings/hook`,
     talk: `${DEFAULT_LOOM_DAEMON_URL}/settings/talk`,
   },
-  error: "尚未加载状态快照",
+  get error(): string {
+    return uiText("shell.snapshotNotLoaded");
+  },
 };
 
 export const DEFAULT_OTTER_BRIDGE_URL = "ws://127.0.0.1:19820";
@@ -97,27 +121,23 @@ export interface ArtWizardModeDescriptor {
   subtitle: string;
 }
 
+function createArtWizardMode(id: ArtWizardMode, titleKey: string, subtitleKey: string): ArtWizardModeDescriptor {
+  return {
+    id,
+    get title(): string {
+      return uiText(titleKey);
+    },
+    get subtitle(): string {
+      return uiText(subtitleKey);
+    },
+  };
+}
+
 export const artWizardModes: ArtWizardModeDescriptor[] = [
-  {
-    id: "cloud_api",
-    title: "云端",
-    subtitle: "把 REST/云接口封装成 Art。",
-  },
-  {
-    id: "mcp",
-    title: "MCP",
-    subtitle: "绑定已配置的 MCP 工具。",
-  },
-  {
-    id: "process",
-    title: "脚本",
-    subtitle: "把命令、脚本或 Python 入口封装成 Art。",
-  },
-  {
-    id: "workflow",
-    title: "流程",
-    subtitle: "把已保存工作流变成可复用 Art 节点。",
-  },
+  createArtWizardMode("cloud_api", "shell.artMode.cloudApi.title", "shell.artMode.cloudApi.subtitle"),
+  createArtWizardMode("mcp", "shell.artMode.mcp.title", "shell.artMode.mcp.subtitle"),
+  createArtWizardMode("process", "shell.artMode.process.title", "shell.artMode.process.subtitle"),
+  createArtWizardMode("workflow", "shell.artMode.workflow.title", "shell.artMode.workflow.subtitle"),
 ];
 
 export const artModeById = (mode: ArtWizardMode, modes = artWizardModes) =>
@@ -463,5 +483,5 @@ export function artFrameworkIconKind(reference: string | null): ArtIconKind {
 }
 
 export function artFrameworkIconLabel(reference: string | null): string {
-  return officialFrameworkDisplayName(reference) ?? "Art";
+  return officialFrameworkDisplayName(reference) ?? uiText("shell.nav.art");
 }

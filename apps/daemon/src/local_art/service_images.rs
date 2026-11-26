@@ -1,4 +1,4 @@
-//! 原任务内的图像输入租约；复用Extension图片权限、Surface store和Capability broker。
+//! Image input leases scoped to the owning task; reuses Extension image permissions, Surface store, and Capability broker.
 use super::*;
 use loom_capability_runtime::CapabilityHostError;
 use loom_protocol::local_art::service::images::Image;
@@ -12,7 +12,7 @@ pub(super) struct Context {
 pub(super) struct Prepared {
     pub references: Vec<ExtensionResourceRef>,
     pub staged: crate::capability_resources::CapabilityResourceLease,
-    // staged先释放，随后释放输入store租约；空输入仍复用同一RAII路径。
+    // `staged` drops first, followed by the input store lease; empty inputs still follow the same RAII path.
     _uploads: ExtensionResourceUploadLease,
 }
 pub(super) fn prepare(

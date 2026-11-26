@@ -107,7 +107,7 @@ fn framework_rollback_rejects_tampered_or_revoked_previous_package() {
         .expect("revoke publisher");
     let (ready, detail) = registry.readiness(reference);
     assert!(!ready);
-    assert!(detail.contains("信任策略"), "detail={detail}");
+    assert!(detail.contains("trust policy"), "detail={detail}");
     assert!(registry.rollback(reference).is_err());
 
     let unsigned_root = temp_root();
@@ -199,7 +199,7 @@ fn readiness_rejects_an_entry_retargeted_through_a_directory_link() {
     let (ready, detail) = registry.readiness("process");
 
     assert!(!ready);
-    assert!(detail.contains("不安全"), "detail={detail}");
+    assert!(detail.contains("unsafe"), "detail={detail}");
     #[cfg(windows)]
     std::fs::remove_dir(&runtime).expect("remove junction");
     #[cfg(unix)]
@@ -291,7 +291,7 @@ fn framework_package_can_be_disabled_and_reenabled() {
     assert!(disabled.installed);
     assert!(!disabled.enabled);
     assert!(!disabled.ready);
-    assert_eq!(disabled.ready_detail, "已禁用");
+    assert_eq!(disabled.ready_detail, "Disabled");
 
     let enabled = registry.enable("process").expect("enable package");
     assert!(enabled.installed);

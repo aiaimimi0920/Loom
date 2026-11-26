@@ -196,11 +196,11 @@
         assert_eq!(
             kinds,
             vec![
-                ("art", &OtterCanvasNodeKind::Art, "Art 节点"),
-                ("art-by-id", &OtterCanvasNodeKind::Unknown, "未知节点"),
-                ("capture", &OtterCanvasNodeKind::Unknown, "未知节点"),
-                ("sticker", &OtterCanvasNodeKind::Screenshot, "截图节点"),
-                ("unknown", &OtterCanvasNodeKind::Unknown, "未知节点"),
+                ("art", &OtterCanvasNodeKind::Art, "Art Node"),
+                ("art-by-id", &OtterCanvasNodeKind::Unknown, "Unknown Node"),
+                ("capture", &OtterCanvasNodeKind::Unknown, "Unknown Node"),
+                ("sticker", &OtterCanvasNodeKind::Screenshot, "Screenshot Node"),
+                ("unknown", &OtterCanvasNodeKind::Unknown, "Unknown Node"),
             ]
         );
     }

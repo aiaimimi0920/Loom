@@ -1,4 +1,4 @@
-//! 新端口证明不改变旧合同；固定测试密钥核篡改、版本、规范化结果与证明字节预算。
+//! New port proofs do not alter legacy contracts; deterministic test keys verify tampering, versions, normalized results, and proof byte budgets.
 use super::*;
 use loom_protocol::local_art::package::{
     self,

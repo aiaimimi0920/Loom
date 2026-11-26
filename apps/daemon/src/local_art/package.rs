@@ -1,4 +1,4 @@
-//! 精确grant绑定资源分发；不接受任意路径/URL，也不让资源缓存替代当前设备和审批。
+//! Exact grant-bound resource distribution; never accepts arbitrary paths or URLs, and resource caches never bypass active device and approval checks.
 use super::*;
 use loom_protocol::local_art::package::{visibility, Package, PROTOCOL, RESOURCE};
 pub(super) fn protocol(path: &str) -> Option<&'static str> {
@@ -10,7 +10,7 @@ pub(super) fn proof(
     loaded: &source::Loaded,
     key: Option<String>,
 ) -> LocalResult<Value> {
-    // 实际字节已在持审批锁前逐项验证；签发不在策略锁内执行磁盘读取。
+    // Underlying bytes were verified item-by-item before acquiring the approval lock; signing performs no disk reads under the policy lock.
     let package = Package {
         protocol_version: PROTOCOL.into(),
         grant: grant.clone(),

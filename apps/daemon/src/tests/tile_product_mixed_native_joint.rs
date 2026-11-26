@@ -1,4 +1,4 @@
-// 普通产品三类动态同屏；复用Source/Art fixture，不用帧号或源像素代替桌面oracle。
+// Three dynamic source types on screen in the standard product; reuses Source/Art fixtures without substituting frame IDs or source pixels for the desktop oracle.
 mod mixed_product {
     use super::super::mixed as sources;
     use super::*;
@@ -54,7 +54,7 @@ mod mixed_product {
             activation["mode"],
             "externalComputerUseLauncherThenOwnedChildTransfer"
         );
-        // 前台握手不消耗Source原15秒寿命；只在此后开启正常的真实Source会话。
+        // Foreground handshake does not consume Source's 15-second session budget; start the live Source session only afterward.
         let picture = sources::image(&f, [255, 0, 0, 255]);
         let picture2 = sources::image(&f, [0, 0, 255, 255]);
         let art = sources::image(&f, [0, 255, 0, 255]);
@@ -84,7 +84,7 @@ mod mixed_product {
                 .len(),
             2
         );
-        // 三路均从原owner换真实内容；预期为独立常量，不复用产品采样/合成函数。
+        // Replace live content across all three sources via their authoritative owners; expected values are independent constants rather than product sampling/compositing helpers.
         fs::write(f.root.join("source-pixels-change"), b"change").unwrap();
         sources::update(&f, &instance, &attachment, &art2);
         let updated_state = install(&f, &mut child, &mut layout, &picture2);
@@ -140,7 +140,7 @@ mod mixed_product {
         let cleanup = f.phase(&mut child, "product-complete.json");
         assert_eq!(cleanup["normalCloseExit"], true);
         assert_eq!(cleanup["ownedWindowGone"], true);
-        // 关闭产品只退休Tile自己的view/媒体；来源附件、权威值和Source继续存在。
+        // Closing the product retires only Tile's own view and media; upstream attachments, authoritative state, and Source remain alive.
         while sources::read(&f, &instance)["attachments"]
             .as_object()
             .unwrap()

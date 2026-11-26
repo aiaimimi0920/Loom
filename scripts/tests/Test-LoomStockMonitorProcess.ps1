@@ -124,8 +124,8 @@ $null = [Console]::In.ReadToEnd()
     $interval = Invoke-StockRuntime -ArtDirectory $ArtDirectory -ActionId "stock_interval_commit" -Payload @{ value = 120; requestId = $unicode } -AuthoritativeState @{} -FrameworkData (New-McpData -Skipped)
     $state = $interval.output.surfaceAction.patches[0].statePatch
     Assert-Equal $unicode ([string]$state.lastRequestId) "The real runtime must round-trip a Unicode action request id."
-    $expectedStatus = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5q+PIDEyMCDnp5LliLfmlrA="))
-    Assert-Equal $expectedStatus ([string]$state.statusText) "The real runtime must emit its localized source text as UTF-8."
+    $expectedStatus = "Refresh every 120s"
+    Assert-Equal $expectedStatus ([string]$state.statusText) "The real runtime must emit its English status text as UTF-8."
     Write-Host "Stock Monitor process contract passed: source=UTF8 localized-BOM=preserved shared-BOM=absent transport=UTF8 diagnostics=bounded pipes=concurrent timeouts=bounded"
 }
 finally {

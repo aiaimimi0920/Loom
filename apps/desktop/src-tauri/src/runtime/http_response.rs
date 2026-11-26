@@ -17,15 +17,15 @@ pub(super) fn read_bounded_http_response<R: Read>(
     let max_total = MAX_DAEMON_RESPONSE_HEADER_BYTES
         .checked_add(4)
         .and_then(|value| value.checked_add(max_body_bytes))
-        .ok_or_else(|| "Loom 本地服务响应上限溢出。".to_owned())?;
+        .ok_or_else(|| "Loom local service response size limit overflowed.".to_owned())?;
     let mut raw = Vec::new();
     stream
         .take(max_total as u64 + 1)
         .read_to_end(&mut raw)
-        .map_err(|error| format!("无法读取 Loom 本地服务响应 {path}：{error}"))?;
+        .map_err(|error| format!("Failed to read Loom local service response {path}: {error}"))?;
     if raw.len() > max_total {
         return Err(format!(
-            "Loom 本地服务响应超过 {max_body_bytes} 字节正文限制：{path}"
+            "Loom local service response exceeds the {max_body_bytes}-byte body limit: {path}"
         ));
     }
     Ok(raw)
@@ -40,20 +40,23 @@ pub(super) fn parse_http_response(
     let header_end = raw
         .windows(separator.len())
         .position(|window| window == separator)
-        .ok_or_else(|| format!("Loom 本地服务响应格式异常：{path}"))?;
+        .ok_or_else(|| format!("Malformed Loom local service response: {path}"))?;
     if header_end > MAX_DAEMON_RESPONSE_HEADER_BYTES {
-        return Err(format!("Loom 本地服务响应头过大：{path}"));
+        return Err(format!(
+            "Loom local service response headers are too large: {path}"
+        ));
     }
     let body_offset = header_end + separator.len();
     let body_len = raw.len().saturating_sub(body_offset);
     if body_len > max_body_bytes {
         return Err(format!(
-            "Loom 本地服务响应超过 {max_body_bytes} 字节正文限制：{path}"
+            "Loom local service response exceeds the {max_body_bytes}-byte body limit: {path}"
         ));
     }
 
-    let headers = std::str::from_utf8(&raw[..header_end])
-        .map_err(|error| format!("Loom 本地服务响应头不是 UTF-8：{path}: {error}"))?;
+    let headers = std::str::from_utf8(&raw[..header_end]).map_err(|error| {
+        format!("Loom local service response headers are not UTF-8: {path}: {error}")
+    })?;
     let status_line = headers.lines().next().unwrap_or("unknown status");
     let mut status_parts = status_line.split_whitespace();
     let version = status_parts.next().unwrap_or_default();
@@ -63,38 +66,48 @@ pub(super) fn parse_http_response(
         || !status.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(format!(
-            "Loom 本地服务响应状态异常：{path} returned {status_line}"
+            "Invalid Loom local service response status: {path} returned {status_line}"
         ));
     }
     let status_code = status.parse::<u16>().map_err(|error| {
-        format!("Loom 本地服务响应状态异常：{path} returned {status_line}: {error}")
+        format!(
+            "Invalid Loom local service response status: {path} returned {status_line}: {error}"
+        )
     })?;
 
     let mut content_length = None;
     let mut content_type = None;
     for line in headers.lines().skip(1) {
         let Some((name, value)) = line.split_once(':') else {
-            return Err(format!("Loom 本地服务响应头格式异常：{path}"));
+            return Err(format!(
+                "Malformed Loom local service response header: {path}"
+            ));
         };
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("transfer-encoding") && !value.eq_ignore_ascii_case("identity")
         {
-            return Err(format!("Loom 本地服务响应使用了不支持的传输编码：{path}"));
+            return Err(format!(
+                "Loom local service response uses an unsupported transfer encoding: {path}"
+            ));
         }
         if name.eq_ignore_ascii_case("content-length") {
-            let parsed = value
-                .parse::<usize>()
-                .map_err(|error| format!("Loom 本地服务 Content-Length 无效：{path}: {error}"))?;
+            let parsed = value.parse::<usize>().map_err(|error| {
+                format!("Invalid Loom local service Content-Length: {path}: {error}")
+            })?;
             if content_length.replace(parsed).is_some() {
-                return Err(format!("Loom 本地服务响应包含重复 Content-Length：{path}"));
+                return Err(format!(
+                    "Loom local service response contains duplicate Content-Length headers: {path}"
+                ));
             }
         } else if name.eq_ignore_ascii_case("content-type") {
             content_type = Some(value.to_owned());
         }
     }
     if content_length.is_some_and(|expected| expected != body_len) {
-        return Err(format!("Loom 本地服务响应正文长度不匹配：{path}"));
+        return Err(format!(
+            "Loom local service response body length mismatch: {path}"
+        ));
     }
 
     Ok(ParsedHttpResponse {

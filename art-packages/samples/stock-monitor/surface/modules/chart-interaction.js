@@ -54,8 +54,8 @@ const drawCrosshair = (index) => {
     context.restore();
 };
 
-// 提示框用 DOM 构建，不拼 innerHTML：日期这类字段直接来自另一个进程的 JSON，拼进
-// 标记里就会把状态内容当 HTML 执行。颜色只来自本地 COLORS/paletteFor 的封闭集合。
+// Build tooltip rows via DOM nodes instead of innerHTML so cross-process JSON fields such as date
+// strings are never parsed as HTML. Colors come exclusively from the closed COLORS/paletteFor set.
 const tipRow = (key, value, color) => {
     const row = document.createElement("div");
     row.className = "chart-tip-row";
@@ -85,19 +85,19 @@ const buildTipContent = (geometry, index) => {
     title.textContent = formatPointDate(point.date, geometry.intraday);
     fragment.appendChild(title);
     if (geometry.intraday) {
-        fragment.appendChild(tipRow("价格", formatNumber(point.close, 2), changeColor));
-        if (averageValue !== null && averageValue !== undefined) fragment.appendChild(tipRow("均价", formatNumber(averageValue, 2), COLORS.yellow));
+        fragment.appendChild(tipRow("Price", formatNumber(point.close, 2), changeColor));
+        if (averageValue !== null && averageValue !== undefined) fragment.appendChild(tipRow("Avg", formatNumber(averageValue, 2), COLORS.yellow));
     }
     else {
-        fragment.appendChild(tipRow("开", formatNumber(point.open, 2)));
-        fragment.appendChild(tipRow("高", formatNumber(point.high, 2), deltaColor(point.high - reference, geometry.palette)));
-        fragment.appendChild(tipRow("低", formatNumber(point.low, 2), deltaColor(point.low - reference, geometry.palette)));
-        fragment.appendChild(tipRow("收", formatNumber(point.close, 2), changeColor));
+        fragment.appendChild(tipRow("Open", formatNumber(point.open, 2)));
+        fragment.appendChild(tipRow("High", formatNumber(point.high, 2), deltaColor(point.high - reference, geometry.palette)));
+        fragment.appendChild(tipRow("Low", formatNumber(point.low, 2), deltaColor(point.low - reference, geometry.palette)));
+        fragment.appendChild(tipRow("Close", formatNumber(point.close, 2), changeColor));
         if (averageValue !== null && averageValue !== undefined) fragment.appendChild(tipRow("MA5", formatNumber(averageValue, 2), COLORS.yellow));
     }
-    fragment.appendChild(tipRow("涨跌", change === null ? "--" : formatSigned(change, ""), changeColor));
-    fragment.appendChild(tipRow("涨幅", changePercent === null ? "--" : formatSigned(changePercent, "%"), changeColor));
-    fragment.appendChild(tipRow("成交量", formatVolume(point.volume)));
+    fragment.appendChild(tipRow("Chg", change === null ? "--" : formatSigned(change, ""), changeColor));
+    fragment.appendChild(tipRow("Chg%", changePercent === null ? "--" : formatSigned(changePercent, "%"), changeColor));
+    fragment.appendChild(tipRow("Vol", formatVolume(point.volume)));
     return fragment;
 };
 
@@ -162,7 +162,7 @@ const handleChartPointer = (event) => {
     });
 };
 
-// 图例同样用 DOM 构建，避免把 periodLabel（来自状态）拼进标记。
+// Build legend items via DOM nodes rather than interpolating period labels into HTML markup.
 const legendItem = (label, swatchClass, swatchBackground) => {
     const item = document.createElement("span");
     item.className = "legend-item";

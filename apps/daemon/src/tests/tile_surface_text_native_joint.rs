@@ -1,10 +1,11 @@
-// 真实LAN/实际Art进程oracle；每种控件独立原30秒期限，不扩大业务/网络超时。
+// Real LAN and live Art process oracle; each control gets its own standard 30-second budget without inflating business or network timeouts.
 mod text {
     use super::*;
     #[test]
     #[ignore = "explicit real Loom LAN native Tile text/textarea/number and handlerless form gate"]
     fn real_lan_native_tile_text_fields_ime_edges_and_formal_form_result() {
         let _env = lock_ignoring_poison(&ENV_LOCK);
+        // Intentional CJK + emoji + CRLF literals to exercise UTF-8/IME composition and newline normalization.
         for (kind, text, expected, ime, handlers) in [
             ("input", "中文🙂", json!("中文🙂"), true, true),
             (

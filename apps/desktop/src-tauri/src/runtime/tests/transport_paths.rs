@@ -97,7 +97,7 @@ fn rejects_non_loopback_daemon_url() {
     assert_eq!(snapshot.connection_state, "offline");
     assert_eq!(
         snapshot.error,
-        Some("Loom 桌面端只连接回环地址上的本地服务。".to_string())
+        Some("Loom desktop connects only to local services on loopback addresses.".to_string())
     );
 }
 
@@ -129,7 +129,10 @@ fn loopback_url_parser_rejects_paths_queries_credentials_and_port_zero() {
 fn daemon_request_rejects_method_and_path_injection_before_connecting() {
     let method_error = http_request_json("http://127.0.0.1:1", "GET\r\nX-Test:", "/health", None)
         .expect_err("invalid method must fail");
-    assert!(method_error.contains("HTTP 方法无效"), "{method_error}");
+    assert!(
+        method_error.contains("Invalid HTTP method"),
+        "{method_error}"
+    );
 
     let path_error = http_request_json(
         "http://127.0.0.1:1",
@@ -138,7 +141,7 @@ fn daemon_request_rejects_method_and_path_injection_before_connecting() {
         None,
     )
     .expect_err("invalid path must fail");
-    assert!(path_error.contains("API 路径"), "{path_error}");
+    assert!(path_error.contains("API path"), "{path_error}");
 }
 
 #[test]
@@ -165,7 +168,7 @@ fn bounded_http_reader_stops_after_the_configured_response_limit() {
     response.extend_from_slice(&vec![0_u8; MAX_DAEMON_RESPONSE_HEADER_BYTES + 9]);
     let error = read_bounded_http_response(&mut std::io::Cursor::new(response), "/preview", 8)
         .expect_err("oversized response must fail");
-    assert!(error.contains("字节正文限制"), "{error}");
+    assert!(error.contains("-byte body limit"), "{error}");
 }
 
 #[test]
@@ -208,7 +211,10 @@ fn daemon_json_transport_rejects_non_json_content_type() {
     let error = http_get_json(&format!("http://127.0.0.1:{}", address.port()), "/health")
         .expect_err("non-json content type must fail");
     server.join().expect("join content-type fixture");
-    assert!(error.contains("响应类型不是 JSON"), "{error}");
+    assert!(
+        error.contains("response content type is not JSON"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -314,7 +320,7 @@ fn daemon_path_mismatch_warning_reports_old_running_daemon() {
     )
     .expect("mismatch warning");
 
-    assert!(warning.contains("旧 daemon"), "{warning}");
+    assert!(warning.contains("stale daemon"), "{warning}");
     assert!(warning.contains("127.0.0.1:8765"), "{warning}");
     assert!(
         warning.contains(&packaged_daemon.display().to_string()),

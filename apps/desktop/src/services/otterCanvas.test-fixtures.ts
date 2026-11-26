@@ -9,7 +9,7 @@ export const snapshot: OtterCanvasSnapshot = {
   nodes: [{
     id: "capture",
     kind: "screenshot",
-    label: "截图节点",
+    label: "Screenshot node",
     artId: null,
     x: 100,
     y: 200,
@@ -33,10 +33,10 @@ export const pipeline: OtterCanvasSnapshot = {
   workflowId: "hook-live",
   bounds: { x: 0, y: 0, width: 800, height: 400 },
   nodes: [
-    { id: "a", kind: "screenshot", label: "截图", artId: null, x: 0, y: 0, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
+    { id: "a", kind: "screenshot", label: "Screenshot", artId: null, x: 0, y: 0, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
     { id: "b", kind: "art", label: "Art", artId: "resize", x: 200, y: 0, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
     { id: "c", kind: "art", label: "Art", artId: "ocr", x: 400, y: 0, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
-    { id: "lonely", kind: "screenshot", label: "孤立", artId: null, x: 600, y: 300, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
+    { id: "lonely", kind: "screenshot", label: "Isolated", artId: null, x: 600, y: 300, width: 80, height: 80, previewAvailable: false, previewUrl: null, status: "ready", minified: false, crop: null, opacity: 1 },
   ],
   edges: [
     { id: "e1", sourceNodeId: "a", sourcePortId: null, targetNodeId: "b", targetPortId: null },

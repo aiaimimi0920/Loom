@@ -68,7 +68,7 @@ impl Server {
             "LAN requires a loopback management listener"
         );
         let listener = TcpListener::bind((document.host, document.port))
-            .context("无法监听局域网地址，请检查 IP 和端口占用")?;
+            .context("Failed to bind LAN address; check IP and whether the port is in use")?;
         listener.set_nonblocking(true)?;
         let identity = document
             .identity
@@ -170,7 +170,7 @@ impl Manager {
                 let mut bytes = Vec::new();
                 file.take(32769).read_to_end(&mut bytes)?;
                 ensure!(bytes.len() <= 32768, "LAN configuration too large");
-                serde_json::from_slice(&bytes).context("读取局域网配置失败")?
+                serde_json::from_slice(&bytes).context("Failed to parse LAN configuration")?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Document {
                 enabled: false,
@@ -270,8 +270,10 @@ impl Manager {
             next.identity = None;
         }
         if next.enabled && next.identity.is_none() {
-            next.identity =
-                Some(LanIdentityDocument::generate(next.host).context("无法生成局域网证书")?);
+            next.identity = Some(
+                LanIdentityDocument::generate(next.host)
+                    .context("Failed to generate LAN certificate")?,
+            );
         }
         let unchanged = next.host == self.document.host
             && next.port == self.document.port
@@ -289,14 +291,14 @@ impl Manager {
                     ingress.clone(),
                     Arc::clone(&self.runtime),
                 )
-                .context("无法开启局域网监听，请检查 IP 是否属于本机、端口是否被占用")?,
+                .context("Failed to start LAN listener; check whether the IP belongs to this machine and whether the port is in use")?,
             )
         } else {
             None
         };
         // Persist before replacing the live listener. Failure drops the new listener.
         crate::write_json_atomically(&self.path, &next)
-            .context("无法保存局域网设置，请检查数据目录写入权限")?;
+            .context("Failed to save LAN settings; check data directory write permissions")?;
         // Return retired workers to the caller: never join them while holding registry.
         let retired = if !next.enabled {
             self.server.take()
@@ -326,13 +328,13 @@ impl Manager {
 fn validate(document: &Document) -> Result<()> {
     ensure!(
         document.host.is_private() || document.host.is_loopback(),
-        "请选择本机局域网 IPv4 地址"
+        "Select a local LAN IPv4 address"
     );
     ensure!(
         !document.enabled || document.host.is_private() || cfg!(test),
-        "请填写本机局域网 IP，而不是 127.0.0.1"
+        "Enter a local LAN IP address rather than 127.0.0.1"
     );
-    ensure!(document.port >= 1024, "局域网端口须为 1024–65535");
+    ensure!(document.port >= 1024, "LAN port must be 1024-65535");
     Ok(())
 }
 fn suggested_host() -> Ipv4Addr {

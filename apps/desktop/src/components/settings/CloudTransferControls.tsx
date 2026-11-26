@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Notice, Stack } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { controlCloudDownload, type CloudTransferStatus } from "../../services/cloudDownloadControl";
 import { cloudError } from "../../services/naccount";
 
 export function CloudTransferControls({ baseUrl, taskId }: { baseUrl: string; taskId: string }) {
+  const { t, tf } = useUiText();
   const [status, setStatus] = useState<CloudTransferStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -22,7 +24,7 @@ export function CloudTransferControls({ baseUrl, taskId }: { baseUrl: string; ta
         const next = await controlCloudDownload(baseUrl, taskId, "status");
         if (!stopped && expected === revision.current) setStatus(next);
       } catch {
-        // 任务尚未注册或已进入安装阶段时，不继续展示可操作的旧状态。
+        // Clear stale actionable controls when the task is not registered yet or has entered installation.
         if (!stopped && expected === revision.current) setStatus(null);
       }
       if (!stopped) timer = setTimeout(poll, 500);
@@ -39,16 +41,16 @@ export function CloudTransferControls({ baseUrl, taskId }: { baseUrl: string; ta
     } catch (e) { if (alive.current && expected === revision.current) setError(cloudError(e)); }
     finally { if (alive.current && expected === revision.current) { revision.current++; setBusy(false); } }
   }
-  return <div className="settings-cloud-panel" aria-label="下载控制">
+  return <div className="settings-cloud-panel" aria-label={t("settings.cloud.transfer.panelAria")}>
     {status && <>
-      <Notice>{status.completed} / {status.total || "—"} 字节 · {status.speed} 字节/秒
-        {status.control === 2 ? " · 已请求暂停" : status.control === 1 ? " · 正在取消" : ""}</Notice>
+      <Notice>{tf("settings.cloud.transfer.progress", { completed: status.completed, total: status.total || "—", speed: status.speed })}
+        {status.control === 2 ? t("settings.cloud.transfer.pauseRequested") : status.control === 1 ? t("settings.cloud.transfer.cancelling") : ""}</Notice>
       <Stack horizontal>
         <Button compact disabled={busy || status.control === 1}
           onClick={() => void command(status.control === 2 ? "resume" : "pause")}>
-          {status.control === 2 ? "继续下载" : "暂停下载"}</Button>
+          {status.control === 2 ? t("settings.cloud.transfer.resume") : t("settings.cloud.transfer.pause")}</Button>
         <Button compact disabled={busy || status.control === 1}
-          onClick={() => void command("cancel")}>取消下载</Button>
+          onClick={() => void command("cancel")}>{t("settings.cloud.transfer.cancel")}</Button>
       </Stack>
     </>}
     {error && <Notice tone="danger">{error}</Notice>}

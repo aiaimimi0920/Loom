@@ -1,6 +1,7 @@
 // Framework identity and filter selection remain application-owned.
 import { Checkbox, MultiSelect, Toolbar } from "@neuro/ui";
 import type { ReactNode } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { frameworkFilterLabel, frameworkIdentity } from "../../services/artHubUi";
 import type { LoomFramework } from "../../services/loomApi";
 
@@ -15,6 +16,7 @@ export function FrameworkFilter({
   onToggle: (frameworkId: string) => void;
   actions: ReactNode;
 }) {
+  const { t, tf } = useUiText();
   const options = frameworks.map((framework) => ({
     value: frameworkIdentity(framework),
     label: frameworkFilterLabel(framework),
@@ -23,17 +25,17 @@ export function FrameworkFilter({
     .filter((option) => selectedFrameworkIds === null || selectedFrameworkIds.has(option.value))
     .map((option) => option.value);
   return (
-    <Toolbar className="framework-filter" role="group" aria-label="按框架筛选 Art">
+    <Toolbar className="framework-filter" role="group" aria-label={t("art.filter.ariaLabel")}>
       <div className="framework-filter__options">
         {frameworks.length > 6 ? (
           <MultiSelect
-            label="框架"
+            label={t("art.filter.frameworkLabel")}
             compact
             className="loom-art-framework-picker"
             options={options}
             values={selected}
-            formatSummary={(count) => `已选 ${count} 个框架`}
-            search={{ label: "搜索框架", emptyMessage: "没有匹配的框架" }}
+            formatSummary={(count) => tf("art.filter.selectedSummary", { count })}
+            search={{ label: t("art.filter.searchLabel"), emptyMessage: t("art.filter.emptyMatch") }}
             onValuesChange={(values) => {
               for (const option of options)
                 if (selected.includes(option.value) !== values.includes(option.value)) onToggle(option.value);
@@ -49,7 +51,7 @@ export function FrameworkFilter({
             />
           ))
         )}
-        {frameworks.length === 0 ? <span className="n-muted">暂无框架</span> : null}
+        {frameworks.length === 0 ? <span className="n-muted">{t("art.framework.empty")}</span> : null}
       </div>
       <div className="framework-filter__actions">{actions}</div>
     </Toolbar>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Notice } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { uploadWallImage, WALL_IMAGE_ACCEPT } from "../../services/loomApi/wallImages.ts";
 import type { WallSourceOption } from "../../services/loomApi/wallTypes.ts";
 
@@ -10,6 +11,7 @@ export function WallImageImport({
   baseUrl: string;
   onImported: (source: WallSourceOption) => void;
 }) {
+  const { t } = useUiText();
   const filePicker = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -31,7 +33,8 @@ export function WallImageImport({
       const source = await uploadWallImage(baseUrl, file);
       if (ticket === generation.current) onImported(source);
     } catch (error) {
-      if (ticket === generation.current) setError(error instanceof Error ? error.message : "图片上传失败");
+      if (ticket === generation.current)
+        setError(error instanceof Error ? error.message : t("devices.wall.image.error.uploadFailed"));
     } finally {
       uploading.current = false;
       if (ticket === generation.current) setBusy(false);
@@ -41,9 +44,9 @@ export function WallImageImport({
     <div className="wall-image-import">
       <div className="wall-toolbar">
         <Button loading={busy} onClick={() => filePicker.current?.click()}>
-          导入图片
+          {t("devices.wall.image.importAction")}
         </Button>
-        <Badge>最多 16 MiB</Badge>
+        <Badge>{t("devices.wall.image.maxSizeBadge")}</Badge>
         <input
           ref={filePicker}
           hidden
@@ -57,7 +60,7 @@ export function WallImageImport({
           }}
         />
       </div>
-      <Notice tone="info">GIF 使用首帧；终端最多保留 16 张图片、合计 1677 万像素。</Notice>
+      <Notice tone="info">{t("devices.wall.image.limitsNotice")}</Notice>
       {error && <Notice tone="danger">{error}</Notice>}
     </div>
   );

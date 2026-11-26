@@ -153,7 +153,7 @@ fn request_security_error(status: u16, code: &str, message: &str) -> (u16, Strin
 }
 
 fn is_naccount_callback_navigation(request: &ParsedHttpRequest) -> bool {
-    // OAuth 回跳属于跨站导航；仅固定顶层回调可继续进入待登录事务的 state/PKCE 校验。
+    // OAuth redirect is a cross-site navigation; only the fixed top-level callback may proceed to pending login state/PKCE verification.
     request.method == "GET"
         && request.path.split('?').next() == Some("/v1/naccount/callback")
         && matches!(

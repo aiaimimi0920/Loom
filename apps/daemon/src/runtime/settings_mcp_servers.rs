@@ -387,7 +387,7 @@ fn install_mcp_server_package(
             )
         }
     };
-    // 同一 store 锁覆盖检查和提交；失败不删除候选包的历史版本。
+    // The same store lock covers validation and commit; failure never deletes historical versions of the candidate package.
     let mut guard = mcp_servers
         .lock()
         .map_err(|_| anyhow::anyhow!("lock MCP server store"))?;

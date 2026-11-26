@@ -116,7 +116,7 @@ fn scene(
                 "width": "100%",
                 "height": "100%",
             },
-            "accessibility": { "label": "关闭二维码或条码操作面板" },
+            "accessibility": { "label": "Close QR code or barcode action panel" },
             "events": { "click": COPY_CODE_COMMAND }
         }));
     }
@@ -163,7 +163,7 @@ fn scene(
                     "textAlign": "center",
                 },
                 "accessibility": {
-                    "label": format!("打开第 {} 个二维码或条码操作", index + 1),
+                    "label": format!("Open QR code or barcode {} actions", index + 1),
                     "description": result.format,
                 },
                 "events": { "click": COPY_CODE_COMMAND }
@@ -198,13 +198,13 @@ fn action_popup(result: &CodeResult, source_width: u32, source_height: u32) -> V
     // an overflowing axis using the rendered CSS size, not source-image pixels.
     let left = bounded_position_after_marker(marker_left, source_width, 45, 280);
     let top = bounded_position_after_marker(marker_top, source_height, 70, 90);
-    let mut actions = vec![action_button(result, "copy", "⧉", "复制编辑后的内容")];
+    let mut actions = vec![action_button(result, "copy", "⧉", "Copy edited content")];
     if result.url.is_some() {
         actions.push(action_button(
             result,
             "open",
             "↗",
-            "在浏览器中打开编辑后的链接",
+            "Open edited link in browser",
         ));
     }
     json!({
@@ -237,7 +237,7 @@ fn action_popup(result: &CodeResult, source_width: u32, source_height: u32) -> V
                 "value": result.text,
                 "rows": 3,
                 "maxLength": 16384,
-                "placeholder": "二维码或条码内容"
+                "placeholder": "QR code or barcode content"
             },
             "layout": {
                 "width": "auto",
@@ -256,7 +256,7 @@ fn action_popup(result: &CodeResult, source_width: u32, source_height: u32) -> V
                 "lineHeight": "16px",
                 "whiteSpace": "pre-wrap"
             },
-            "accessibility": { "label": "可编辑的二维码或条码内容" }
+            "accessibility": { "label": "Editable QR code or barcode content" }
         }, {
             "id": "ocr-code-action-buttons",
             "type": "column",

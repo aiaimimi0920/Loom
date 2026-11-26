@@ -68,7 +68,7 @@ mod live_media_diagnostics_tests {
         assert_eq!(metrics.forwarded_binary_bytes, 80);
         assert_eq!(metrics.viewer_skipped_frames, 2);
         assert_eq!(metrics.last_forward.unwrap().socket_write_ms, 7);
-        // 编码字节、权限、控制序列和帧队列不受观测写入影响。
+        // Encoded bytes, permissions, control sequence, and frame queue remain unaffected by telemetry writes.
         assert_eq!(frame.bytes.as_ref(), &encoded_live_frame(4));
         assert_eq!(snapshot.buffered_frames, before.buffered_frames);
         assert_eq!(snapshot.session.controller_device, None);
@@ -239,7 +239,7 @@ mod live_media_diagnostics_tests {
             );
             let received = client.read();
             let _ = client.close(None);
-            // 断言前清理本测试的 worker，失败也不能遗留等待中的 socket。
+            // Clean up this test's worker before asserting so failures never leave waiting sockets behind.
             let stopped = completed.recv_timeout(Duration::from_secs(3)).is_ok();
             if !stopped {
                 store.media_cancelled.store(true, Ordering::SeqCst);

@@ -1,6 +1,7 @@
 // Settings cache controls keep native commands and confirmations in Loom.
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import { isDesktopTauriShell } from "../../services/loomRuntimeTarget";
 import { pushAppToast, requestAppConfirmation } from "../feedback/AppFeedback";
 import { formatCacheBytes } from "./SettingsPanels";
@@ -65,14 +66,16 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
   }, []);
 
   const clearLoomCache = async (kind: "artRuntime" | "frameworkTemporary") => {
-    const label = kind === "artRuntime" ? "Art 运行缓存" : "框架临时文件";
+    const label = kind === "artRuntime"
+      ? uiText("settings.cache.artRuntimeLabel")
+      : uiText("settings.cache.frameworkTempLabel");
     const accepted = await requestAppConfirmation({
-      title: `清空${label}`,
+      title: uiFormat("settings.cache.confirmClearTitle", { label }),
       message:
         kind === "artRuntime"
-          ? "将删除 Art 生成的可重建运行缓存，不会卸载 Art 或删除工作流。"
-          : "将删除框架执行产生的临时文件。请先等待正在运行的 Art 完成。",
-      confirmLabel: "清空",
+          ? uiText("settings.cache.confirmClearArtRuntimeBody")
+          : uiText("settings.cache.confirmClearFrameworkTempBody"),
+      confirmLabel: uiText("settings.cache.clearAction"),
       tone: "warning",
     });
     if (!accepted || !settingsMountedRef.current) return;
@@ -82,7 +85,10 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
       setLoomCacheSnapshot(result.snapshot);
       pushAppToast({
         level: "info",
-        text: `已清空${label}，释放 ${formatCacheBytes(result.freedBytes)}`,
+        text: uiFormat("settings.cache.clearedWithFreed", {
+          label,
+          size: formatCacheBytes(result.freedBytes),
+        }),
       });
     } catch (error) {
       pushAppToast({
@@ -96,19 +102,19 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
 
   const clearOtterCache = async (kind: "recycleBin" | "temporary" | "referenceLibrary") => {
     const labels = {
-      recycleBin: "回收站",
-      temporary: "临时缓存",
-      referenceLibrary: "参考图",
+      recycleBin: uiText("settings.cache.recycleBinLabel"),
+      temporary: uiText("settings.cache.temporaryLabel"),
+      referenceLibrary: uiText("settings.cache.referenceLibraryLabel"),
     } as const;
     const accepted = await requestAppConfirmation({
-      title: `清空${labels[kind]}`,
+      title: uiFormat("settings.cache.confirmClearTitle", { label: labels[kind] }),
       message:
         kind === "referenceLibrary"
-          ? "将移除 Otter 参考列表中的全部记录，桌面贴图不会被删除。"
+          ? uiText("settings.cache.confirmClearReferenceBody")
           : kind === "recycleBin"
-            ? "回收站中的贴图记录将被永久移除。"
-            : "将移除 Otter 的临时中转文件，后续需要时会自动重新生成。",
-      confirmLabel: "清空",
+            ? uiText("settings.cache.confirmClearRecycleBinBody")
+            : uiText("settings.cache.confirmClearTemporaryBody"),
+      confirmLabel: uiText("settings.cache.clearAction"),
       tone: kind === "recycleBin" ? "danger" : "warning",
     });
     if (!accepted || !settingsMountedRef.current) return;
@@ -120,8 +126,11 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
         level: "info",
         text:
           kind === "temporary"
-            ? `已清空临时缓存，释放 ${formatCacheBytes(result.freedBytes)}`
-            : `已清空${labels[kind]}`,
+            ? uiFormat("settings.cache.clearedWithFreed", {
+                label: labels.temporary,
+                size: formatCacheBytes(result.freedBytes),
+              })
+            : uiFormat("settings.cache.clearedSimple", { label: labels[kind] }),
       });
       if (kind !== "temporary" && settingsMountedRef.current) {
         const timer = window.setTimeout(() => {

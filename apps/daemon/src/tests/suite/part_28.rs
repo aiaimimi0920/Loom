@@ -203,7 +203,7 @@ fn installed_declarative_surface_package_mounts_and_pushes_snapshot() {
                 {
                     "id": "refresh",
                     "type": "button",
-                    "props": { "label": "刷新" },
+                    "props": { "label": "Refresh" },
                     "events": { "click": "refresh_price" }
                 }
             ]

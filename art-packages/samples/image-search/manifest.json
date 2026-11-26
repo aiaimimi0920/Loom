@@ -1,7 +1,7 @@
 {
   "id": "custom-image-search",
-  "name": "图片搜索",
-  "description": "通过 MCP 搜索图片并返回可缓存的候选缩略图。",
+  "name": "Image Search",
+  "description": "Searches for images through MCP and returns cacheable thumbnail candidates.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -11,7 +11,7 @@
   "outputs": [
     {
       "name": "output",
-      "label": "搜索结果",
+      "label": "Search Result",
       "type": "image",
       "execution_type": "image_buffer"
     }
@@ -19,15 +19,15 @@
   "params": [
     {
       "id": "query",
-      "label": "搜索词",
+      "label": "Search Query",
       "widget": "text",
       "required": true,
-      "default": "图片搜索",
+      "default": "mountain landscape",
       "data_type": "string"
     },
     {
       "id": "count",
-      "label": "候选数量",
+      "label": "Candidate Count",
       "widget": "slider",
       "default": 3,
       "min": 1,
@@ -51,7 +51,7 @@
       "globalId": "NA20260802003"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "图片搜索",
         "en-US": "Image Search"

@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import { deleteJson, getJson, postJson, putJson } from "./transport.ts";
 
 export interface ProjectionPeerIdentity { peerId: string; publicKey: string }
@@ -7,7 +8,7 @@ export interface ProjectionPeerState {
   localConnection: { origin: string; certificate: string } | null;
 }
 const path = "/v1/projection-peers";
-const invalid = () => new Error("Loom 对等连接响应无效，请刷新后重试");
+const invalid = () => new Error(uiText("devices.projectionPeers.error.invalidResponse"));
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
   return value as Record<string, unknown>;

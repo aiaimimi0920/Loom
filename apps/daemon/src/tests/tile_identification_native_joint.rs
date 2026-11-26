@@ -1,4 +1,4 @@
-// 真实LAN终端仅报告；管理员独立发起识别并核volatile状态/期限及恢复，不伪造presenter。
+// Real LAN endpoint reports only; admin independently initiates identification and verifies volatile state, expiry, and recovery without spoofing a presenter.
 #[test]
 #[ignore = "explicit real Loom LAN native Tile identification lifecycle gate"]
 fn real_lan_native_tile_identification_dismiss_expire_and_resume() {
@@ -93,7 +93,7 @@ fn identify(revoked: bool) {
         assert!(second_applied["endpoints"][0]["appliedRevision"].is_null());
         proof["secondMarker"] = f.phase(&mut output, "tile-identify-marker-2.json");
         proof["secondApplied"] = second_applied;
-        // 原10秒真实期限自然耗尽，不放宽30秒联合门、不由测试强行删除marker。
+        // Let the real 10-second expiry elapse naturally without relaxing the 30-second joint gate or forcibly deleting the marker from the test.
         proof["expired"] = f.until(&mut output, |s| {
             s["endpoints"][0].get("identification").is_none()
                 && s["endpoints"][0]["appliedRevision"] == 2

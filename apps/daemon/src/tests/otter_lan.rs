@@ -24,7 +24,7 @@ fn otter_lan_rejected_settings_return_actionable_errors() {
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("端口是否被占用"));
+        .contains("port is in use"));
     let (_, view) = wall_http::admin(f.port, "GET", "/v1/otter/connections/lan", None);
     assert_eq!(view["listening"], false);
     assert_eq!(view["enabled"], false);

@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import { artPackageIdentity } from "../artHubUi.ts";
 import type { LoomToolDefinition } from "../loomApi.ts";
 import { isConfigured } from "./shared.ts";
@@ -132,7 +133,7 @@ export function collectWorkflowPreviewNodeOptions(
           return name && imageLike ? [{ name, label: output.label?.trim() || name }] : [];
         })
       : node.uses === "sticker"
-        ? [{ name: "output_image", label: "图像" }]
+        ? [{ name: "output_image", label: uiText("otter.workflowStudio.imageLabel") }]
         : [];
     return { nodeId: node.id, label: toolLabel(tool, node.id), outputs };
   });

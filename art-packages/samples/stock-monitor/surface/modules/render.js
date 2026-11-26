@@ -4,13 +4,13 @@ const render = (snapshot) => {
     snapshotValue = snapshot;
     const state = stateOf(snapshot);
     const revision = Number(snapshot.revision);
-    // 只有确认这次 revision 属于自己发出的那次动作才解锁。statePatch 是合并语义，
-    // 任何后台刷新都会推进 revision，只看 revision 会在请求仍在运行时放开控件。
+    // Unlock pending controls only when the incoming revision matches the echoed action correlation,
+    // because background refreshes also advance revision via statePatch merges.
     const echoedRequestId = text(state.lastRequestId, "");
     const echoedActionId = text(state.lastActionId, "");
     const settledBy = (requestId, actionId) => {
         if (echoedRequestId) return echoedRequestId === requestId;
-        // 运行时尚未回声（旧包）时退回按 revision 解锁，否则会永久卡住。
+        // Fall back to actionId or revision-only unlock when running against an older runtime without echoes.
         if (echoedActionId) return echoedActionId === actionId;
         return true;
     };
@@ -19,7 +19,7 @@ const render = (snapshot) => {
         pendingAction = null;
         pendingPeriod = null;
         pendingRequestId = null;
-        // 整段刷新刚落地，重新开始累计 tick。
+        // Reset tick count after a full refresh lands.
         ticksSinceFullRefresh = 0;
         if (pendingTimer !== null) clearTimeout(pendingTimer);
         pendingTimer = null;
@@ -50,8 +50,8 @@ const render = (snapshot) => {
     refs.shell.dataset.view = activeView;
 
     refs.title.textContent = activeView === "favorites-summary"
-        ? "收藏股票价格汇总"
-        : hasQuote ? text(quote.name, "股票盯盘") : "股票盯盘";
+        ? "Watchlist Summary"
+        : hasQuote ? text(quote.name, "Stock Monitor") : "Stock Monitor";
     if (document.activeElement !== refs.symbol) refs.symbol.value = code;
     refs.intervals.querySelectorAll("[data-interval-value]").forEach((button) => {
         const active = Number(button.dataset.intervalValue) === interval;
@@ -67,54 +67,53 @@ const render = (snapshot) => {
     refs.refresh.disabled = pending;
     refs.favoritesRefresh.disabled = pending;
     const pendingText = pendingAction === "stock_period_commit"
-        ? "正在切换周期"
-        : pendingAction === "stock_symbol_commit" ? "正在加载股票" : "正在刷新";
-    refs.status.textContent = pending ? pendingText : hasError ? "行情异常" : text(state.statusText, "等待首次刷新");
+        ? "Switching period"
+        : pendingAction === "stock_symbol_commit" ? "Loading symbol" : "Refreshing";
+    refs.status.textContent = pending ? pendingText : hasError ? "Quote error" : text(state.statusText, "Waiting for initial refresh");
     refs.status.title = hasError ? boundedText(state.error, "") : refs.status.textContent;
     refs.status.className = "stock-status" + (pending ? " is-loading" : hasError ? " is-error" : state.status === "ready" ? " is-ready" : "");
-    refs.name.textContent = hasQuote ? text(quote.name, "未知股票") : "等待行情";
+    refs.name.textContent = hasQuote ? text(quote.name, "Unknown Stock") : "Waiting for quote";
     refs.name.title = refs.name.textContent;
     refs.code.textContent = code + " · " + market;
     refs.price.textContent = hasQuote ? formatNumber(quote.price, 2) : "--";
     refs.price.style.color = hasQuote ? color : COLORS.text;
     refs.delta.textContent = hasQuote
         ? formatSigned(quote.change, "") + "  " + formatSigned(quote.changePercent, "%")
-        : "等待真实价格";
+        : "Waiting for live price";
     refs.delta.style.color = hasQuote ? color : COLORS.muted;
     const timerPlan = refreshPlan(interval, marketStatus);
     const cadence = timerPlan.cadence;
-    const cadenceText = "自动 " + (INTERVAL_LABELS[cadence] || cadence + " 秒");
-    const liveText = timerPlan.usesTick ? " · 准实时" : "";
+    const cadenceText = "Auto " + (INTERVAL_LABELS[cadence] || cadence + "s");
+    const liveText = timerPlan.usesTick ? " · Near-realtime" : "";
     const fetchedAt = text(quote.fetchedAt, text(quote.observedAt, ""));
-    const freshnessText = quote.stale ? " · 数据可能陈旧" : "";
+    const freshnessText = quote.stale ? " · Data may be stale" : "";
     refs.session.textContent = hasQuote
         ? marketStatus === "open"
-            ? "交易中 · " + periodLabel + " · 更新 " + formatClock(fetchedAt) + " · " + cadenceText + liveText + freshnessText
-            : "休市 · 最近交易日 " + lastTradingDate + " · 最后价 " + formatNumber(quote.price, 2) + " · 更新 " + formatClock(fetchedAt) + " · " + cadenceText + freshnessText
-        : "数据源：stock-api MCP";
+            ? "Trading · " + periodLabel + " · Updated " + formatClock(fetchedAt) + " · " + cadenceText + liveText + freshnessText
+            : "Closed · Last trading day " + lastTradingDate + " · Last " + formatNumber(quote.price, 2) + " · Updated " + formatClock(fetchedAt) + " · " + cadenceText + freshnessText
+        : "Source: stock-api MCP";
     refs.session.title = hasQuote
-        ? refs.session.textContent + " · 观测时间 " + formatTimestamp(quote.observedAt) + " · 抓取时间 " + formatTimestamp(fetchedAt) + " · 本次会话准实时刷新 " + liveTickCount + " 次"
+        ? refs.session.textContent + " · Observed " + formatTimestamp(quote.observedAt) + " · Fetched " + formatTimestamp(fetchedAt) + " · Near-realtime ticks this session: " + liveTickCount
         : refs.session.textContent;
-    // 图例只随周期和市场（涨跌配色）变化，不随行情变化，所以不必每帧重建。
+    // Rebuild legend nodes only when period or market palette changes.
     const legendKey = period + "|" + palette.up + "|" + palette.down;
     if (legendKey !== legendPaintedKey) {
         legendPaintedKey = legendKey;
         const candleGradient = "linear-gradient(90deg," + palette.up + " 0 48%," + palette.down + " 52% 100%)";
         refs.legend.replaceChildren(...(isIntradayPeriod(period)
-            ? [legendItem(periodLabel + "价格", "close"), legendItem("均价", "average"), legendItem("成交量", "volume")]
-            : [legendItem(periodLabel, "candle", candleGradient), legendItem("收盘", "close"), legendItem("MA5", "average"), legendItem("成交量", "volume")]));
-        refs.chart.setAttribute("aria-label", periodLabel + (isIntradayPeriod(period) ? "价格走势与成交量图" : "K 线、MA5 与成交量图"));
+            ? [legendItem(periodLabel + " Price", "close"), legendItem("Avg", "average"), legendItem("Volume", "volume")]
+            : [legendItem(periodLabel, "candle", candleGradient), legendItem("Close", "close"), legendItem("MA5", "average"), legendItem("Volume", "volume")]));
+        refs.chart.setAttribute("aria-label", periodLabel + (isIntradayPeriod(period) ? " price and volume chart" : " K-line, MA5, and volume chart"));
     }
     const footerNotice = footerNoticeOf(state);
     refs.error.textContent = footerNotice.text;
     refs.error.title = footerNotice.text;
     refs.error.classList.toggle("is-warning", footerNotice.warning);
-    refs.disclaimer.textContent = boundedText(state.disclaimer, "行情可能延迟，不构成投资建议或交易指令");
-    // 这四个更新函数只读状态里的行情、盘口、历史和收藏，而这几块只随 revision 变化。视图和
-    // 历史长度进 key 是因为切视图会隐藏/显示区块，历史长度决定补空行的数量。上面那些标题、
-    // 价格、会话行不进这个门，它们还要反映 pending 之类的纯本地状态。
+    refs.disclaimer.textContent = boundedText(state.disclaimer, "Quotes may be delayed, not investment advice or trading instructions");
+    // Reconcile quote, order-book, history, and watchlist blocks only when revision, view, or row count changes;
+    // header/status/session nodes above stay un-gated so purely local pending transitions still render immediately.
     const paintRevision = revisionOf(snapshot);
-    // 没有可用 revision 时（旧宿主、手工快照）宁可每帧重画，也不要把界面永久钉在第一帧。
+    // Repaint every frame when revision is absent rather than pinning the UI to the initial frame.
     const paintKey = paintRevision < 0 ? "" : paintRevision + "|" + activeView + "|" + history.length;
     if (paintKey === "" || paintKey !== paintedKey) {
         paintedKey = paintKey;

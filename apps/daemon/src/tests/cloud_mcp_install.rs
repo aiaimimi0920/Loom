@@ -1,4 +1,4 @@
-// 真实宿主安装与 stdio 进程验证；下载回执在此是夹具，不冒充线上账号下载。
+// Real host installation and stdio process verification; download receipts here are test fixtures rather than live account downloads.
 fn cloud_mcp_archive(version: &str) -> Vec<u8> {
     let manifest = json!({
         "schemaVersion":1, "id":"cloud-version", "name":"Cloud Version",
@@ -61,7 +61,7 @@ fn cloud_install_mcp_failed_commit_restores_active_and_keeps_versions() {
         before.command
     );
     loom_mcp::package::verify_installed_entry(&before).unwrap();
-    // 冲突不能删除候选包家族或其历史版本。
+    // Conflicts must never delete the candidate package family or its historical versions.
     runtime
         .mcp_servers
         .lock()
@@ -127,7 +127,7 @@ fn cloud_install_mcp_updates_and_executes_selected_version() {
         assert_eq!(config.package.as_ref().unwrap().version, version);
         if let Some(previous) = prior_command {
             assert_ne!(config.command, previous);
-            assert!(Path::new(&previous).is_file(), "更新保留旧版包体");
+            assert!(Path::new(&previous).is_file(), "update must preserve the previous package version");
         }
         let mut client = McpClient::connect(&config).expect("spawn installed MCP");
         client.initialize().expect("initialize installed MCP");

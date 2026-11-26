@@ -1,4 +1,4 @@
-// 实际native文档/图片核心接口；不用lib.dom，避免把fetch、URL或浏览器HTML能力错误广告给插件。
+// Core native document and image interfaces; omits lib.dom so fetch, URL, and browser HTML APIs are never advertised to plugins.
 import type { ArtCanvasContext } from "./native-canvas";
 declare const imageIdentity: unique symbol;
 export interface ArtImage {

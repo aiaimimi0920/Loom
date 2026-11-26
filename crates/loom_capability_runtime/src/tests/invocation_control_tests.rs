@@ -1,4 +1,4 @@
-//! 真实 framed runtime 的取消、进度和终态回归；不以 inflight 轮询规避预取消竞态。
+//! Cancellation, progress, and terminal-state regressions against a real framed runtime, without relying on inflight polling to avoid pre-cancellation races.
 use super::*;
 use std::time::Instant;
 

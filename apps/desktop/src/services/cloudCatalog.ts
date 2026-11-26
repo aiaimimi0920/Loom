@@ -34,6 +34,6 @@ export async function fetchCloudArtCatalog(baseUrl: string, after = "") {
     id: publication.id, name: publication.title, latestVersion: publication.label,
     publication,
   }));
-  // 目录未提供发布者认证或框架元数据，不猜测 official/framework。
+  // The catalog does not provide publisher certification or framework metadata; never guess official/framework.
   return { arts, nextAfter: page.nextAfter };
 }

@@ -42,7 +42,7 @@ fn install_art_from_store(
             409,
             json!({
                 "code": "framework_not_ready",
-                "message": format!("art `{art_id}` 需要框架 `{framework}`（未{reason}），请先安装该框架"),
+                "message": format!("art `{art_id}` requires framework `{framework}` ({reason}); install the framework first"),
                 "framework": framework,
             }),
         ),
@@ -66,14 +66,14 @@ fn install_art_from_store_request(
     if custom_art_store_requested(request.store.as_deref()) {
         return Err(
             loom_tool_registry::install::ArtInstallError::InvalidPackage(
-                "Loom 不支持选择第三方 Art 商店；可以改用本地 Art 包安装".to_owned(),
+                "Loom does not support third-party Art stores; install from a local Art package instead".to_owned(),
             ),
         );
     }
     let Some(store) = resolve_art_store_url() else {
         return Err(
             loom_tool_registry::install::ArtInstallError::InvalidPackage(
-                "Loom 官方 Art 服务暂不可用".to_owned(),
+                "Official Loom Art service is temporarily unavailable".to_owned(),
             ),
         );
     };
@@ -86,7 +86,7 @@ fn install_art_from_store_request(
             sync_trusted_publisher_from_store(&store, &user_id, framework_registry).map_err(
                 |error| {
                     loom_tool_registry::install::ArtInstallError::InvalidPackage(format!(
-                        "刷新可信用户 `{user_id}` 的公钥失败：{error}"
+                        "failed to refresh public keys for trusted user `{user_id}`: {error}"
                     ))
                 },
             )?;
@@ -188,7 +188,7 @@ fn package_art(
         Ok(None) => {
             return structured_error(
                 404,
-                json!({ "code": "tool_not_found", "message": format!("art `{id}` 不存在") }),
+                json!({ "code": "tool_not_found", "message": format!("art `{id}` does not exist") }),
             )
         }
         Err(error) => return tool_registry_error_response(error),
@@ -292,7 +292,7 @@ fn publish_art_to_store(
             400,
             json!({
                 "code": "custom_art_store_not_supported",
-                "message": "Loom 不支持选择第三方 Art 商店"
+                "message": "Loom does not support third-party Art stores"
             }),
         );
     }
@@ -301,7 +301,7 @@ fn publish_art_to_store(
         Ok(None) => {
             return structured_error(
                 404,
-                json!({ "code": "tool_not_found", "message": format!("art `{}` 不存在", request.art_id) }),
+                json!({ "code": "tool_not_found", "message": format!("art `{}` does not exist", request.art_id) }),
             )
         }
         Err(error) => return tool_registry_error_response(error),
@@ -311,14 +311,14 @@ fn publish_art_to_store(
             403,
             json!({
                 "code": "art_publish_not_owned",
-                "message": "只能发布当前用户本地创建的 Art"
+                "message": "Only locally authored Arts owned by the current user can be published"
             }),
         );
     }
     let Some(store) = resolve_art_store_url() else {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
+            json!({ "code": "art_store_not_configured", "message": "Official Loom Art service is temporarily unavailable" }),
         );
     };
     let (identity, signing_key) = match ensure_local_publisher_identity(control_plane_root) {
@@ -386,7 +386,7 @@ fn publish_art_to_store(
         Err(error) => {
             return structured_error(
                 502,
-                json!({ "code": "art_store_publish_failed", "message": format!("发布失败：{error}"), "url": url }),
+                json!({ "code": "art_store_publish_failed", "message": format!("publish failed: {error}"), "url": url }),
             )
         }
     };
@@ -397,7 +397,7 @@ fn publish_art_to_store(
                 502,
                 json!({
                     "code": "art_store_publish_contract_invalid",
-                    "message": format!("商店未返回有效的发布结果：{error}"),
+                    "message": format!("store did not return a valid publish response: {error}"),
                     "url": url
                 }),
             )
@@ -410,7 +410,7 @@ fn publish_art_to_store(
                 502,
                 json!({
                     "code": "art_store_publish_contract_invalid",
-                    "message": format!("商店未返回有效的发布结果：{error}"),
+                    "message": format!("store did not return a valid publish response: {error}"),
                     "url": url
                 }),
             )
@@ -425,7 +425,7 @@ fn publish_art_to_store(
             502,
             json!({
                 "code": "art_store_global_id_missing",
-                "message": "商店发布成功，但没有返回有效的全局 Art 编号",
+                "message": "published to store, but no valid global Art ID was returned",
                 "url": url
             }),
         );
@@ -436,7 +436,7 @@ fn publish_art_to_store(
             500,
             json!({
                 "code": "art_global_id_persist_failed",
-                "message": format!("Art 已发布，但无法保存平台编号：{error}"),
+                "message": format!("Art was published, but failed to persist platform global ID: {error}"),
                 "globalId": global_id
             }),
         );

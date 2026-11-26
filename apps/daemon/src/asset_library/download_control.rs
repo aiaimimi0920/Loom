@@ -1,4 +1,4 @@
-//! 控制项仅在请求生命期存在；绑定本机数据根和当前账号令牌摘要，不保存票据。
+//! Control entries exist only for the request lifetime; bound to the local data root and current account token digest without storing tickets.
 use super::{aria2_native::State, error, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -116,7 +116,7 @@ pub(super) fn control(root: &Path, body: &str, token: &str) -> Result<Value> {
         _ => return Err(error(400, "asset_library_task_invalid")),
     };
     if let Some(target) = target {
-        // 取消是终态；迟到的继续/暂停不能复活请求。
+        // Cancellation is terminal; late resume or pause requests must never revive a cancelled task.
         let _ = entry
             .state
             .control

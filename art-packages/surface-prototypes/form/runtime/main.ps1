@@ -1,13 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-function New-UnicodeText {
-    param([int[]]$CodePoints)
-    return -join ($CodePoints | ForEach-Object { [char]$_ })
-}
-
-$script:RequiredNameLabel = New-UnicodeText @(0x9879, 0x76EE, 0x540D, 0x79F0, 0x4E3A, 0x5FC5, 0x586B, 0x9879)
-$script:SubmittedLabel = New-UnicodeText @(0x63D0, 0x4EA4, 0x6210, 0x529F)
-$script:CancelledLabel = New-UnicodeText @(0x5DF2, 0x53D6, 0x6D88)
+$script:RequiredNameLabel = "Project name is required"
+$script:SubmittedLabel = "Submitted"
+$script:CancelledLabel = "Cancelled"
 
 function Find-SurfaceAction {
     param([object]$Value)

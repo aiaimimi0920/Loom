@@ -219,7 +219,7 @@ fn framework_readiness_rejects_tampered_lockfile() {
 
     let (ready, detail) = registry.readiness("process");
     assert!(!ready);
-    assert!(detail.contains("锁文件"), "detail={detail}");
+    assert!(detail.contains("lockfile"), "detail={detail}");
     std::fs::remove_dir_all(&root).ok();
 }
 

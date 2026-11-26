@@ -39,7 +39,8 @@ pub struct OtterCachePreferences {
 
 pub(super) fn read_otter_persisted_cache_settings() -> Option<OtterCachePreferences> {
     let path = otter_effective_app_data_dir().join("app-settings.json");
-    let bytes = read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Otter 缓存设置").ok()?;
+    let bytes =
+        read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Otter cache settings").ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     serde_json::from_value(value.get("cache")?.clone()).ok()
 }
@@ -56,7 +57,7 @@ pub(super) async fn wait_for_otter_cache_settings(
             }
             if Instant::now() >= deadline {
                 return Err(
-                    "缓存设置已保存，但 Otter 尚未确认应用；将在 Otter 下次连接时同步。".to_owned(),
+                    "Cache settings were saved, but Otter has not confirmed applying them yet; they will sync when Otter reconnects.".to_owned(),
                 );
             }
             std::thread::sleep(Duration::from_millis(80));
@@ -99,14 +100,22 @@ pub(super) fn directory_usage(path: &Path) -> Result<(u64, u64), String> {
     let mut file_count = 0_u64;
     let mut pending = vec![path.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        let entries = fs::read_dir(&directory)
-            .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", directory.display()))?;
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "Failed to read cache directory `{}`: {error}",
+                directory.display()
+            )
+        })?;
         for entry in entries {
-            let entry = entry
-                .map_err(|error| format!("无法检查缓存目录 `{}`：{error}", directory.display()))?;
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Failed to inspect cache directory `{}`: {error}",
+                    directory.display()
+                )
+            })?;
             let file_type = entry
                 .file_type()
-                .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+                .map_err(|error| format!("Failed to inspect cache file type: {error}"))?;
             if file_type.is_symlink() {
                 continue;
             }
@@ -138,13 +147,16 @@ pub(super) fn otter_cache_entry(
 }
 
 pub(super) fn otter_cache_snapshot() -> Result<OtterCacheSnapshot, String> {
-    let temporary = otter_cache_entry("temporary", "临时缓存", otter_clipboard_cache_dir())?;
+    let temporary = otter_cache_entry("temporary", "Temporary Cache", otter_clipboard_cache_dir())?;
     let session_path = otter_effective_app_data_dir().join("session.json");
-    let session =
-        read_bounded_regular_file(&session_path, MAX_SETTINGS_FILE_BYTES, "Otter 会话缓存索引")
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
+    let session = read_bounded_regular_file(
+        &session_path,
+        MAX_SETTINGS_FILE_BYTES,
+        "Otter session cache index",
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    .unwrap_or_else(|| serde_json::json!({}));
     let collection_count = |key: &str| {
         session
             .get(key)
@@ -162,25 +174,41 @@ pub(super) fn otter_cache_snapshot() -> Result<OtterCacheSnapshot, String> {
 pub(super) fn clear_directory_contents(path: &Path) -> Result<(), String> {
     validate_destructive_cache_root(path)?;
     if !path.exists() {
-        fs::create_dir_all(path)
-            .map_err(|error| format!("无法创建缓存目录 `{}`：{error}", path.display()))?;
+        fs::create_dir_all(path).map_err(|error| {
+            format!(
+                "Failed to create cache directory `{}`: {error}",
+                path.display()
+            )
+        })?;
         return Ok(());
     }
-    for entry in fs::read_dir(path)
-        .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", path.display()))?
-    {
-        let entry =
-            entry.map_err(|error| format!("无法检查缓存目录 `{}`：{error}", path.display()))?;
+    for entry in fs::read_dir(path).map_err(|error| {
+        format!(
+            "Failed to read cache directory `{}`: {error}",
+            path.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to inspect cache directory `{}`: {error}",
+                path.display()
+            )
+        })?;
         let file_type = entry
             .file_type()
-            .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+            .map_err(|error| format!("Failed to inspect cache file type: {error}"))?;
         let entry_path = entry.path();
         let result = if file_type.is_dir() && !file_type.is_symlink() {
             fs::remove_dir_all(&entry_path)
         } else {
             fs::remove_file(&entry_path)
         };
-        result.map_err(|error| format!("无法删除缓存 `{}`：{error}", entry_path.display()))?;
+        result.map_err(|error| {
+            format!(
+                "Failed to delete cache entry `{}`: {error}",
+                entry_path.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -214,7 +242,7 @@ pub(super) fn clear_otter_cache_blocking(kind: &str) -> Result<OtterCacheClearRe
                 &serde_json::json!({ "action": "clearReferenceLibrary" }),
             )?;
         }
-        _ => return Err("不支持的 Otter 缓存清理目标。".to_owned()),
+        _ => return Err("Unsupported Otter cache cleanup target.".to_owned()),
     }
     let deadline = Instant::now() + Duration::from_secs(4);
     let snapshot = loop {
@@ -229,7 +257,9 @@ pub(super) fn clear_otter_cache_blocking(kind: &str) -> Result<OtterCacheClearRe
             break snapshot;
         }
         if Instant::now() >= deadline {
-            return Err(format!("Otter 未在规定时间内完成 `{kind}` 清理。"));
+            return Err(format!(
+                "Otter did not finish clearing `{kind}` before the timeout."
+            ));
         }
         std::thread::sleep(Duration::from_millis(80));
     };

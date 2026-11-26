@@ -1,4 +1,4 @@
-//! 为已授权的精确 Art 执行合同签名；不读取包、不授设备权限、不把发布者密钥默认为授权签发者。
+//! Signs authorized exact Art execution contracts; does not read packages, grant device permissions, or treat publisher keys as grant issuers by default.
 use crate::{sign_message, verify_message, PluginSecurityError, SigningKeyDocument};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use loom_protocol::local_art::{Envelope, Grant, DOMAIN, MAX_ENVELOPE, MAX_PAYLOAD};
@@ -37,7 +37,7 @@ fn issue_payload(
     Ok(bytes)
 }
 
-/// issuer key 来自调用者的独立信任配置；绝不使用 envelope 中附送的公钥建立信任。
+/// The issuer key comes from the caller's independent trust configuration; never establish trust from a public key attached to the envelope.
 pub fn verify(bytes: &[u8], key_id: &str, public_key: &str) -> Result<Grant, PluginSecurityError> {
     let payload = verify_payload(bytes, key_id, public_key, DOMAIN)?;
     let grant: Grant = serde_json::from_slice(&payload)?;

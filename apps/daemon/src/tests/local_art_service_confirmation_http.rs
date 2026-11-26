@@ -1,4 +1,4 @@
-// 原Device/issuer/审批/Task/真实签名进程；测试批准由可信测试宿主给出，不冒充实际用户UI验收。
+// Real Device, issuer, approval, Task, and signed plugin process; test approval comes from the trusted test host without spoofing live user UI acceptance.
 const CONFIRMATION: &str = "loom.art.local.service.confirmation.v1";
 impl Fixture {
     fn sensitive() -> Self {

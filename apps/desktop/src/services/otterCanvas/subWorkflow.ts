@@ -1,5 +1,6 @@
 // Serializes a selected connected component as a standalone workflow YAML document.
 
+import { uiFormat } from "../../i18n/index.ts";
 import type { OtterCanvasNode, OtterCanvasSnapshot } from "./types.ts";
 import {
   requireWorkflowReferenceToken,
@@ -50,7 +51,7 @@ export function buildSubWorkflowYaml(
         "workflow node id",
       );
       if (usedIds.has(workflowNodeId)) {
-        throw new Error(`Duplicate workflow node id: ${workflowNodeId}`);
+        throw new Error(uiFormat("otter.error.duplicateWorkflowNodeId", { nodeId: workflowNodeId }));
       }
       usedIds.add(workflowNodeId);
       idMap.set(node.id, workflowNodeId);

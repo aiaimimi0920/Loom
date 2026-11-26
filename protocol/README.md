@@ -1,433 +1,78 @@
-# Loom plugin protocol
-
-## 当前架构范围（2026-11-04）
-
-相关软件同步更新；不维护旧协议/模式/程序兼容或新旧版本协商/降级/互通验收。冲突的历史兼容承诺以下述当前合同为准。Local Art当前唯一准备入口及签名端口显隐见[当前本地执行合同](LOCAL_ART_EXECUTION.md#当前唯一准备合同v5382026-11-04)。基础合同仍按其实际职责使用，不按v1字样机械删除。
-
-## Local Art port package v2
-
-新增精确 Device POST `/v2/art/local/prepare-package`、请求 `loom.art.local.prepare-package.v2`，签名 payload 为独立 `loom.art.local.package.v2` 域，严格包含 protocolVersion、原 package 和 ports；旧 package.v1 与原权限/设备/审批/包/资源/期限保持，不在同协议偷换语义。ports.inputs/outputs 每侧至多32项，名字UTF-8至多128字节、类型64字节，不接受空白/控制字符/同侧重名；端口JSON至多8KiB，并与资源共享原签名payload预算。
-
-执行前沿原Lease/Control读取 `/v1/art/local/issuer`，新增可选 `supportedPrepareProtocols`；响应至多4096字节，必须与独立可信Pin的algorithm/keyId/公钥一致，不从网络自动授信或新建Lease。旧响应缺能力直接走v1，不能先探测未知v2路由；advertised v2 后任何拒绝（包括404）都失败关闭，不降级重放。原v1 package到resume的精确404回退仍保留。
-
-本批最终选定 **83项Rust passed**，其中17项新回归；当前选定终态failed=0，不是整库。签名域/篡改/预算、旧能力协商、拒绝不重放、图拓扑、中文自定义输入、真实2×2红像素、Live配置换代拒迟到、零输入不交付像素、自定义rendered输出继续建子Art及Save/窗口重建/有限离线均已验。真实Loom LAN HTTPS跨进程联合在线和停服后离线独立核signedPorts、完整资源、正式像素和正式结果；不完整缓存拒绝，父子不混加。Otter strict all-targets Clippy、两仓fmt、官方版本/strict行数、Otter lib/普通Release/工作区与Tile驱动构建通过；Loom签名安全/daemon测试库通过。66项源码delta均UTF-8无BOM，Rust最大500有效行，无新增行数例外。两个原跨仓grant门及两个SDK示例默认ignored未运行；Loom整仓strict Clippy旧债未重跑，不称两仓全绿。
-
-详见[本地执行许可合同](LOCAL_ART_EXECUTION.md)。
-
-This directory is the public, source-independent contract for framework and
-Art package authors. Rust types live in `crates/loom_protocol`; the JSON Schema
-files in `protocol/schemas` are the language-neutral source of truth. Plugin
-authors must not depend on private Loom or Otter source code.
-
-## Compatibility rules
-
-- `loom.framework.v1` is stable. Existing field names and one-request/one-result
-  JSON semantics will not change incompatibly.
-- `loom.hook.v1` is the standardized Loom<->Otter Art bridge contract. It owns
-  connection negotiation, capability discovery, Art execution requests and
-  results, Surface attachment/resource operations, and structured failures.
-  Loom and Otter negotiate from `protocolVersion` plus
-  `supportedProtocolVersions`; package authors must use the brokered contract
-  rather than calling Otter or Loom implementation APIs directly.
-- Hosts negotiate from `protocolVersion` plus `supportedProtocolVersions`.
-  Packages must not infer behavior from the Loom application version.
-- `loom.art.execute.v1` and `loom.art.result.v1` describe framework execution.
-- `loom.art.runtime.v1` describes a package-local Art runtime entry.
-- `loom.surface.v1` describes distributed Art Surface manifests, snapshots,
-  patches, typed events, content-addressed resources, previews, and atomic
-  formal result commits. It is independent of Otter's frontend framework.
-- `loom.wall.v1` describes physical endpoints, wall layouts and source placement.
-  Its strict field and coordinate rules are defined in
-  [WALL_PROTOCOL.md](WALL_PROTOCOL.md); geometry alone does not authorize input.
-  [WALL_SURFACE_API.md](WALL_SURFACE_API.md) defines ephemeral Art views,
-  scoped resources, host confirmation and cancellation for wall terminals.
-  [WALL_PRESENTATION_API.md](WALL_PRESENTATION_API.md) defines freeze/black/resume;
-  [WALL_IDENTIFICATION_API.md](WALL_IDENTIFICATION_API.md) defines physical display
-  metadata and identification. Their optional fields retain Wall's strict rules.
-- Unknown optional fields must be ignored. Missing optional fields use the
-  secure defaults defined by `loom_protocol`.
-- Device pairing, challenge issuance, and terminal versus pending authorization
-  errors follow [DEVICE_SESSIONS.md](DEVICE_SESSIONS.md). A disabled device must
-  not be treated as waiting for approval.
-- Streaming or persistent workers require a separately named protocol and
-  explicit negotiation; they cannot silently change v1 framing.
-
-### Loom<->Otter Art contract and legacy retirement
-
-2026-10-28 目标调整：Art JS 将迁移为 Otter 单侧执行，Loom 保留包/授权/服务。
-以下仍是当前 v1 生产合同，不因目标调整无声变义；迁移顺序、版本边界和待定 owner 见
-[Art 本地执行迁移计划](OTTER_LOCAL_ART_MIGRATION.md)。新协议和产品接线尚未完成。
-新增 [本地执行许可合同](LOCAL_ART_EXECUTION.md) 定义独立签名、精确绑定和期限；已有协议库/签发器实现，
-但生产路由与 Otter 挂载尚未启用，不能把该合同存在当作新架构已经运行。
-
-The local Otter bridge uses native-only TLS 1.3 with a pinned per-start certificate,
-private discovery and a connection-bound exporter proof. See
-[Native local bridge transport](LOCAL_BRIDGE_SECURITY.md) for the normative contract.
-The daemon HTTP administrator credential is independent and is never sent to the
-WebSocket listener. Duplicate authentication/instance/Host headers, foreign Host,
-Origin, browser subprotocol credentials and query credentials are rejected.
-
-Otter and Loom Desktop WebViews use narrow native IPC; neither receives bridge
-credentials or opens a browser WebSocket. Browser previews remain local-only.
-The former HTTP credentials broker and secret-returning native commands are removed.
-Application handshakes and extension grants still apply after authentication.
-
-Upgrade Otter and Loom together. Mixed versions fail closed without a plaintext or
-broker fallback. This is not a sandbox against arbitrary same-user processes that
-can read private discovery or native process memory.
-
-The canonical-only contract is the current production baseline. Obsolete
-wire aliases, persisted forms, package layouts, provider/process fields, and
-app-data identities are rejected rather than discovered or migrated.
-
-The canonical cross-application Art path is `loom.hook.v1` together with the
-`loom.surface.v1` Surface payload protocol. Loom owns package installation,
-execution, resource brokering, formal-result commits, and device/session
-authorization; Otter owns capability-driven rendering and user interaction. The
-wire contract does not expose private Rust types, Otter DOM handles, Tauri IPC,
-or package source paths.
-
-There are no legacy compatibility inputs on the production Loom<->Otter Art
-bridge. Requests and ordinary events use only the exact `loom.hook.*` names
-defined by `loom.hook.v1`; Surface pushes use only the exact
-`loom.surface.snapshot`, `loom.surface.patch`, `loom.surface.generation`,
-`loom.surface.action.ack`, `loom.surface.confirmation.request`,
-`loom.surface.action.progress`, `loom.surface.preview`, `loom.surface.result`,
-`loom.surface.failure`, `loom.surface.lifecycle`, and `loom.surface.dispose`
-names. Unnamespaced names such as `surface` and `surface/snapshot`, ArtLoom/AHRP
-routes, old direct per-Art methods, and short Art-ID catalog aliases are not
-accepted. Bridge Art identity is publisher-qualified, for example
-`neuro.official/surface-device-dashboard`.
-
-Every `loom.hook.art.execute` request declares a non-empty
-`outputTransports` list. A native Otter client may request `shared_memory` and
-`websocket`; a browser client requests only `websocket`. Loom materializes every
-declared formal output port using a transport the client can consume. It never
-sends an undeclared shared-memory handle and never drops scalar or secondary
-ports merely because another output is an image. Missing `outputTransports` is
-invalid rather than being inferred from historical client behavior.
-After a client has materialized shared-memory results, it sends
-`loom.hook.art.resources.release` with a fresh command `requestId`, the original
-`executionRequestId`, and the exact device, node, generation, and handle set.
-Loom releases only handles owned by that execution identity. Repeated release
-of an already released owned handle is idempotently reported as missing;
-cross-request or cross-identity handles are rejected without releasing any
-mapping.
-
-Otter translates formal `loom.surface.*` pushes into private `surface/...` Tauri
-events for its frontend. Those process-internal UI events are not wire aliases.
-Framework and Art storage use only publisher-qualified immutable layouts; the
-Art Store exposes exact versioned packages; Otter reads only its current app-data
-identity; and framework processes accept only the current ABI fields. Otter's
-WGC-to-GDI screenshot fallback is a current capture reliability mechanism, not
-a package, persistence, or bridge compatibility path.
-
-## Distributed Art Surface v1
-
-Surface v1 uses a small JSON control protocol and keeps large resources outside
-control messages. A Otter client first advertises its Surface API version,
-runtime kinds, node catalog, input capabilities, and transports. Loom may then
-select a declarative or pre-built JavaScript variant, fall back to the package's
-declarative scene, or use Otter's default output view.
-
-The first mount uses a `SurfaceSnapshot`. Later updates use ordered
-`SurfacePatch` values with `baseRevision` and `revision`. Scene node IDs are
-stable across patches. JavaScript source, arbitrary HTML, Otter DOM handles, and
-Tauri IPC are not part of the wire contract.
-
-Surface events carry an instance, attachment, event, request generation, and
-base revision. Reliable discrete/commit events use stable event IDs for host
-deduplication. Continuous events may be coalesced. Preview commits update only
-the Art display. `SurfaceResultCommit` atomically publishes all formal outputs;
-ordinary downstream links, save, and export consume only those formal values.
-
-Actions execute under their declared timeout and concurrency policy. A
-replace-latest or explicit cancellation changes the request to a terminal
-cancelled state before any late runtime response can mutate Surface state.
-Explicit cancellation is accepted only from the approved device that owns the
-action attachment and only for actions declaring `cancelable: true`. Actions
-requiring confirmation remain outside the execution queue until Loom's
-host-owned confirmation broker records a device-bound approval; Art code cannot
-render or bypass that prompt.
-
-Resources use immutable `sha256:<hex>` IDs. Same-host clients may negotiate
-shared memory, while remote clients use an authenticated Loom resource service.
-Large Base64 payloads do not belong in snapshots or patches.
-
-Remote Otter devices generate an Ed25519 key pair and submit only the public key
-as a pending pairing request. Human approval is required before Loom issues a
-one-time challenge. The client signs the canonical
-`loom.device-session.v1` challenge envelope and receives a short-lived opaque
-session token; Loom stores only its SHA-256 hash. Every authenticated request
-also carries a unique nonce. Replayed nonces fail closed, and disabling or
-deleting a device immediately invalidates its active sessions. Device sessions
-are route-scoped and cannot call Loom administration APIs or impersonate a
-different Surface attachment device. Remote deployments expose Loom only
-through an authenticated TLS endpoint; direct non-loopback plaintext transport
-is not a supported deployment boundary.
-
-Remote Surface pushes use the resumable `/v1/surfaces/stream` cursor protocol.
-The bounded replay window reports `reset: true` after cursor loss and includes
-current snapshots on initial or reset polls. Local same-host clients may keep
-using the shared-memory and loopback WebSocket fast paths. The poll response
-envelope is `schemas/surface-stream.v1.schema.json`; `protocolVersion` is
-required there because a reader that finds it absent is talking to a broken
-producer, not to an older Loom.
-
-Package-local declarative entries use
-`schemas/surface-scene.v1.schema.json`. They may contain a bare root node or a
-document with `protocolVersion`, `scene`, initial authoritative state, and
-content-addressed resource descriptors.
-
-Surface instance upgrades are explicit. Installing or activating a newer Art
-package never mutates a running instance. A migration request names the exact
-target semantic version and package digest. Loom executes the target package's
-bounded, package-local JSON merge-patch chain, increments the instance
-generation, remounts every live attachment, and keeps an eight-entry checkpoint
-history for exact rollback. A missing migration step, stale generation, pending
-action, unhealthy target entry, or failed remount rejects the change without
-silently switching the instance to the active package.
-
-Snapshot and patch resource references are brokered by Loom. A plugin cannot
-invent a content digest, lease ID, expiry, or transport descriptor: every
-descriptor must match a verified object in the Surface resource store and every
-lease must exactly match a live host-issued lease.
-
-Capability results may request the generic `external.openUrl` effect only for a
-bounded, credential-free HTTPS URL. The package and command must declare
-`hook.external.open`, the capability runtime must consume a user gesture, and
-the host must revalidate the URL at its native browser boundary. This effect is
-never an instruction to execute a file or silently navigate without a direct
-user action.
-
-## Canonical identities
-
-Package-local IDs use ASCII letters, digits, `.`, `_`, and `-`. Signed or
-publisher-owned packages have the canonical identity `publisher/id`.
-
-- Storage, activation, upgrade, rollback, uninstall, and HTTP routes operate on
-  the qualified identity.
-- A bare ID is accepted only when exactly one installed publisher owns it.
-- An encoded path ID uses `%2F`, for example
-  `publisher.example%2Fimage-tool`; raw slashes are not accepted inside one path
-  parameter.
-- A package from one publisher cannot upgrade or replace another publisher's
-  package with the same local ID.
-
-## Capability runtime ABI
-
-The experimental Browser Live document-pinning consumer has been retired from
-Otter; browser windows use native window capture. Its package-specific command
-description is archived at
-`cleanup-base-20260928:protocol/BROWSER_DOCUMENT_PROVIDER.md` and is not an active
-host contract. The generic capability ABI below remains the extension boundary.
-
-Capability services use `loom.capability.runtime.v1`. Each message is one
-UTF-8 JSON document prefixed by a four-byte unsigned big-endian length. A frame
-larger than 4 MiB is rejected. The host and runtime keep stdin/stdout open for a
-bounded sequence of `initialize`, `activate`, `command`, `cancel`, `health`, and
-`deactivate` requests. Every response repeats the request ID and uses
-`accepted`, `progress`, `succeeded`, `failed`, or `cancelled`. Runtime logs are
-written to stderr; stdout contains framed protocol messages only.
-
-The signed package declares command input/output schemas, permissions, resource
-limits, and process model. Loom validates those boundaries again before
-dispatch and before applying returned effects. See
-`schemas/capability-package.v1.schema.json`,
-`schemas/capability-runtime.v1.schema.json`, and
-`schemas/extension.v1.schema.json`.
-
-### Extension resource authorization
-
-Plugin bindings publish host-owned `effectivePermissions`: the installed manifest's
-permissions after verification against Loom's package-digest-bound grant store.
-An omitted field grants no resource access. Contribution `permissions` remain
-requirements, not grants. Otter exposes executable contributions only for `trusted`
-owners with matching scope; unsigned developer packages are not desktop authorities.
-
-Otter requires the `resource.authorization.v1` extension feature. Before reading
-Unit image bytes or attachments, it sends `loom.extension.command.authorize` with
-`requestId`, `sessionId`, `pluginId`, `commandId`, `snapshotGeneration`, and `target`.
-Loom checks current installed-package trust and grants. `checkOnly: true` returns
-`{ "authorized": true }` without allocating a ticket, for local cached overlay
-actions and OCR-context preparation. Otherwise the response contains an opaque
-`authorizationId`, valid for 30 seconds on that connection and for that exact
-command, plugin binding, generation and target. At most 32 tickets are outstanding.
-
-`loom.extension.command.invoke` carries that ID alongside `invocation` and optional
-`resourceUploads`. Resource uploads, existing resource references, unit attachments,
-and OCR input contexts require a ticket. Consumption removes the ticket before
-checking it; retries require a new authorization. The server rechecks current
-grants before staging, after staging, and before publishing runtime results.
-Reconnect and either handshake invalidate outstanding tickets. Long-running OCR
-preparation precedes issuance of the final invocation ticket.
-
-Both applications must be upgraded together: older Otter parsers reject the new
-binding field, and newer Otter rejects peers without the authorization feature.
-This application authorization contract complements the mandatory local WebSocket
-transport authentication described above; do not treat protocol session IDs or
-localhost addresses alone as peer identity.
-
-## Normative framework process ABI
-
-1. Loom resolves the framework entry inside the immutable framework package.
-2. Loom starts one process for the execution.
-3. Loom writes exactly one UTF-8 JSON request followed by one newline, then
-   closes stdin.
-4. The process writes exactly one UTF-8 JSON response to stdout. Protocol data
-   must not be mixed with banners or logs.
-5. Logs and diagnostics belong on stderr.
-6. A successful framework-process response uses status `success`; no alternate
-   status spelling is accepted.
-7. A failed response uses the structured `error.code`, `error.message`, and
-   optional `error.detail` fields. A non-zero exit, timeout, invalid JSON, or
-   output limit is also a structured host failure.
-8. Loom bounds timeout, stdout, stderr, memory, and descendant process count
-   from the manifest resource limits. Termination applies to the managed process
-   tree, not only the direct child.
-
-The request carries only brokered context: Art/package directories, writable
-state/cache/output/temp directories, declared permission metadata, and explicit
-credential grants. Host environment secrets are not part of the ABI.
-
-## Framework package ZIP
-
-A framework ZIP contains, at minimum:
-
-```text
-framework.manifest.json
-<entry.command>
-```
-
-The installer rejects absolute paths, traversal, links, duplicate or
-case-colliding entries, Windows reserved names and alternate data streams,
-excess path length, file-count/expanded-size limits, and suspicious compression
-ratios. The process entry must remain inside the package.
-
-Framework versions are installed as:
-
-```text
-frameworks/<publisher>/<id>/
-  active.json
-  lifecycle.json            # present only during an interrupted transition
-  versions/<version>-<digest>/
-  locks/<package-digest>.json
-```
-
-The publisher directory is mandatory. Version directories are read-only after
-activation. `active.json` changes atomically. Startup recovers
-or quarantines lifecycle journals, verifies the active lockfile, and refuses a
-tampered package.
-
-## Art package ZIP
-
-An independently executable Art ZIP contains:
-
-```text
-manifest.json               # ToolDefinition
-art.runtime.json            # loom.art.runtime.v1
-<runtime entry and resources>
-```
-
-Installed layout:
-
-```text
-arts/<publisher>/<id>/
-  active.json
-  lifecycle.json
-  versions/<version>-<digest>/   # read-only code/resources
-  locks/<package-digest>.json
-  state/                         # writable
-  cache/                         # writable
-  outputs/                       # writable
-```
-
-Install, upgrade, and rollback verify publisher identity, signature/trust,
-canonical digest, framework version/digest, binary hashes, and lockfile schema.
-The active package is verified again before daemon execution. Failed activation
-restores the prior pointer; code is never written into Loom or Otter source.
-
-## Dependencies and locks
-
-`dependencies` uses semantic-version requirements and optional SHA-256 pins.
-The resolver selects the highest compatible candidate that also satisfies the
-pin. The lockfile records exact kind, ID, version, and digest. Runtime registry
-entries whose directories no longer exist are pruned. Art-to-Art dependencies
-are installed dependency-first. Each parent lock records every direct child as
-`kind: "art"` with its publisher-qualified ID, exact version, and canonical
-digest; the entire child lock graph is revalidated before execution and
-rollback. Missing locks, cycles, child upgrades, activation changes, payload
-tampering, and uninstall all fail closed until the parent package is explicitly
-reinstalled/upgraded to refresh its lock. Children remain separate immutable
-packages rather than being copied into the parent Art.
-
-## Signing and trust
-
-Packages use Ed25519 and a canonical SHA-256 digest. Signature metadata is in
-the manifest and the detached document defaults to `signature.json`.
-
-Trust states are `unsigned`, `verified`, `trusted`, `invalid`, and `revoked`.
-The current development default is `LOOM_PLUGIN_TRUST_POLICY=allow-unsigned`.
-Production installations should use `require-trusted`. Revoked keys are always
-rejected by `loom-plugin validate --trust-store ...` and are rechecked during
-rollback and execution readiness.
-
-## Permissions and credentials
-
-The manifest permission policy declares network, filesystem, process, GPU,
-clipboard, and named credential requirements. Loom currently enforces process
-tree/resource limits, package path containment, writable-directory separation,
-credential scoping, and host-brokered HTTP/download policy. Raw credential
-values are never returned by list, diagnostic, or support-bundle APIs. Windows
-uses current-user DPAPI and owner-only ACLs; Unix uses owner-only files with a
-reversible local-file fallback, not an OS keyring or at-rest encryption guarantee.
-
-Windows Job Objects and Unix process groups are resource/process boundaries;
-they are not a complete AppContainer/namespace sandbox. Direct network,
-filesystem, GPU, and clipboard access by an arbitrary external executable
-cannot be described as fully OS-denied yet. See `docs/plugin-permissions.md` for
-the enforcement matrix and production restrictions. Use brokered Cloud API/MCP
-paths when hard network mediation is required.
-
-Timeout and stdout/stderr bounds plus process-tree termination apply on Windows
-and Unix. Memory and active-process-count limits are enforced by Windows Job
-Objects; the current Unix process-group backend reports those declarations as
-advisory.
-
-`LOOM_PLUGIN_PERMISSION_MODE=audit` is the current default.
-`LOOM_PLUGIN_PERMISSION_MODE=strict` rejects a framework before self-test or Art
-execution when it requests those direct, currently unenforceable capabilities.
-Doctor output reports the selected mode, enforcement matrix, and per-framework
-findings.
-
-## Diagnostics
-
-HTTP and `loom.hook.v1` Art executions create durable `art.execute` run
-evidence with started/completed/failed events. Diagnostics and support bundles
-redact tokens, passwords, private keys, authorization headers, cookies,
-credential values, URL credentials/query/fragment, and oversized strings.
-
-## Schemas and tools
-
-- `schemas/capability-package.v1.schema.json`
-- `schemas/capability-runtime.v1.schema.json`
-- `schemas/extension.v1.schema.json`
-- `schemas/framework-manifest.v1.schema.json`
-- `schemas/framework-execute-request.v1.schema.json`
-- `schemas/framework-execute-response.v1.schema.json`
-- `schemas/framework-authoring.v1.schema.json`
-- `schemas/art-runtime.v1.schema.json`
-- `schemas/surface-manifest.v1.schema.json`
-- `schemas/surface-message.v1.schema.json`
-- `schemas/surface-scene.v1.schema.json`
-- `schemas/surface-stream.v1.schema.json`
-- `schemas/device-session.v1.schema.json`
-- `schemas/otter-message.v1.schema.json`
-- `schemas/wall.v1.schema.json`
-- `schemas/wall-presentation.v1.schema.json`
-- `schemas/wall-identification.v1.schema.json`
-
-Use the independently released `loom-plugin.exe`:
+# Loom Plugin and Runtime Protocols
+
+This directory contains the public, source-independent wire contracts and JSON Schemas for Framework, Art, Capability Plugin, Surface, Device, Projection, Live Screenshot, and Tile Wall integrations. Rust types live in `crates/loom_protocol`, and the JSON Schema files in `protocol/schemas/` are the language-neutral source of truth. Plugin and companion authors must never depend on private Loom or Otter source files.
+
+## Protocol index
+
+- [Device Session Authentication](DEVICE_SESSIONS.md): Ed25519 pairing requests, pending/challenge budgets, short-lived opaque `Device` sessions, and terminal vs. retryable error codes.
+- [Otter LAN Connection](LAN_CONNECTION.md): optional RFC1918 HTTPS listener (`8766`), UDP `49779` broadcast discovery, TOFU certificate pinning, and exact route allowlists.
+- [Native Local Bridge Security](LOCAL_BRIDGE_SECURITY.md): loopback TLS 1.3 WebSocket transport, private discovery manifest, and connection-bound exporter proofs.
+- [Otter Local Art Execution](LOCAL_ART_EXECUTION.md): `POST /v3/art/local/prepare-package` (`loom.art.local.package.v3`), Ed25519 execution/offline grants, package resources, signed port visibility, async Capability services (JSON, image inputs, Canvas inputs, PNG outputs, host confirmations), Live viewer attach/control, and `onLiveTrigger` callbacks.
+- [Live Screenshot Protocol v1](LIVE_SCREENSHOT_PROTOCOL.md): `loom.live.v1` control envelopes, 64-byte `NLLV` binary media frames (`raw_bgra`, negotiated `loom.live.jpeg.v1`, and `loom.live.h264.v1` continuity), in-place legacy buffer adaptation, stage diagnostics, bounded baseline sampling, and observation triggers.
+- [QR Projection v1](QR_PROJECTION.md) and [QR Projection v2](QR_PROJECTION_V2.md): signed QR invitations, central account coordination, and Iroh/HTTPS peer image transfer.
+- [Offline Projection Peers](OFFLINE_PROJECTION_PEERS.md), [Projection Editing](PROJECTION_EDIT.md), [Projection Settings](PROJECTION_SETTINGS.md), [Sticker Delivery](STICKER_DELIVERY.md), and [Account Login](ACCOUNT_LOGIN.md).
+- [Wall Protocol](WALL_PROTOCOL.md), [Wall Control API](WALL_CONTROL_API.md), [Wall Input API](WALL_INPUT_API.md), [Wall Surface API](WALL_SURFACE_API.md), [Wall Presentation API](WALL_PRESENTATION_API.md), [Wall Identification API](WALL_IDENTIFICATION_API.md), and [Wall Scene Timing and Media](WALL_TIMING_MEDIA.md).
+
+## Compatibility and canonical-only rules
+
+- Loom and Otter upgrade together on canonical wire contracts. Obsolete wire aliases, unnamespaced methods, ArtLoom/AHRP routes, short Art-ID catalog aliases, and legacy app-data paths are rejected rather than translated.
+- `loom.framework.v1` is stable: existing field names and single-request/single-response JSON framing do not change incompatibly.
+- `loom.hook.v1` is the Loom<->Otter bridge contract governing capability discovery, Art execution requests/results, Surface attachment/resource operations, workflow synchronization, and structured failures. Hosts negotiate via `protocolVersion` plus `supportedProtocolVersions`; packages must never infer behavior from application version strings.
+- `loom.art.execute.v1`, `loom.art.result.v1`, and `loom.art.runtime.v1` define Framework and package-local Art execution entries.
+- `loom.surface.v1` defines distributed Art Surface manifests, `SurfaceSnapshot`, ordered `SurfacePatch` revisions, typed events, content-addressed `sha256:<hex>` resources, previews, and atomic `SurfaceResultCommit` publication.
+- `otter.art.v1` and `loom.art.local.*` define single-side Otter QuickJS Art execution authorized by Loom's Ed25519 grants and `POST /v3/art/local/prepare-package` packages (see [LOCAL_ART_EXECUTION.md](LOCAL_ART_EXECUTION.md)).
+- `loom.wall.v1` defines physical display endpoints, wall layouts, source placements, ephemeral Surface views, freeze/blackout/resume controls, output identification, and `loom.wall.media.v1` (`NLWM`) streaming.
+- Unknown optional fields are ignored where schema-extensible; strict security envelopes (`local_art`, `live-control`, `qr-projection.v2`) reject unknown or duplicate fields fail-closed.
+
+## Loom<->Otter bridge and Surface v1 transport
+
+The local Otter bridge uses native-only TLS 1.3 with a pinned per-start certificate, private discovery manifest, and connection-bound TLS exporter proof ([LOCAL_BRIDGE_SECURITY.md](LOCAL_BRIDGE_SECURITY.md)). Daemon HTTP administrator tokens are independent and are never sent to the WebSocket bridge; WebViews use narrow native IPC rather than opening direct bridge WebSockets.
+
+- Bridge Art identities are always publisher-qualified (for example `neuro.official/surface-device-dashboard`).
+- Every `loom.hook.art.execute` request declares a non-empty `outputTransports` array (`shared_memory` and `websocket` for native clients; `websocket` for browser clients). After consuming shared-memory handles, clients send `loom.hook.art.resources.release` bound to the exact `executionRequestId`, device, node, generation, and handle set.
+- Surface pushes use only exact `loom.surface.*` names (`snapshot`, `patch`, `generation`, `action.ack`, `confirmation.request`, `action.progress`, `preview`, `result`, `failure`, `lifecycle`, `dispose`).
+- Actions execute under their declared timeout and concurrency policy. Actions declaring `cancelable: true` can be cancelled only by the approved owning attachment device; high-risk actions wait in Loom's host-owned confirmation broker until device-bound user approval is recorded.
+- Remote Otter devices pair via Ed25519 public keys (`POST /v1/devices/requests`), exchange one-time challenges (`loom.device-session.v1`), send unique per-request nonces, and poll `/v1/surfaces/stream` (`schemas/surface-stream.v1.schema.json`) over authenticated HTTPS.
+- Surface instance version upgrades are explicit: Loom runs the target package's bounded JSON merge-patch migration chain, increments generation, remounts live attachments, and retains an 8-entry checkpoint ring for exact rollback.
+- Capability results may emit `external.openUrl` only when both package and command declare `hook.external.open`, a real user gesture is consumed, and the target is a credential-free `https://` URL revalidated by the native host.
+
+## Canonical package identities
+
+Package-local IDs use ASCII letters, digits, `.`, `_`, and `-`. Publisher-qualified packages use `publisher/id`:
+
+- Storage, activation, upgrade, rollback, uninstall, and HTTP APIs operate on `publisher/id` (URL-encoded as `%2F` inside single path segments, e.g., `publisher.example%2Fimage-tool`).
+- Bare IDs resolve only when unambiguous across installed publishers. One publisher's package can never upgrade or overwrite another publisher's package.
+
+## Capability runtime ABI and extension authorization
+
+Capability Plugins speak `loom.capability.runtime.v1` over stdin/stdout: each message is one UTF-8 JSON document prefixed by a 4-byte unsigned big-endian byte length (4 MiB max frame), supporting `initialize`, `activate`, `command`, `cancel`, `health`, and `deactivate`. Runtime diagnostics go exclusively to `stderr`.
+
+Otter enforces `resource.authorization.v1` before reading Unit images or attachments:
+
+1. Otter sends `loom.extension.command.authorize` (`requestId`, `sessionId`, `pluginId`, `commandId`, `snapshotGeneration`, `target`, optional `checkOnly`).
+2. Loom verifies package trust and digest-bound grants in `grants.json`, issuing an opaque single-use `authorizationId` (30-second TTL, max 32 outstanding tickets per connection).
+3. `loom.extension.command.invoke` consumes that `authorizationId` before staging uploads, resource references, unit attachments, or OCR contexts, re-verifying grants before and after execution.
+
+## Normative framework process ABI and ZIP layouts
+
+1. Loom starts one managed child process per `loom.framework.v1` execution inside the immutable framework directory, writes one newline-terminated UTF-8 JSON request to `stdin`, and closes `stdin`.
+2. The process writes one UTF-8 JSON response (`status: "success"` or structured `error`) to `stdout` and logs only to `stderr`.
+3. Loom enforces timeouts, stdout/stderr byte caps, credential scoping, and full process-tree termination (Windows Job Objects; Linux Bubblewrap + `pidfd`).
+
+Framework and Art ZIPs extract into read-only `versions/<version>-<digest>/` directories with atomic `active.json` pointers, `locks/<package-digest>.json` dependency lockfiles, and separate writable `state/`/`cache/`/`outputs/` roots for Arts. Ed25519 detached signatures (`signature.json`) enforce `unsigned`, `verified`, `trusted`, `invalid`, and `revoked` trust states under `LOOM_PLUGIN_TRUST_POLICY` (`allow-unsigned` default in dev; `require-trusted` recommended in production) and `LOOM_PLUGIN_PERMISSION_MODE` (`audit` vs. `strict`).
+
+## Public JSON Schemas and SDK CLI
+
+Schemas under `protocol/schemas/`:
+
+- `capability-package.v1.schema.json`, `capability-runtime.v1.schema.json`, `extension.v1.schema.json`
+- `framework-manifest.v1.schema.json`, `framework-execute-request.v1.schema.json`, `framework-execute-response.v1.schema.json`, `framework-authoring.v1.schema.json`
+- `art-runtime.v1.schema.json`, `local-art-grant.v1.schema.json`, `local-art-package.v1.schema.json`, `local-art-resume.v1.schema.json`
+- `surface-manifest.v1.schema.json`, `surface-message.v1.schema.json`, `surface-scene.v1.schema.json`, `surface-stream.v1.schema.json`
+- `device-session.v1.schema.json`, `otter-message.v1.schema.json`, `live-control.v1.schema.json`, `qr-projection.v1.schema.json`
+- `wall.v1.schema.json`, `wall-presentation.v1.schema.json`, `wall-identification.v1.schema.json`, `wall-timing.v1.schema.json`
+
+Standalone Plugin SDK CLI (`loom-plugin`):
 
 ```text
 loom-plugin init framework <DIR> <ID> <PUBLISHER>
@@ -443,7 +88,3 @@ loom-plugin catalog validate <CATALOG_JSON> <TRUST_STORE>
 loom-plugin trust add <STORE> <PUBLISHER> <KEY_FILE>
 loom-plugin trust revoke <STORE> <PUBLISHER> <KEY_ID>
 ```
-
-The Plugin SDK ZIP contains this CLI, plugin schemas, capability runtime
-templates and fake host, and the developer/security documents. It does not
-contain Loom or Otter source.

@@ -1,7 +1,7 @@
 {
   "id": "custom-1770146354922",
-  "name": "图片压缩",
-  "description": "通过脚本对输入图片重新编码并输出 PNG。",
+  "name": "Image Compress",
+  "description": "Re-encodes the input image and returns PNG output.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -10,7 +10,7 @@
   "inputs": [
     {
       "name": "input",
-      "label": "输入图",
+      "label": "Input Image",
       "type": "image",
       "execution_type": "image_buffer"
     }
@@ -18,7 +18,7 @@
   "outputs": [
     {
       "name": "output",
-      "label": "压缩结果",
+      "label": "Compressed Result",
       "type": "image",
       "execution_type": "image_buffer"
     }
@@ -26,7 +26,7 @@
   "params": [
     {
       "id": "quality_num",
-      "label": "质量",
+      "label": "Quality",
       "widget": "slider",
       "default": 90,
       "min": 60,
@@ -36,7 +36,7 @@
     },
     {
       "id": "lossless",
-      "label": "无损压缩",
+      "label": "Lossless Compression",
       "widget": "checkbox",
       "default": true,
       "data_type": "boolean"
@@ -57,7 +57,7 @@
       "globalId": "NA20260802001"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "图片压缩",
         "en-US": "Image Compress"

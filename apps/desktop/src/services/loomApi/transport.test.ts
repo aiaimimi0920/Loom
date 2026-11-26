@@ -77,7 +77,7 @@ test("daemon JSON rejects a declared response larger than the transport limit", 
 
   await assert.rejects(
     getLoomDaemonJson("http://127.0.0.1:18765", "/v1/oversized"),
-    /超过 16777216 字节限制/,
+    /exceeded the 16777216-byte limit/,
   );
 });
 
@@ -97,7 +97,7 @@ test("daemon JSON rejects a streamed response larger than the transport limit", 
 
   await assert.rejects(
     getLoomDaemonJson("http://127.0.0.1:18765", "/v1/streamed-oversized"),
-    /超过 16777216 字节限制/,
+    /exceeded the 16777216-byte limit/,
   );
 });
 
@@ -115,7 +115,7 @@ test("daemon HTTP errors truncate untrusted response details", async (context) =
     getLoomDaemonJson("http://127.0.0.1:18765", "/v1/error"),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /^Loom 本地服务请求 \/v1\/error 返回 HTTP 500：x+/);
+      assert.match(error.message, /^Local Loom service request \/v1\/error returned HTTP 500: x+/);
       assert.ok(error.message.length < 2_200);
       assert.doesNotMatch(error.message, /untrusted-tail/);
       return true;

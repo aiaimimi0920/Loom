@@ -1,4 +1,4 @@
-// 正式结果权限必须同时由 immutable manifest 和精确审批授权，旧审批不自动扩权。
+// Formal result permission must be granted by both the immutable manifest and exact device approval; legacy approvals never auto-escalate.
 #[test]
 fn local_art_result_http_requires_explicit_approval_and_manifest_scope() {
     let mut f = Fixture::build_scoped("local.js", &sha256_bytes(SOURCE), false, SOURCE, true);

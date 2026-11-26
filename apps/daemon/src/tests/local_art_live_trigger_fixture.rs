@@ -1,4 +1,4 @@
-// 只使用本测试新建的安装包/设备/策略和 HTTP 服务；不执行 Art，不接触用户输入。
+// Uses only fresh packages, devices, policies, and HTTP server created by this test without executing Arts or touching user input.
 const ART_TRIGGER_ROUTE: &str = "/v1/art/local/live-trigger";
 const ART_TRIGGER_SESSION: &str = "live:art-trigger";
 struct TriggerFixture {
@@ -34,7 +34,7 @@ impl TriggerFixture {
             attach_viewer(&f, viewer_request(&f, grant.clone(), ART_TRIGGER_SESSION)).0,
             200
         );
-        // 本门验证 HTTP/条件/所有权，不把直接登记的媒体在线状态称为真实 WSS 联合。
+        // This gate verifies HTTP, conditions, and ownership without claiming that directly seeded media presence is a real WSS joint run.
         f.live_sessions
             .set_media_connected(ART_TRIGGER_SESSION, &f.device, LiveDeviceRole::Viewer, true)
             .unwrap();

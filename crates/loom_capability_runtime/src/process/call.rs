@@ -1,4 +1,4 @@
-//! 单次传输的取消唤醒与身份隔离。进度不进入最终响应 channel。
+//! Per-transport cancellation wakeup and identity isolation. Progress frames never enter the final response channel.
 use super::*;
 use crate::InvocationControl;
 use std::sync::mpsc::{Sender, TrySendError};

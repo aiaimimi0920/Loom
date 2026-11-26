@@ -1,7 +1,7 @@
 {
   "id": "surface-stock-card",
-  "name": "股票卡片",
-  "description": "分布式 Surface 原型：输入股票代码、连续调整刷新间隔并接收流式价格更新。",
+  "name": "Stock Card",
+  "description": "Distributed Surface prototype: enter a stock symbol, continuously tune refresh intervals, and receive streaming price updates.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -11,7 +11,7 @@
   "outputs": [
     {
       "name": "quote",
-      "label": "行情",
+      "label": "Quote",
       "type": "object"
     }
   ],
@@ -31,7 +31,7 @@
       "globalId": "NA20260811001"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "股票卡片",
         "en-US": "Stock Card"

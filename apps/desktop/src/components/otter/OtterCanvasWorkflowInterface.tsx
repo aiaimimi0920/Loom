@@ -1,6 +1,7 @@
 // Saved-workflow interface summary and actions for desktop/Art instantiation.
 
 import { Badge, Button, Notice, Panel } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { CanvasWorkflowInterface } from "../../services/otterCanvas.ts";
 import { OtterCanvasParamExposure } from "./OtterCanvasParamExposure.tsx";
 import type { NodeParamGroup, StatusMessage } from "./otterCanvasThumbnailModel.ts";
@@ -34,32 +35,35 @@ export function OtterCanvasWorkflowInterface({
   onExposureChange,
   onValueChange,
 }: OtterCanvasWorkflowInterfaceProps) {
+  const { t, tf } = useUiText();
   const totalInputCount = workflowInterface.inputs.length + exposedParamRows.length;
   return (
     <Panel className="otter-canvas-workflow-io" data-testid="otter-canvas-workflow-io" aria-busy={workflowBusy}>
       <div className="otter-canvas-workflow-io__head">
-        <p className="otter-canvas-workflow-io__title">工作流接口</p>
+        <p className="otter-canvas-workflow-io__title">{t("otter.interface.title")}</p>
         <div className="otter-canvas-workflow-io__action">
           <Button onClick={onAddToDesktop} disabled={workflowBusy} loading={workflowBusyAction === "desktop"}>
-            添加到桌面
+            {t("otter.interface.addToDesktop")}
           </Button>
           <Button variant="primary" onClick={onAddAsArt} disabled={workflowBusy} loading={workflowBusyAction === "art"}>
-            添加为 Art
+            {t("otter.interface.addAsArt")}
           </Button>
         </div>
       </div>
       {message ? <Notice tone={message.ok ? "success" : "danger"}>{message.text}</Notice> : null}
       <div className="otter-canvas-workflow-io__groups">
         <div className="otter-canvas-workflow-io__group">
-          <p className="otter-canvas-workflow-io__label">输入属性{totalInputCount ? `（${totalInputCount}）` : ""}</p>
+          <p className="otter-canvas-workflow-io__label">
+            {totalInputCount ? tf("otter.interface.inputsCount", { count: totalInputCount }) : t("otter.interface.inputs")}
+          </p>
           {totalInputCount ? (
-            <ul className="otter-canvas-workflow-io__list" tabIndex={0} aria-label="工作流输入属性">
+            <ul className="otter-canvas-workflow-io__list" tabIndex={0} aria-label={t("otter.interface.inputsAria")}>
               {workflowInterface.inputs.map((port) => (
                 <li key={`${port.nodeId}::${port.portId}`} className="otter-canvas-workflow-io__port">
                   <span className="otter-canvas-workflow-io__port-name" title={port.label}>
                     {port.label}
                   </span>
-                  <Badge>输入图像</Badge>
+                  <Badge>{t("otter.port.inputImage")}</Badge>
                 </li>
               ))}
               {exposedParamRows.map((row) => (
@@ -67,29 +71,29 @@ export function OtterCanvasWorkflowInterface({
                   <span className="otter-canvas-workflow-io__port-name" title={row.label}>
                     {row.label}
                   </span>
-                  <Badge>参数</Badge>
+                  <Badge>{t("otter.port.parameter")}</Badge>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="otter-canvas-workflow-io__empty">无</p>
+            <p className="otter-canvas-workflow-io__empty">{t("common.none")}</p>
           )}
         </div>
         <div className="otter-canvas-workflow-io__group">
-          <p className="otter-canvas-workflow-io__label">输出属性</p>
+          <p className="otter-canvas-workflow-io__label">{t("otter.interface.outputs")}</p>
           {workflowInterface.outputs.length ? (
-            <ul className="otter-canvas-workflow-io__list" tabIndex={0} aria-label="工作流输出属性">
+            <ul className="otter-canvas-workflow-io__list" tabIndex={0} aria-label={t("otter.interface.outputsAria")}>
               {workflowInterface.outputs.map((port) => (
                 <li key={`${port.nodeId}::${port.portId}`} className="otter-canvas-workflow-io__port">
                   <span className="otter-canvas-workflow-io__port-name" title={port.label}>
                     {port.label}
                   </span>
-                  <Badge>输出图像</Badge>
+                  <Badge>{t("otter.port.outputImage")}</Badge>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="otter-canvas-workflow-io__empty">无</p>
+            <p className="otter-canvas-workflow-io__empty">{t("common.none")}</p>
           )}
         </div>
       </div>

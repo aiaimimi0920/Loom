@@ -16,37 +16,37 @@ const COLORS = Object.freeze({
 });
 const INTERVALS = [1, 3, 5, 15, 30, 60, 120, 300];
 const INTERVAL_LABELS = Object.freeze({
-    1: "1 秒",
-    3: "3 秒",
-    5: "5 秒",
-    15: "15 秒",
-    30: "30 秒",
-    60: "1 分",
-    120: "2 分",
-    300: "5 分"
+    1: "1s",
+    3: "3s",
+    5: "5s",
+    15: "15s",
+    30: "30s",
+    60: "1m",
+    120: "2m",
+    300: "5m"
 });
 const DEFAULT_INTERVAL_SECONDS = 5;
 const FULL_REFRESH_SECONDS = 60;
 const CLOSED_MARKET_MIN_SECONDS = 30;
 const TICK_ACTION = "stock_tick_refresh";
 const INTERVAL_COMMIT_ACTION = "stock_interval_commit";
-// 宿主拒绝一次 tick 后的冷却时间。过期后重新探测准实时通道，而不是整个生命周期都降级。
+// Cooldown after a host rejects a tick action; re-probe the near-realtime channel once it expires instead of degrading permanently.
 const TICK_RETRY_COOLDOWN_MILLIS = 300000;
 const RED_UP_MARKETS = Object.freeze(["SH", "SZ", "BJ", "HK"]);
 const PERIODS = Object.freeze([
-    ["minute", "分时"],
-    ["five-day", "五日"],
-    ["day", "日 K"],
-    ["week", "周 K"],
-    ["month", "月 K"],
-    ["quarter", "季 K"],
-    ["year", "年 K"],
-    ["minute-120", "120 分钟"],
-    ["minute-60", "60 分钟"],
-    ["minute-30", "30 分钟"],
-    ["minute-15", "15 分钟"],
-    ["minute-5", "5 分钟"],
-    ["minute-1", "1 分钟"]
+    ["minute", "Intraday"],
+    ["five-day", "5D"],
+    ["day", "1D"],
+    ["week", "1W"],
+    ["month", "1M"],
+    ["quarter", "1Q"],
+    ["year", "1Y"],
+    ["minute-120", "120m"],
+    ["minute-60", "60m"],
+    ["minute-30", "30m"],
+    ["minute-15", "15m"],
+    ["minute-5", "5m"],
+    ["minute-1", "1m"]
 ]);
 const PERIOD_VALUES = PERIODS.map((period) => period[0]);
 const MAX_CANVAS_WIDTH = 2048;
@@ -60,23 +60,20 @@ const MOVING_AVERAGE_WINDOW = 5;
 const HISTORY_ROW_CELLS = 6;
 const HISTORY_ROW_COUNT = 9;
 const HISTORY_HEAD_CELLS = Object.freeze([
-    { text: "时间" }, { text: "开" }, { text: "高" },
-    { text: "低" }, { text: "收" }, { text: "成交量" }
+    { text: "Time" }, { text: "Open" }, { text: "High" },
+    { text: "Low" }, { text: "Close" }, { text: "Volume" }
 ]);
 const HISTORY_EMPTY_CELLS = Object.freeze([
     { text: "--" }, { text: "--" }, { text: "--" },
     { text: "--" }, { text: "--" }, { text: "--" }
 ]);
-// 宿主侧动作预算。这些数字镜像 manifest.json 的
-// metadata.capabilities.surface.actions[].timeoutMs 与 art.runtime.json 的
-// limits.timeoutMs；运行时会把实际生效值通过 state.actionBudgetsMillis 回传，
-// 首帧之前（还没有任何回传）才用这里的常量。
+// Host-side action budgets mirroring manifest.json metadata.capabilities.surface.actions[].timeoutMs
+// and art.runtime.json limits.timeoutMs; used only before the runtime publishes state.actionBudgetsMillis.
 const ACTION_TIMEOUT_MILLIS = 50000;
 const TICK_ACTION_TIMEOUT_MILLIS = 30000;
 const INTERVAL_COMMIT_TIMEOUT_MILLIS = 5000;
-// 宿主的截止时间从任务开始计时，排队、进程启动、补丁回传都在这之外；而超时的动作
-// 不会推进 revision，所以客户端计时器是唯一的兜底。它必须晚于宿主放弃的时刻，
-// 否则会在请求仍在运行时清掉 pending 并误报超时。
+// Host deadlines start when execution begins, excluding queueing, process startup, and patch delivery.
+// Timed-out actions do not advance revision, so the client fallback must fire after the host gives up.
 const ACTION_DISPATCH_GRACE_MILLIS = 8000;
 const MIN_CLIENT_TIMEOUT_MILLIS = 3000;
 const MAX_CLIENT_TIMEOUT_MILLIS = 180000;

@@ -28,7 +28,7 @@ fn distinct_secret(existing: &str) -> String {
 
 fn update(approval: Approval, password: Option<&str>) -> Update {
     Update {
-        name: "测试 Loom".into(),
+        name: "Test Loom".into(),
         discoverable: false,
         endpoint: None,
         approval,

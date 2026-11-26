@@ -1,7 +1,7 @@
 // Structured errors, sensitive atomic files, daemon tokens, paths, and legacy ACL repair.
 fn handle_capability_manifest_error(address: SocketAddr, error: anyhow::Error) -> Result<()> {
     if address.ip().is_loopback() {
-        eprintln!("[WARN] Loom 本地服务已启动，但无法更新客户端发现清单：{error:#}");
+        eprintln!("[WARN] Loom local daemon started, but failed to update client discovery manifest: {error:#}");
         return Ok(());
     }
     Err(error).context("publish Loom capability manifest for non-loopback daemon")

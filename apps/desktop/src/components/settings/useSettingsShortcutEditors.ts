@@ -1,9 +1,11 @@
 // Owns shortcut editor drafts, contextual conflicts and capture; persistence stays in the settings controller.
 import { useMemo, useState, type Dispatch, type SetStateAction, type KeyboardEvent } from "react";
+import { currentLanguage, useUiText } from "../../i18n/index.ts";
 import type { LoomSettings, LoomShortcutConfig, LoomToolDefinition } from "../../services/loomApi";
 import { pushAppToast } from "../feedback/AppFeedback";
 import {
   HOOK_SHORTCUT_GROUPS,
+  normalizeShortcutComparisonKey,
   shortcutContextsOverlap,
   shortcutFromKeyboardEvent,
   shortcutSlotCount,
@@ -31,6 +33,7 @@ export function useSettingsShortcutEditors({
   updateShortcutDraft,
   setDraft,
 }: SettingsShortcutEditorOptions) {
+  const { language, t, tf } = useUiText();
   const [openShortcutGroups, setOpenShortcutGroups] = useState<Set<string>>(() => new Set());
 
   const [shortcutEditor, setShortcutEditor] = useState<ShortcutEditorState | null>(null);
@@ -41,8 +44,8 @@ export function useSettingsShortcutEditors({
     () =>
       tools
         .filter((tool) => tool.enabled !== false)
-        .sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id, "zh-CN")),
-    [tools],
+        .sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id, currentLanguage())),
+    [language, tools],
   );
 
   const availableArtToolById = useMemo(
@@ -108,27 +111,27 @@ export function useSettingsShortcutEditors({
     excludeQuickBindingId?: string,
     candidateConflictFamily?: string,
   ) => {
-    const normalized = candidateKeys.map((keys) => keys.trim().toLocaleLowerCase()).filter(Boolean);
-    if (new Set(normalized).size !== normalized.length) return "同一事件的快捷键不能重复";
+    const normalized = candidateKeys.map((keys) => normalizeShortcutComparisonKey(keys.trim())).filter(Boolean);
+    if (new Set(normalized).size !== normalized.length) return t("settings.shortcuts.duplicateInAction");
     const shortcutConflict = HOOK_SHORTCUT_GROUPS.flatMap((group) => group.items).find(
       (item) =>
         item.sourceId &&
         item.sourceId !== excludeSourceId &&
         (!candidateConflictFamily || item.conflictFamily !== candidateConflictFamily) &&
         shortcutContextsOverlap(candidateContexts, item.contexts) &&
-        resolveShortcutKeys(item).some((keys) => normalized.includes(keys.toLocaleLowerCase())),
+        resolveShortcutKeys(item).some((keys) => normalized.includes(normalizeShortcutComparisonKey(keys))),
     );
-    if (shortcutConflict) return `与“${shortcutConflict.label}”冲突`;
+    if (shortcutConflict) return tf("settings.shortcuts.conflictWith", { name: shortcutConflict.label });
     const quickBindingConflict = draft.quick_bindings.find(
       (binding) =>
         binding.id !== excludeQuickBindingId &&
         availableArtToolById.has(binding.art) &&
         candidateContexts.includes("unit-selected") &&
-        splitShortcutAlternatives(binding.key).some((keys) => normalized.includes(keys.toLocaleLowerCase())),
+        splitShortcutAlternatives(binding.key).some((keys) => normalized.includes(normalizeShortcutComparisonKey(keys))),
     );
     if (quickBindingConflict) {
       const art = availableArtToolById.get(quickBindingConflict.art);
-      return `与“${art?.name || quickBindingConflict.art}”冲突`;
+      return tf("settings.shortcuts.conflictWith", { name: art?.name || quickBindingConflict.art });
     }
     return null;
   };
@@ -155,7 +158,10 @@ export function useSettingsShortcutEditors({
       .join(" / ");
     updateShortcutDraft(shortcutEditor.item.sourceId, shortcutEditor.item.label, keys);
     setShortcutEditor(null);
-    pushAppToast({ level: "info", text: `${shortcutEditor.item.label}快捷键已更新` });
+    pushAppToast({
+      level: "info",
+      text: tf("settings.shortcuts.shortcutUpdatedToast", { label: shortcutEditor.item.label }),
+    });
   };
 
   const openQuickBindingEditor = (binding?: LoomSettings["quick_bindings"][number]) => {
@@ -211,7 +217,7 @@ export function useSettingsShortcutEditors({
         : [...current.quick_bindings, nextBinding],
     }));
     setQuickBindingEditor(null);
-    pushAppToast({ level: "info", text: "Art 快捷键已更新" });
+    pushAppToast({ level: "info", text: t("settings.shortcuts.artShortcutUpdatedToast") });
   };
   return {
     openShortcutGroups,

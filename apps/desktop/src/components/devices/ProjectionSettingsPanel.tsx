@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Notice } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import {
   loadProjectionSettings,
   saveProjectionSettings,
@@ -15,6 +16,7 @@ import "./ProjectionSettingsPanel.css";
 import "./DeviceConnectionLayout.css";
 
 export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; online: boolean }) {
+  const { t, tf } = useUiText();
   const [view, setView] = useState<ProjectionSettingsView | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -70,9 +72,9 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
         !save &&
         dirty &&
         !(await requestAppConfirmation({
-          title: "刷新投射规则",
-          message: "刷新会放弃当前未保存的修改。",
-          confirmLabel: "放弃并刷新",
+          title: t("devices.projectionSettings.confirmRefresh.title"),
+          message: t("devices.projectionSettings.confirmRefresh.message"),
+          confirmLabel: t("devices.projectionSettings.confirmRefresh.confirm"),
         }))
       )
         return;
@@ -82,7 +84,7 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
         if (generation.current === current) {
           setView({ ...view, settings });
           setDirty(false);
-          setNotice("投射规则已保存并生效。");
+          setNotice(t("devices.projectionSettings.notice.saved"));
         }
       } else {
         const next = await loadProjectionSettings(baseUrl);
@@ -93,7 +95,7 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
       }
     } catch (reason) {
       if (generation.current === current)
-        setError(errorMessage(reason) + "。操作未获确认，草稿保留；请先刷新核对服务端状态，再重新修改。");
+        setError(tf("devices.projectionSettings.error.unconfirmedDraftKept", { reason: errorMessage(reason) }));
     } finally {
       if (generation.current === current) {
         running.current = false;
@@ -112,13 +114,13 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
   return (
     <section
       className="loom-device-settings projection-settings"
-      aria-label="投射规则管理"
+      aria-label={t("devices.projectionSettings.ariaLabel")}
       aria-busy={busy || undefined}
     >
       <header>
-        <h2>投射规则与设备组</h2>
+        <h2>{t("devices.projectionSettings.heading")}</h2>
       </header>
-      {!online && <Notice tone="warning">本机 Loom 离线。</Notice>}
+      {!online && <Notice tone="warning">{t("devices.projection.localOfflineNotice")}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
       {notice && <Notice tone="success">{notice}</Notice>}
       <div className="loom-device-settings__actions">
@@ -128,7 +130,7 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
           disabled={disabled}
           onClick={() => void perform(false)}
         >
-          刷新配置与设备
+          {t("devices.projectionSettings.refreshAction")}
         </Button>
         <Button
           variant="primary"
@@ -138,19 +140,21 @@ export function ProjectionSettingsPanel({ baseUrl, online }: { baseUrl: string; 
           }
           onClick={() => void perform(true)}
         >
-          保存投射配置
+          {t("devices.projectionSettings.saveAction")}
         </Button>
         {view && (
           <>
-            <code>版本 {view.settings.revision}</code>
-            <Badge tone={dirty ? "warning" : "neutral"}>{dirty ? "未保存" : "已保存"}</Badge>
+            <code>{tf("devices.common.revisionBadge", { revision: view.settings.revision })}</code>
+            <Badge tone={dirty ? "warning" : "neutral"}>
+              {dirty ? t("devices.common.unsaved") : t("devices.common.saved")}
+            </Badge>
           </>
         )}
       </div>
       {view && (
         <>
           {view.directoryStatus !== "complete" && (
-            <Notice tone="warning">部分对等 Loom 目录暂不可用；已有成员和规则保留，请稍后刷新。</Notice>
+            <Notice tone="warning">{t("devices.projectionSettings.partialDirectoryWarning")}</Notice>
           )}
           <ProjectionRulesEditor
             devices={view.devices}

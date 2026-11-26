@@ -14,9 +14,9 @@ fn load_publisher_identity(
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|error| format!("用户签名身份无效：{error}")),
+            .map_err(|error| format!("invalid publisher signing identity: {error}")),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("无法读取用户签名身份：{error}")),
+        Err(error) => Err(format!("failed to read publisher signing identity: {error}")),
     }
 }
 
@@ -62,7 +62,7 @@ fn load_current_signing_key(
     details
         .map(|details| {
             serde_json::from_str(&details.value)
-                .map_err(|error| format!("用户私钥记录无效：{error}"))
+                .map_err(|error| format!("invalid publisher private key record: {error}"))
         })
         .transpose()
 }
@@ -123,17 +123,17 @@ fn fetch_remote_publisher(
     user_id: &str,
 ) -> std::result::Result<RemotePublisher, String> {
     if !is_platform_publisher_id(user_id) {
-        return Err("用户 ID 格式无效".to_owned());
+        return Err("invalid user ID format".to_owned());
     }
     let url = format!("{}/publishers/{user_id}", store.trim_end_matches('/'));
     let client = art_store_client().map_err(|error| error.to_string())?;
     let policy = user_configured_outbound_policy();
     let bytes = get_bounded(&client, &url, &policy, MAX_PUBLISHER_DIRECTORY_BYTES)
-        .map_err(|error| format!("获取发布者信息失败：{error}"))?;
+        .map_err(|error| format!("failed to fetch publisher info: {error}"))?;
     let response: RemotePublisherResponse =
-        serde_json::from_slice(&bytes).map_err(|error| format!("发布者信息无效：{error}"))?;
+        serde_json::from_slice(&bytes).map_err(|error| format!("invalid publisher info: {error}"))?;
     if response.publisher.user_id != user_id {
-        return Err("发布者信息中的用户 ID 不匹配".to_owned());
+        return Err("user ID mismatch in publisher info".to_owned());
     }
     Ok(response.publisher)
 }
@@ -145,7 +145,7 @@ fn sync_trusted_publisher_from_store(
 ) -> std::result::Result<(), String> {
     let publisher = fetch_remote_publisher(store, user_id)?;
     if publisher.keys.is_empty() {
-        return Err("该用户没有可验证的公钥".to_owned());
+        return Err("user has no verifiable public keys".to_owned());
     }
     let records = publisher.keys.into_iter().map(|key| PublisherTrustRecord {
         publisher_id: user_id.to_owned(),
@@ -182,11 +182,11 @@ fn post_art_store_json<T: Serialize, R: serde::de::DeserializeOwned>(
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() > MAX_PUBLISHER_DIRECTORY_BYTES {
-        return Err("Art 商店返回的发布者信息过大".to_owned());
+        return Err("publisher response from Art store is too large".to_owned());
     }
     if !status.is_success() {
         let message = String::from_utf8_lossy(&bytes);
-        return Err(format!("Art 商店返回 HTTP {status}: {message}"));
+        return Err(format!("Art store returned HTTP {status}: {message}"));
     }
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
@@ -212,7 +212,7 @@ fn ensure_remote_publisher_registered(
                 && remote.status == RemotePublisherKeyStatus::Active
         })
     {
-        return Err("Art 商店返回了无效的用户身份".to_owned());
+        return Err("Art store returned an invalid publisher identity".to_owned());
     }
     Ok(response.publisher)
 }
@@ -224,8 +224,8 @@ fn fetch_remote_art_store_catalog(
     let client = art_store_client().map_err(|error| error.to_string())?;
     let policy = user_configured_outbound_policy();
     let bytes = get_bounded(&client, &url, &policy, MAX_ART_STORE_CATALOG_BYTES)
-        .map_err(|error| format!("获取 art 商店目录失败：{error}"))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("art 商店目录无效：{error}"))
+        .map_err(|error| format!("failed to fetch Art store catalog: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("invalid Art store catalog: {error}"))
 }
 
 // Proxy the remote art store catalog (GET {store}/catalog).
@@ -235,14 +235,14 @@ fn fetch_art_store_catalog(path: &str) -> Result<(u16, String)> {
             400,
             json!({
                 "code": "custom_art_store_not_supported",
-                "message": "Loom 不支持选择第三方 Art 商店"
+                "message": "Loom does not support third-party Art stores"
             }),
         );
     }
     let Some(store) = resolve_art_store_url() else {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
+            json!({ "code": "art_store_not_configured", "message": "Official Loom Art service is temporarily unavailable" }),
         );
     };
     match fetch_remote_art_store_catalog(&store) {

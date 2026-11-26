@@ -24,8 +24,8 @@ test("image import rejects oversized input before reading, non-raster MIME and f
   let calls = 0;
   globalThis.fetch = async () => { calls++; return Response.json({ resource: { resourceId: "file:///private", kind: "image" } }); };
   await assert.rejects(uploadWallImage("http://127.0.0.1:18765", { size: 16 * 1024 * 1024 + 1 } as File), /16 MiB/);
-  await assert.rejects(uploadWallImage("http://127.0.0.1:18765", new File(["<svg/>"], "a.svg", { type: "image/svg+xml" })), /支持/);
+  await assert.rejects(uploadWallImage("http://127.0.0.1:18765", new File(["<svg/>"], "a.svg", { type: "image/svg+xml" })), /Supported formats/);
   assert.equal(calls, 0);
-  await assert.rejects(uploadWallImage("http://127.0.0.1:18765", new File(["bad"], "a.png", { type: "image/png" })), /无效/);
+  await assert.rejects(uploadWallImage("http://127.0.0.1:18765", new File(["bad"], "a.png", { type: "image/png" })), /invalid image resource/);
   assert.equal(calls, 1);
 });

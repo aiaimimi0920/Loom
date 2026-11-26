@@ -1,4 +1,4 @@
-//! 联合专属真实Art：独立解析受限JSON调用，记录实际payload并返回明确的节点/正式结果。
+//! Joint-dedicated live Art: independently parses bounded JSON calls, logs actual payloads, and returns explicit node patches and formal results.
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 fn invocation(v: &Value) -> Option<&Value> {

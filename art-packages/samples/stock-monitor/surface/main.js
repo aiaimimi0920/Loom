@@ -67,8 +67,8 @@ NeuroSurface.define({
         pendingRequestId = null;
         clearScheduledWork();
         hideChartTip();
-        // resume 要整帧重画（S8d3-3），所以这里作废两个 paintKey，否则 resume 的 render
-        // 会撞上同一个 revision 而跳过四个更新函数和图例。
+        // Invalidate paint keys so resume() performs a full frame repaint instead of skipping
+        // block updaters and legend rendering when the revision has not changed.
         paintedKey = "";
         legendPaintedKey = "";
         chartPaintedKey = "";
@@ -76,11 +76,11 @@ NeuroSurface.define({
     resume() {
         if (disposed) return;
         suspended = false;
-        // suspend 期间到达的快照不会触发 update，控件禁用态也在 suspend 里被清掉了，
-        // 所以恢复时必须整帧重画，而不是只重启定时器和画布。
+        // Snapshots delivered while suspended do not trigger update(), and control disabled states
+        // were cleared on suspend, so repaint the full frame rather than only restarting timers.
         render(snapshotValue);
-        // render 只在计划变化时重排定时器；上面 clearScheduledWork 清空了 activeTimerKey，
-        // 所以正常路径由 render 重启，这里只兜底 render 提前返回（无快照）的情况。
+        // render() reschedules timers whenever the plan key changes (clearScheduledWork reset
+        // activeTimerKey above); this fallback covers an early return when snapshotValue is null.
         if (activeTimerKey === "") setRefreshTimer(stateOf(snapshotValue).intervalSeconds);
     },
     dispose() {

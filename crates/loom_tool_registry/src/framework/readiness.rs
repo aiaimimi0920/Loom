@@ -3,21 +3,23 @@ use super::*;
 
 pub(super) fn framework_name(id: &str) -> &'static str {
     match id {
-        "process" => "脚本",
-        "cloud_api" => "云端",
+        "process" => "Script",
+        "cloud_api" => "Cloud",
         "mcp" => "MCP",
-        "workflow" => "流程",
-        _ => "第三方 Art 框架",
+        "workflow" => "Workflow",
+        _ => "Third-Party Art Framework",
     }
 }
 
 pub(super) fn framework_description(id: &str) -> &'static str {
     match id {
-        "process" => "通过统一的本地进程边界运行命令、脚本或 Python Art。",
-        "cloud_api" => "调用云端 HTTP API 处理图像。",
-        "mcp" => "通过 MCP 服务器调用工具。",
-        "workflow" => "把一条工作流封装成单一节点执行。",
-        _ => "由外部插件包提供的 Art 执行框架。",
+        "process" => {
+            "Runs commands, scripts, or Python Arts across a unified local process boundary."
+        }
+        "cloud_api" => "Processes images through cloud HTTP APIs.",
+        "mcp" => "Invokes tools through MCP servers.",
+        "workflow" => "Packages a workflow to execute as a single node.",
+        _ => "Art execution framework provided by an external plugin package.",
     }
 }
 
@@ -41,18 +43,26 @@ pub fn framework_ready(id: &str) -> (bool, String) {
 /// lives at `<runtime_root>/<id>/`.
 pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, String) {
     if !is_valid_framework_reference(id) {
-        return (false, "框架 ID 无效".to_owned());
+        return (false, "Invalid framework ID".to_owned());
     }
 
     let Some(root) = runtime_root else {
-        return (false, "未提供框架包目录".to_owned());
+        return (
+            false,
+            "Framework package directory was not provided".to_owned(),
+        );
     };
     let package_dir = match resolve_framework_package_dir(root, id) {
         Ok(package_dir) => package_dir,
         Err(FrameworkError::FrameworkNotInstalled(_) | FrameworkError::UnknownFramework(_)) => {
-            return (false, "未找到活动框架包".to_owned())
+            return (false, "Active framework package was not found".to_owned())
         }
-        Err(error) => return (false, format!("框架包目录解析失败：{error}")),
+        Err(error) => {
+            return (
+                false,
+                format!("Failed to resolve framework package directory: {error}"),
+            )
+        }
     };
     let manifest_path = package_dir.join(FRAMEWORK_MANIFEST_FILE);
     let manifest = match read_framework_manifest(&manifest_path) {
@@ -62,21 +72,30 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     if manifest.id != framework_local_id(id) {
         return (
             false,
-            format!("框架包 ID 不匹配：期望 {id}，实际 {}", manifest.id),
+            format!(
+                "Framework package ID mismatch: expected {id}, got {}",
+                manifest.id
+            ),
         );
     }
     if let Err(error) = loom_protocol::negotiate_framework_protocol(&manifest) {
-        return (false, format!("不支持的框架协议：{error}"));
+        return (false, format!("Unsupported framework protocol: {error}"));
     }
     if !manifest
         .platforms
         .iter()
         .any(|platform| platform == WINDOWS_X64_PLATFORM)
     {
-        return (false, "框架包不支持 windows-x64".to_owned());
+        return (
+            false,
+            "Framework package does not support windows-x64".to_owned(),
+        );
     }
     if manifest.entry.kind != "process" || manifest.entry.command.trim().is_empty() {
-        return (false, "框架包缺少有效的进程入口".to_owned());
+        return (
+            false,
+            "Framework package is missing a valid process entrypoint".to_owned(),
+        );
     }
     let command_path = Path::new(&manifest.entry.command);
     if command_path.is_absolute()
@@ -84,13 +103,22 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
             .components()
             .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
     {
-        return (false, "框架入口必须位于框架包目录内".to_owned());
+        return (
+            false,
+            "Framework entrypoint must reside inside the framework package directory".to_owned(),
+        );
     }
     if let Err(reason) = loom_process::executable_path_within(&package_dir, command_path) {
-        return (false, format!("框架入口不安全或不存在：{reason}"));
+        return (
+            false,
+            format!("Framework entrypoint is unsafe or missing: {reason}"),
+        );
     }
     if let Err(error) = enforce_framework_permission_policy(&manifest) {
-        return (false, format!("框架权限策略拒绝执行：{error}"));
+        return (
+            false,
+            format!("Framework permission policy refused execution: {error}"),
+        );
     }
     // Doctor/UI must use the same persisted install authority as execution,
     // including legacy records that require an explicit reinstall.
@@ -103,7 +131,10 @@ pub fn framework_ready_in(id: &str, runtime_root: Option<&Path>) -> (bool, Strin
     }
     (
         true,
-        format!("已安装框架包 {} {}", manifest.name, manifest.version),
+        format!(
+            "Installed framework package {} {}",
+            manifest.name, manifest.version
+        ),
     )
 }
 
@@ -117,18 +148,18 @@ pub(super) fn verify_framework_package_authority(
     enforce_framework_permission_policy(manifest)?;
     let control_plane_root = root.parent().unwrap_or(root);
     let trust_store = TrustStore::load(&control_plane_root.join(PLUGIN_TRUST_STORE_FILE))
-        .map_err(|error| format!("无法读取插件信任库：{error}"))?;
+        .map_err(|error| format!("Failed to read plugin trust store: {error}"))?;
     let verified = loom_plugin_security::verify_package_signature_with_digest(
         package_dir,
         Some(&manifest.publisher),
         manifest.signature.as_ref(),
         &trust_store,
     )
-    .map_err(|error| format!("框架包签名验证失败：{error}"))?;
+    .map_err(|error| format!("Framework package signature verification failed: {error}"))?;
     trust_store
         .effective_policy()
         .enforce(verified.trust_status)
-        .map_err(|error| format!("框架包信任策略拒绝执行：{error}"))?;
+        .map_err(|error| format!("Framework package trust policy refused execution: {error}"))?;
     let digest = match verified.canonical_digest {
         Some(digest) => digest,
         None => canonical_package_digest(package_dir, None).map_err(|error| error.to_string())?,
@@ -156,7 +187,7 @@ pub(super) fn verify_framework_package_authority(
         );
     }
     verify_framework_lockfile_with_digest(control_plane_root, package_dir, manifest, &digest)
-        .map_err(|error| format!("框架包锁文件验证失败：{error}"))?;
+        .map_err(|error| format!("Framework package lockfile verification failed: {error}"))?;
     Ok(digest)
 }
 
@@ -263,10 +294,18 @@ pub(super) fn framework_local_id(reference: &str) -> &str {
 }
 
 pub(super) fn read_framework_manifest(path: &Path) -> Result<FrameworkPackageManifest, String> {
-    let bytes = read_bounded_file(path, FRAMEWORK_METADATA_MAX_BYTES)
-        .map_err(|error| format!("无法读取框架包清单 {}：{error}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| format!("框架包清单无效 {}：{error}", path.display()))
+    let bytes = read_bounded_file(path, FRAMEWORK_METADATA_MAX_BYTES).map_err(|error| {
+        format!(
+            "Failed to read framework package manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "Invalid framework package manifest {}: {error}",
+            path.display()
+        )
+    })
 }
 
 pub(super) fn validate_framework_manifest(

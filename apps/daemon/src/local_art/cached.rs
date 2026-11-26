@@ -1,4 +1,4 @@
-//! 当前 v3 只省略已知源码字节；不提供旧 prepare 入口或版本协商。
+//! Current v3 omits only known source bytes; provides no legacy prepare entrypoint or version negotiation.
 use super::*;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

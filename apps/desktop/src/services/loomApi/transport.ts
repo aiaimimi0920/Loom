@@ -1,5 +1,6 @@
 // Shared Tauri/HTTP transport selection, response normalization, and daemon preview access.
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import type { LoomDaemonStartResult } from "./snapshotTypes.ts";
 import { createOtterCanvasPreviewLoader } from "../otterCanvasPreviewLoader.ts";
 
@@ -35,7 +36,10 @@ const readBoundedResponseText = async (response: Response, path: string): Promis
     const parsedLength = Number(declaredLength);
     if (!Number.isSafeInteger(parsedLength) || parsedLength > MAX_DAEMON_JSON_RESPONSE_BYTES) {
       throw new Error(
-        `Loom 本地服务请求 ${path} 的响应超过 ${MAX_DAEMON_JSON_RESPONSE_BYTES} 字节限制`,
+        uiFormat("shell.transport.responseTooLarge", {
+          path,
+          maxBytes: MAX_DAEMON_JSON_RESPONSE_BYTES,
+        }),
       );
     }
   }
@@ -56,7 +60,10 @@ const readBoundedResponseText = async (response: Response, path: string): Promis
           // A broken stream must not replace the deterministic size-limit error.
         }
         throw new Error(
-          `Loom 本地服务请求 ${path} 的响应超过 ${MAX_DAEMON_JSON_RESPONSE_BYTES} 字节限制`,
+          uiFormat("shell.transport.responseTooLarge", {
+            path,
+            maxBytes: MAX_DAEMON_JSON_RESPONSE_BYTES,
+          }),
         );
       }
       chunks.push(value);
@@ -81,8 +88,11 @@ const daemonResponseError = async (response: Response, path: string): Promise<Er
   } catch {
     // Preserve the HTTP status when an error response has no JSON body.
   }
-  const suffix = detail ? `：${detail}` : "";
-  return new Error(`Loom 本地服务请求 ${path} 返回 HTTP ${response.status}${suffix}`);
+  return new Error(
+    detail
+      ? uiFormat("shell.transport.httpErrorWithDetail", { path, status: response.status, detail })
+      : uiFormat("shell.transport.httpError", { path, status: response.status }),
+  );
 };
 
 const responseJson = async <T>(response: Response, path: string): Promise<T> => {
@@ -114,7 +124,7 @@ export const readJson = async <T>(
 export const errorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "无法连接 Loom 本地服务";
+  return uiText("shell.error.daemonUnreachable");
 };
 
 export async function startLoomDaemon(): Promise<LoomDaemonStartResult> {
@@ -176,7 +186,7 @@ async function readOtterCanvasPreview(baseUrl: string, path: string): Promise<st
 
   // Browser previews may use a direct URL, but only for the daemon-owned preview route.
   if (!path.startsWith("/v1/hook-bridge/canvas/nodes/")) {
-    throw new Error("Otter canvas preview path is outside the preview route");
+    throw new Error(uiText("otter.preview.outsideRoute"));
   }
   const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   const base = new URL(normalizedBaseUrl);
@@ -186,7 +196,7 @@ async function readOtterCanvasPreview(baseUrl: string, path: string): Promise<st
     || !preview.pathname.startsWith("/v1/hook-bridge/canvas/nodes/")
     || !preview.pathname.endsWith("/preview")
   ) {
-    throw new Error("Otter canvas preview path is outside the preview route");
+    throw new Error(uiText("otter.preview.outsideRoute"));
   }
   return preview.toString();
 }

@@ -1,4 +1,4 @@
-//! Multi-device `Otter 同步` live execution tracking, reusable workflow history archive,
+//! Multi-device Otter Sync live execution tracking, reusable workflow history archive,
 //! and two-level Host Device -> App Sessions hierarchy helpers.
 
 use std::collections::BTreeMap;

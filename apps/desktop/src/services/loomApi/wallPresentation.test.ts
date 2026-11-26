@@ -28,7 +28,7 @@ test("display control reports are versioned separately and reject unknown, stale
     { ...state, endpoints: [{ ...endpoint, presentation: { revision: 8, outcome: "unknown" } }, state.endpoints[1]] },
     { ...state, endpoints: [{ ...endpoint, presentation: { ...endpoint.presentation, extra: true } }, state.endpoints[1]] },
     { ...state, endpoints: [{ ...endpoint, online: false, appliedRevision: null }, state.endpoints[1]] },
-  ]) assert.throws(() => parseWallState(value), /无效的墙面数据/);
+  ]) assert.throws(() => parseWallState(value), /Invalid wall data/);
   assert.equal(parseWallState({ ...state, endpoints: [{ ...endpoint, appliedRevision: null,
     presentation: { revision: 8, outcome: "frame_unavailable" } }, state.endpoints[1]] }).endpoints[0].presentation?.outcome, "frame_unavailable");
 });

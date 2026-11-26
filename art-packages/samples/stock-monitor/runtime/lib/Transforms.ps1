@@ -142,8 +142,8 @@ function ConvertTo-OrderBook {
     $asks = @(ConvertTo-OrderBookLevels (Get-ObjectPropertyValue -Value $Value -Name "asks" -DefaultValue @()))
     if ($bids.Count -eq 0 -and $asks.Count -eq 0) { return $null }
     $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
-    # 不再用 [DateTimeOffset]::UtcNow 顶替缺失的上游时间戳：那等于宣布"刚刚取到"，年龄算出来
-    # 是 0，任何过期检查都会通过。上游没给可判定的时间戳，就让年龄为 $null 并直接判过期。
+    # Never substitute UtcNow for a missing upstream timestamp: doing so reports age 0 and bypasses
+    # staleness checks. Leave age $null and fail closed as stale when no valid timestamp was supplied.
     $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
     $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{
@@ -175,8 +175,8 @@ function ConvertTo-LiveTape {
     $current = Convert-NullableNumber (Get-ObjectPropertyValue -Value $Value -Name "now" -DefaultValue (Get-ObjectPropertyValue -Value $Value -Name "price"))
     if ($null -eq $current -or $current -le 0) { return $null }
     $normalizedFetchedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "fetchedAt") -FallbackValue $FetchedAt
-    # 与盘口一致：缺失的时间戳不合成，未知年龄直接判过期。实时逐笔比盘口更敏感，一条被当成
-    # 新鲜的旧 tick 会直接写进主报价的显示价格。
+    # Same invariant as the order book: never synthesize a missing timestamp, and fail closed as
+    # stale when age is unknown so an ageless tick cannot overwrite the main display price.
     $observedAt = Resolve-UtcTimestamp -Value (Get-ObjectPropertyValue -Value $Value -Name "observedAt") -FallbackValue $normalizedFetchedAt
     $ageSeconds = Get-ObservationAgeSeconds -Value $observedAt
     return [ordered]@{

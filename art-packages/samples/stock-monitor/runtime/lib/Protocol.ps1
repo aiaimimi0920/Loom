@@ -116,12 +116,11 @@ function Assert-RequestObjectGraph {
 }
 
 function Resolve-SurfaceAction {
-    # 只在三个固定位置找 surfaceAction：请求根、params、inputs。宿主
-    # (framework-packages/runtime-host/src/mcp.rs 的 find_surface_action) 只认 params 与
-    # inputs，本地测试夹具把它放在请求根，所以这里接受三者的并集，但绝不递归。
-    # 递归搜索会把 frameworkData.mcp.results 里的上游数据也当成调用来源：任何能让 MCP 服务
-    # 回一个含 surfaceAction 键的对象的人，就能凭空造出一次动作调用。位置固定后这条路被封死，
-    # 也不再需要深度上限。
+    # Resolve surfaceAction only from three fixed positions: request root, params, and inputs.
+    # The host (framework-packages/runtime-host/src/mcp.rs find_surface_action) accepts params and
+    # inputs while local test fixtures place it at the root; never search recursively, otherwise an
+    # upstream MCP payload under frameworkData.mcp.results containing a surfaceAction key could
+    # fabricate an action invocation.
     param([AllowNull()][object]$Value)
 
     if ($null -eq $Value) { return $null }
@@ -134,8 +133,8 @@ function Resolve-SurfaceAction {
         if (-not (($candidate -is [System.Collections.IDictionary]) -or ($candidate -is [pscustomobject]))) {
             throw "surfaceAction must be a JSON object"
         }
-        # PSCustomObject 的 -ne 是引用比较，同一份 JSON 反序列化两次也会"不等"，所以按序列化
-        # 后的文本判断是否真的冲突。
+        # PSCustomObject -ne checks reference equality, so compare normalized JSON text to detect
+        # genuine conflicts across duplicate placements.
         $candidateText = $candidate | ConvertTo-Json -Depth $script:MaxJsonDepth -Compress
         if ($null -eq $found) {
             $found = $candidate
@@ -196,9 +195,9 @@ function Get-ActionRequestId {
 }
 
 function Get-SurfaceActionBudgets {
-    # Surface 没有可读的动作预算通道，宿主超时也不会回补丁，所以运行时把 manifest 声明的
-    # 每动作 timeoutMs（按 art.runtime.json 的 limits.timeoutMs 上限收敛）回写进状态，
-    # 客户端才能把兜底计时器排在宿主放弃之后。读取失败时返回空表，客户端用镜像常量。
+    # Surface has no direct action-budget channel and host timeouts do not emit patches, so publish
+    # each manifest-declared timeoutMs (clamped by art.runtime.json limits.timeoutMs) in state so
+    # the client can schedule its fallback deadline after the host gives up.
     if ($null -ne $script:SurfaceActionBudgets) { return $script:SurfaceActionBudgets }
     $budgets = [ordered]@{}
     try {
@@ -240,8 +239,9 @@ function Get-SurfaceActionBudgets {
 }
 
 function Add-ActionEcho {
-    # 每个状态补丁都必须带上回声字段。statePatch 是合并语义，留下上一次动作的
-    # lastRequestId 会让客户端的关联检查永远匹配不上，pending 只能等兜底计时器解锁。
+    # Every statePatch must carry correlation echo fields: statePatch merges into authoritativeState,
+    # so leaving a stale lastRequestId from an earlier action would prevent client correlation from
+    # matching and leave pending controls locked until the fallback timer expires.
     param(
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$StatePatch,
         [AllowNull()][object]$Action

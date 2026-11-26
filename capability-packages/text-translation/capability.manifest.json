@@ -52,7 +52,7 @@
       },
       {
         "id": "neuro.official/text-translation.toggle-overlay",
-        "title": "显示或隐藏翻译结果",
+        "title": "Show or hide translated text",
         "description": "Toggle the translated OCR overlay without deleting the translation.",
         "when": "unit.kind == 'sticker' && unit.hasImage",
         "requiresUserGesture": false,

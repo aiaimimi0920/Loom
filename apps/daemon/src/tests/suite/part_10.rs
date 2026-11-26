@@ -306,6 +306,7 @@ fn daemon_help_and_version_are_available_without_binding_a_port() {
 fn json_http_responses_declare_utf8_charset() {
     let mut response = Vec::new();
 
+    // Intentional multi-byte UTF-8 payload to verify UTF-8 byte framing and charset header.
     write_response(&mut response, 200, r#"{"name":"Otter 实时工作流"}"#).expect("write response");
     let response = String::from_utf8(response).expect("utf8 response");
 

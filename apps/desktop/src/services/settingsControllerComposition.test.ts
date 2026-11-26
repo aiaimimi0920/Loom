@@ -26,6 +26,7 @@ test("settings persistence remains the owner of hydration, ordered writes and ru
 
 test("shortcut editor composition delegates persistence and keeps domain capture/conflict rules", () => {
   assert.match(shortcuts, /updateShortcutDraft\(shortcutEditor.item.sourceId, shortcutEditor.item.label, keys\)/);
+  assert.match(shortcuts, /currentLanguage\(\)/);
   assert.match(shortcuts, /event.preventDefault\(\)/);
   assert.match(shortcuts, /event.stopPropagation\(\)/);
   assert.match(
@@ -40,8 +41,8 @@ test("shortcut editor composition delegates persistence and keeps domain capture
 
 test("cache commands retain confirmations, payloads and application ownership", () => {
   assert.match(cache, /requestAppConfirmation\(/);
-  assert.match(cache, /不会卸载 Art 或删除工作流/);
-  assert.match(cache, /桌面贴图不会被删除/);
+  assert.match(cache, /settings\.cache\.confirmClearArtRuntimeBody/);
+  assert.match(cache, /settings\.cache\.confirmClearReferenceBody/);
   assert.match(cache, /invoke<LoomCacheClearResult>\("clear_loom_cache", \{ kind \}\)/);
   assert.match(cache, /invoke<OtterCacheClearResult>\("clear_otter_cache", \{ kind \}\)/);
   assert.equal((cache.match(/if \(!accepted \|\| !settingsMountedRef.current\) return/g) ?? []).length, 2);

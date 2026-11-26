@@ -32,12 +32,12 @@ struct Password {
 impl Password {
     fn create(value: &str) -> Result<Self> {
         if !(8..=256).contains(&value.len()) {
-            bail!("连接密码须为 8–256 字节");
+            bail!("Connection password must be 8-256 bytes");
         }
         let mut salt = [0; 16];
         SystemRandom::new()
             .fill(&mut salt)
-            .map_err(|_| anyhow::anyhow!("无法生成密码盐"))?;
+            .map_err(|_| anyhow::anyhow!("Failed to generate password salt"))?;
         let mut digest = [0; 32];
         pbkdf2::derive(
             pbkdf2::PBKDF2_HMAC_SHA256,
@@ -118,15 +118,15 @@ impl Store {
         let document = match bytes {
             Ok(bytes) => {
                 if bytes.len() > 8192 {
-                    bail!("连接策略文件过大");
+                    bail!("Connection policy file is too large");
                 }
                 let mut document: Document =
-                    serde_json::from_slice(&bytes).context("读取连接策略失败")?;
+                    serde_json::from_slice(&bytes).context("Failed to parse connection policy")?;
                 if document.schema_version != 1
                     || !valid_identity(&document.loom_id)
                     || identity.is_some_and(|id| id != document.loom_id)
                 {
-                    bail!("连接策略身份格式无效，不能重置已有身份");
+                    bail!("Invalid connection policy identity format; refusing to reset existing identity");
                 }
                 validate_fields(
                     &document.name,
@@ -151,12 +151,12 @@ impl Store {
                     password: None,
                 };
                 if !valid_identity(&document.loom_id) {
-                    bail!("Loom 身份无效");
+                    bail!("Invalid Loom identity");
                 }
                 crate::write_json_atomically(path, &document)?;
                 document
             }
-            Err(error) => return Err(error).context("读取连接策略失败"),
+            Err(error) => return Err(error).context("Failed to read connection policy"),
         };
         Ok(Self {
             path: path.to_owned(),
@@ -193,7 +193,7 @@ impl Store {
             };
         }
         if next.approval == Approval::Password {
-            bail!("请选择手动、局域网或连接过的设备审批策略");
+            bail!("Select manual, LAN, or previously authenticated device approval policy");
         }
         Ok(Self {
             path: self.path.clone(),
@@ -233,13 +233,13 @@ fn valid_identity(value: &str) -> bool {
 
 fn validate_fields(name: &str, discoverable: bool, endpoint: Option<&str>) -> Result<()> {
     if name.trim().is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
-        bail!("Loom 名称须为 1–80 字节且不能包含控制字符");
+        bail!("Loom name must be 1-80 bytes and must not contain control characters");
     }
     if discoverable && endpoint.is_none() {
-        bail!("公开发现需要配置 HTTPS 地址");
+        bail!("Public discovery requires an HTTPS endpoint");
     }
     if let Some(endpoint) = endpoint {
-        let url = reqwest::Url::parse(endpoint).context("连接地址无效")?;
+        let url = reqwest::Url::parse(endpoint).context("Invalid connection endpoint")?;
         if endpoint.len() > 256
             || url.scheme() != "https"
             || url.host_str().is_none()
@@ -249,7 +249,7 @@ fn validate_fields(name: &str, discoverable: bool, endpoint: Option<&str>) -> Re
             || url.fragment().is_some()
             || url.path() != "/"
         {
-            bail!("连接地址必须是 HTTPS 主机和端口，不能带路径、凭据或查询参数");
+            bail!("Connection endpoint must be an HTTPS host and port without path, credentials, or query parameters");
         }
     }
     Ok(())

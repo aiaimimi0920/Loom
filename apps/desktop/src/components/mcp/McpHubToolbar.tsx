@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import { Button, Input, Select, Tab, TabList } from "@neuro/ui";
 
+import { uiText, useUiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../../services/loomApi";
 import {
   MCP_MARKET_CATEGORIES,
@@ -11,14 +12,9 @@ import {
 } from "../../services/mcpMarketplace";
 import type { McpEditorState, McpWorkspaceId } from "./McpHubTypes";
 
-const workspaceItems: Array<{ id: McpWorkspaceId; label: string }> = [
-  { id: "services", label: "服务" },
-  { id: "store", label: "商店" },
-];
-
 const createRemoteMcpDraft = (): LoomMcpServer => ({
   id: `remote-mcp-${Date.now().toString(36)}`,
-  name: "远程 MCP",
+  name: uiText("mcp.draft.remoteName"),
   description: "",
   transport: "streamable-http",
   command: "",
@@ -31,7 +27,7 @@ const createRemoteMcpDraft = (): LoomMcpServer => ({
 
 const createLocalMcpDraft = (): LoomMcpServer => ({
   id: "local-mcp-server",
-  name: "本地 MCP 服务",
+  name: uiText("mcp.draft.localName"),
   description: "",
   transport: "stdio",
   command: "npx",
@@ -67,13 +63,21 @@ export function McpHubToolbar({
   onInstallPackageFile,
   onOpenEditor,
 }: McpHubToolbarProps) {
+  const { t } = useUiText();
   const packageFileInputRef = useRef<HTMLInputElement | null>(null);
-
+  const workspaceItems: Array<{ id: McpWorkspaceId; label: string }> = [
+    { id: "services", label: t("mcp.workspace.services") },
+    { id: "store", label: t("mcp.workspace.store") },
+  ];
 
   return (
     <div className="art-hub__navigation">
-      <TabList label="MCP 工作区">
-        {workspaceItems.map(item => <Tab key={item.id} value={item.id}>{item.label}</Tab>)}
+      <TabList label={t("mcp.workspace.ariaLabel")}>
+        {workspaceItems.map((item) => (
+          <Tab key={item.id} value={item.id}>
+            {item.label}
+          </Tab>
+        ))}
       </TabList>
 
       <div className="framework-filter mcp-hub__toolbar">
@@ -91,11 +95,21 @@ export function McpHubToolbar({
                   if (file) void onInstallPackageFile(file);
                 }}
               />
-              <Button variant="primary" disabled={operationBusy} onClick={() => packageFileInputRef.current?.click()}>安装 MCP 包</Button>
-              <Button variant="quiet" disabled={operationBusy} onClick={() => onOpenEditor({
-                mode: "create",
-                server: createLocalMcpDraft(),
-              })}>添加手动配置</Button>
+              <Button variant="primary" disabled={operationBusy} onClick={() => packageFileInputRef.current?.click()}>
+                {t("mcp.toolbar.installPackage")}
+              </Button>
+              <Button
+                variant="quiet"
+                disabled={operationBusy}
+                onClick={() =>
+                  onOpenEditor({
+                    mode: "create",
+                    server: createLocalMcpDraft(),
+                  })
+                }
+              >
+                {t("mcp.toolbar.addManual")}
+              </Button>
             </>
           ) : (
             <Button
@@ -104,7 +118,7 @@ export function McpHubToolbar({
               disabled={operationBusy}
               onClick={() => onOpenEditor({ mode: "link", server: createRemoteMcpDraft() })}
             >
-              链接添加
+              {t("mcp.toolbar.addByLink")}
             </Button>
           )}
         </div>
@@ -112,23 +126,33 @@ export function McpHubToolbar({
           <Input
             className="mcp-hub__search"
             type="search"
-            aria-label={activeWorkspace === "services" ? "搜索 MCP 服务" : "搜索 MCP 商店"}
-            placeholder={activeWorkspace === "services" ? "搜索服务" : "搜索商店"}
+            aria-label={
+              activeWorkspace === "services" ? t("mcp.toolbar.searchServicesAria") : t("mcp.toolbar.searchStoreAria")
+            }
+            placeholder={
+              activeWorkspace === "services"
+                ? t("mcp.toolbar.searchServicesPlaceholder")
+                : t("mcp.toolbar.searchStorePlaceholder")
+            }
             value={activeWorkspace === "services" ? serviceSearchText : storeSearchText}
-            onChange={(event) => activeWorkspace === "services"
-              ? onServiceSearchChange(event.target.value)
-              : onStoreSearchChange(event.target.value)}
+            onChange={(event) =>
+              activeWorkspace === "services"
+                ? onServiceSearchChange(event.target.value)
+                : onStoreSearchChange(event.target.value)
+            }
           />
           {activeWorkspace === "store" ? (
             <Select
               className="mcp-hub__category"
-              aria-label="MCP 商店分类"
+              aria-label={t("mcp.toolbar.categoryAria")}
               value={marketCategory}
               onChange={(event) => onMarketCategoryChange(event.target.value as McpMarketCategory | "All")}
             >
-              <option value="All">全部</option>
+              <option value="All">{t("mcp.category.all")}</option>
               {MCP_MARKET_CATEGORIES.map((category) => (
-                <option key={category} value={category}>{mcpMarketCategoryLabel(category)}</option>
+                <option key={category} value={category}>
+                  {mcpMarketCategoryLabel(category)}
+                </option>
               ))}
             </Select>
           ) : null}

@@ -210,7 +210,7 @@ fn mount_surface_instance(
         children: vec![SurfaceNode {
             id: "surface-runtime-status".to_owned(),
             node_type: "text".to_owned(),
-            props: json!({"text": "交互界面暂不可用"}),
+            props: json!({"text": "Interactive surface is temporarily unavailable"}),
             ..SurfaceNode::default()
         }],
         ..SurfaceNode::default()

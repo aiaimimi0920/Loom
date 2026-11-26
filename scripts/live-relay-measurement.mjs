@@ -17,7 +17,7 @@ function boolean(value) {
   return value;
 }
 
-// 只在内存接触完整会话；报告白名单不保留窗口、观察值、凭证或原始设备标识。
+// Inspect full session payloads in memory only; the report allowlist omits window titles, observations, credentials, and raw device IDs.
 export function selectSnapshot(raw, sessionId, elapsedMs) {
   const diagnostics = raw?.mediaDiagnostics;
   if (raw?.session?.sessionId !== sessionId || !validId(raw.session.sourceDeviceId) || !diagnostics
@@ -86,7 +86,7 @@ export class Measurement {
     let counterResets = 0;
     let epochTransitions = 0;
     const observed = [];
-    // 比较首个样本之后的增量；跨 epoch 或任何计数回退均重新建立基线。
+    // Accumulate deltas after the first sample; re-baseline across epoch transitions or any counter rollback.
     for (let i = 1; i < this.#samples.length; i++) {
       const before = this.#samples[i - 1];
       const after = this.#samples[i];
@@ -96,7 +96,7 @@ export class Measurement {
       for (const key of COUNTERS) total[key] = integer(total[key] + (after.counters[key] - before.counters[key]));
       const attempts = after.counters.forwardedFrames - before.counters.forwardedFrames
         + after.counters.failedWrites - before.counters.failedWrites;
-      // 单槽覆盖意味着至多观察到该区间最后一次写入；重复轮询不重复计算。
+      // Single-slot overwrite captures at most the latest write in the interval; repeated polls without new attempts are not double-counted.
       if (attempts > 0 && after.lastForward?.epoch === after.epoch) observed.push(after.lastForward);
     }
     const rate = (value) => comparableWindowMs > 0 ? value * 1000 / comparableWindowMs : null;

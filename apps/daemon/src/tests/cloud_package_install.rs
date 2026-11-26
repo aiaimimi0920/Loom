@@ -9,7 +9,7 @@ fn cloud_install_capability_requires_explicit_approval_then_runs_real_process() 
         let downloaded = asset_library::prepare_trial_install(&config);
         if config["expected"] == "denied" {
             match downloaded {
-                Ok(_) => panic!("撤销或下架后不得取得安装包"),
+                Ok(_) => panic!("revoked or delisted publication must not yield an install package"),
                 Err(error) => assert_eq!(error.status, 404),
             }
             assert!(!Path::new(config["downloadRoot"].as_str().unwrap())
@@ -68,7 +68,7 @@ fn cloud_install_capability_requires_explicit_approval_then_runs_real_process() 
     assert_eq!(
         runtime.capability_runtime.generation(),
         0,
-        "安装不得自动激活"
+        "installation must not auto-activate"
     );
     let (status, _) = enable_capability_plugin(
         "publisher.example/api-fixture",
@@ -77,7 +77,7 @@ fn cloud_install_capability_requires_explicit_approval_then_runs_real_process() 
         &runtime.capability_runtime,
     )
     .unwrap();
-    assert_ne!(status, 200, "未批准权限不得启用");
+    assert_ne!(status, 200, "unapproved permissions must not enable");
     let (status, body) = approve_capability_plugin(
         "publisher.example/api-fixture",
         &json!({"digest":digest,"permissions":["hook.unit.attachments.write","hook.notice.show"]})
@@ -191,7 +191,7 @@ fn cloud_install_never_uses_bundled_art_trust_and_requires_admin() {
         .is_none());
     let request = parsed_request("POST", "/v1/asset-library/install", &[], Some("{}"));
     let (status, _) = route_with_runtime(&runtime, &request).unwrap();
-    assert!(matches!(status, 401 | 403), "未认证请求不得进入云下载");
+    assert!(matches!(status, 401 | 403), "unauthenticated requests must not enter cloud download");
     drop(runtime);
     remove_test_dir(&root);
 }

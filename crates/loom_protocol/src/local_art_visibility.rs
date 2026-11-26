@@ -1,4 +1,4 @@
-//! v3 默认显隐与原端口同域签名；数组逐方向按端口索引对应，不赋予执行权限。
+//! v3 default port visibility signed under a dedicated domain alongside ports; boolean arrays align index-by-index per direction and confer no execution authority.
 use super::{ports::Ports, Package as LegacyPackage};
 use crate::local_art::Error;
 use serde::{Deserialize, Serialize};

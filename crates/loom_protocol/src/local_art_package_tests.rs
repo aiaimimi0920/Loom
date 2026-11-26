@@ -1,4 +1,4 @@
-//! Schema与严格DTO字段合同；聚合预算和设备委托期限仍由运行时检查。
+//! JSON Schema and strict DTO field contracts; aggregate budgets and device delegation lifetimes are enforced at runtime.
 use super::*;
 use serde_json::json;
 fn value() -> serde_json::Value {
@@ -10,7 +10,7 @@ fn package_schema_and_dto_reject_missing_extra_and_unsafe_fields() {
         serde_json::from_str(crate::schemas::LOCAL_ART_PACKAGE_V1).unwrap();
     let grant: serde_json::Value =
         serde_json::from_str(crate::schemas::LOCAL_ART_GRANT_V1).unwrap();
-    // grant内的本地引用还依赖binding/source等定义；整体装入，保持公开Schema原义。
+    // Local `$ref`s inside `grant` depend on `binding`/`source` definitions; merge `$defs` wholesale to preserve the public schema semantics.
     schema["$defs"]
         .as_object_mut()
         .unwrap()

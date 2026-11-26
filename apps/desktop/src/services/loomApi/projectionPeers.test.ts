@@ -37,8 +37,8 @@ test("a stale or different probe cannot be presented as verified", async (contex
 test("malformed, oversized and duplicate peer settings fail closed", () => {
   for (const input of [null, { ...state, revision: -1 }, { ...state, peers: Array(17).fill(peer) },
     { ...state, peers: [peer, peer] }, { ...state, peers: [{ ...peer, enabled: "yes" }] },
-    { ...state, peers: [{ ...peer, name: "测".repeat(43) }] }]) {
-    assert.throws(() => parseProjectionPeerState(input));
+    { ...state, peers: [{ ...peer, name: "\u6d4b".repeat(43) }] }]) {
+    assert.throws(() => parseProjectionPeerState(input), /Invalid Loom peer connection response/);
   }
 });
 

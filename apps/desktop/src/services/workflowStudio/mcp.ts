@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import { MAX_TEMPLATE_PORTS, safeName } from "./shared.ts";
 import type { McpToolSchemaImportResult, ParsedPort, WorkflowPortType } from "./types.ts";
 
@@ -64,7 +65,7 @@ export function portsFromMcpToolSchema(tool: unknown): McpToolSchemaImportResult
     suggestedInputs,
     suggestedOutputs: [{
       name: outputType === "image" ? "image" : "result",
-      label: outputType === "image" ? "Image" : "Result",
+      label: outputType === "image" ? uiText("otter.workflowStudio.imageLabel") : uiText("otter.workflowStudio.resultLabel"),
       type: outputType,
       originalValue: "",
       isInput: false,

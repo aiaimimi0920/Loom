@@ -34,24 +34,24 @@ test("keeps decimal sliders as floats even when their defaults are integers", ()
 test("lists image-capable outputs for every workflow preview node", () => {
   const transfer = {
     id: "color-transfer",
-    name: "颜色迁移",
+    name: "Color transfer",
     description: "",
     enabled: true,
     outputs: [
-      { name: "output", label: "迁移结果", type: "image", executionType: "image_buffer" },
-      { name: "stats", label: "统计", type: "string", executionType: "string" },
+      { name: "output", label: "Transferred image", type: "image", executionType: "image_buffer" },
+      { name: "stats", label: "Stats", type: "string", executionType: "string" },
     ],
   } as LoomToolDefinition;
   const compress = {
     id: "image-compress",
-    name: "图片压缩",
+    name: "Image compress",
     description: "",
     enabled: true,
     outputs: [
-      { name: "output_image", label: "压缩结果", type: "image", executionType: "image_buffer" },
+      { name: "output_image", label: "Compressed image", type: "image", executionType: "image_buffer" },
     ],
   } as LoomToolDefinition;
-  const workflow = parseWorkflowYamlLite(`name: 迁移压缩
+  const workflow = parseWorkflowYamlLite(`name: Transfer and compress
 nodes:
   - id: transfer
     uses: color-transfer
@@ -65,18 +65,18 @@ nodes:
   assert.deepEqual(collectWorkflowPreviewNodeOptions(workflow, [transfer, compress]), [
     {
       nodeId: "transfer",
-      label: "颜色迁移",
-      outputs: [{ name: "output", label: "迁移结果" }],
+      label: "Color transfer",
+      outputs: [{ name: "output", label: "Transferred image" }],
     },
     {
       nodeId: "compress",
-      label: "图片压缩",
-      outputs: [{ name: "output_image", label: "压缩结果" }],
+      label: "Image compress",
+      outputs: [{ name: "output_image", label: "Compressed image" }],
     },
     {
       nodeId: "sticker",
       label: "sticker",
-      outputs: [{ name: "output_image", label: "图像" }],
+      outputs: [{ name: "output_image", label: "Image" }],
     },
   ]);
 });
@@ -103,7 +103,7 @@ test("keeps whole-step sliders and explicit integers as integer controls", () =>
 test("indexes installed tools by local and publisher-qualified Art identity", () => {
   const tool = {
     id: "custom-color-transfer",
-    name: "颜色迁移",
+    name: "Color transfer",
     description: "",
     enabled: true,
     metadata: {
@@ -121,13 +121,13 @@ test("indexes installed tools by local and publisher-qualified Art identity", ()
 test("lists baked workflow node params as public binding candidates", () => {
   const colorTransfer = {
     id: "custom-color-transfer",
-    name: "颜色迁移",
+    name: "Color transfer",
     description: "",
     enabled: true,
     params: [
       {
         id: "strength",
-        label: "迁移强度",
+        label: "Transfer strength",
         widget: "slider",
         data_type: "number",
         default: 100,
@@ -145,7 +145,7 @@ test("lists baked workflow node params as public binding candidates", () => {
       },
       {
         id: "internal_debug",
-        label: "调试",
+        label: "Debug",
         data_type: "boolean",
         disabled: true,
       },
@@ -156,7 +156,7 @@ test("lists baked workflow node params as public binding candidates", () => {
       },
     },
   } as LoomToolDefinition;
-  const workflow = parseWorkflowYamlLite(`name: 迁移压缩
+  const workflow = parseWorkflowYamlLite(`name: Transfer and compress
 nodes:
   - id: transfer
     uses: neuro.official/custom-color-transfer
@@ -170,9 +170,9 @@ nodes:
     {
       key: "transfer::strength",
       nodeId: "transfer",
-      nodeLabel: "颜色迁移",
+      nodeLabel: "Color transfer",
       target: "strength",
-      paramLabel: "迁移强度",
+      paramLabel: "Transfer strength",
       type: "int",
       executionType: "number",
       defaultValue: "87",
@@ -190,7 +190,7 @@ nodes:
     {
       key: "transfer::gamma",
       nodeId: "transfer",
-      nodeLabel: "颜色迁移",
+      nodeLabel: "Color transfer",
       target: "gamma",
       paramLabel: "Gamma",
       type: "float",

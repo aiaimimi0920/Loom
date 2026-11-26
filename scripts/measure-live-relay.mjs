@@ -47,7 +47,7 @@ async function readSnapshot(url, authorization, signal) {
       throw new Error('measurement_response_too_large');
     }
     if (!reader) throw new Error('measurement_snapshot_invalid');
-    // 固定响应缓冲，避免恶意一字节分块制造无界 chunk 元数据。
+    // Pre-allocate a fixed response buffer so malicious one-byte chunks cannot create unbounded chunk metadata.
     const bytes = Buffer.alloc(MAX_RESPONSE_BYTES);
     let size = 0;
     while (true) {
@@ -64,7 +64,7 @@ async function readSnapshot(url, authorization, signal) {
   }
 }
 
-// 仅访问操作者指定的已授权会话，不发现/配对设备，也不写入或停止任何产品会话。
+// Read-only polling of the operator-specified authorized session; never discovers or pairs devices and never mutates or stops product sessions.
 export async function sampleLiveRelay(input, authorization, externalSignal) {
   const options = validateOptions(input);
   validateAuthorization(authorization);
@@ -119,14 +119,14 @@ export function parseArguments(args) {
 
 async function main() {
   if (process.argv.slice(2).join(' ') === '--help') {
-    console.log('只读 LiveRelay 采样（Node.js 22）：--base-url <origin> --session-id <id> --output <new.json>');
-    console.log('可选：--duration-seconds 60 --interval-ms 500 --timeout-ms 3000；凭证环境变量 LOOM_MEASURE_AUTHORIZATION。');
+    console.log('Read-only LiveRelay sampler (Node.js 22): --base-url <origin> --session-id <id> --output <new.json>');
+    console.log('Optional: --duration-seconds 60 --interval-ms 500 --timeout-ms 3000; credential env var LOOM_MEASURE_AUTHORIZATION.');
     return;
   }
   const options = parseArguments(process.argv.slice(2));
   const authorization = process.env.LOOM_MEASURE_AUTHORIZATION;
   validateAuthorization(authorization);
-  // 独占创建：不覆盖既有证据，写入失败也不得宣称采样已交付。
+  // Open exclusively so existing evidence is never overwritten and write failures never claim delivery.
   const file = await open(options.output, 'wx', 0o600);
   const cancel = new AbortController();
   const onSignal = () => cancel.abort();
@@ -146,7 +146,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(() => {
-    // 原始网络/文件错误可能包含 URL、凭证或私有响应；只保留固定失败类别。
+    // Raw network or filesystem errors may expose URLs, credentials, or private responses; emit a fixed failure category only.
     console.error('measurement_cli_failed: check options, credential environment, TLS and unused output path');
     process.exitCode = 1;
   });

@@ -1,4 +1,4 @@
-// 本叶在原Tile联合fixture内编译：真实Source菜单/媒体到混合Tile，独立像素和权威状态oracle。
+// Compiled inside the Tile joint fixture: real Source menu/media into a mixed Tile with independent pixel and authoritative state oracles.
 #[test]
 #[ignore = "explicit real Source LAN WSS to mixed native Tile raw/PNG freeze black resume stop"]
 fn real_lan_native_tile_live_mixed_frames_and_cleanup() {
@@ -62,7 +62,7 @@ fn live_run(revoked: bool) {
     } else {
         proof["frozen"] = f.present(&mut output, "frozen");
         f.phase(&mut output, "tile-live-frozen.json");
-        // 冻结已停Tile媒体，但Source仍发布；不能把保留旧图算作新帧。
+        // Freeze stops Tile media delivery while Source continues publishing; retained stale pixels must not count as a fresh frame.
         let start = Instant::now();
         while sessions.media_connections.load(Ordering::SeqCst) != 1 {
             f.alive(&mut output);

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { currentLanguage, setLanguage, uiFormatFor } from "../i18n/index.ts";
 import { buildAuthoredArtPackage, defaultAuthoringValues } from "./artAuthoring.ts";
 import type { LoomFramework } from "./loomApi.ts";
 
-const framework = (id: string, fields: LoomFramework["authoringSchema"] extends infer _ ? NonNullable<LoomFramework["authoringSchema"]>["fields"] : never): LoomFramework => ({
+const framework = (
+  id: string,
+  fields: LoomFramework["authoringSchema"] extends infer _
+    ? NonNullable<LoomFramework["authoringSchema"]>["fields"]
+    : never,
+): LoomFramework => ({
   id,
   qualifiedId: `publisher.test/${id}`,
   name: id,
@@ -38,7 +44,10 @@ test("builds the four built-in authoring execution contracts", () => {
       values,
     });
     assert.equal(built.tool.execution?.type, executionType);
-    assert.equal((built.tool.metadata as { dependencies: { framework: string } }).dependencies.framework, `publisher.test/${id}`);
+    assert.equal(
+      (built.tool.metadata as { dependencies: { framework: string } }).dependencies.framework,
+      `publisher.test/${id}`,
+    );
     if (id === "process") {
       assert.deepEqual(built.tool.execution, {
         type: "framework_art",
@@ -53,15 +62,18 @@ test("builds the four built-in authoring execution contracts", () => {
 });
 
 test("third-party framework requires and emits an isolated runtime manifest", () => {
-  const built = buildAuthoredArtPackage(framework("custom", [
-    { id: "runtimeCommand", label: "Runtime", type: "string", required: true },
-    { id: "runtimeArgs", label: "Args", type: "string" },
-  ]), {
-    id: "custom-art",
-    name: "Custom",
-    description: "",
-    values: { runtimeCommand: "runner.exe", runtimeArgs: '--mode "safe mode"' },
-  });
+  const built = buildAuthoredArtPackage(
+    framework("custom", [
+      { id: "runtimeCommand", label: "Runtime", type: "string", required: true },
+      { id: "runtimeArgs", label: "Args", type: "string" },
+    ]),
+    {
+      id: "custom-art",
+      name: "Custom",
+      description: "",
+      values: { runtimeCommand: "runner.exe", runtimeArgs: '--mode "safe mode"' },
+    },
+  );
   assert.deepEqual(built.tool.execution, {
     type: "framework_art",
     framework: "publisher.test/custom",
@@ -88,20 +100,34 @@ test("secret authoring fields are persisted only as credential bindings", () => 
   assert.deepEqual(authoring.credentialBindings, { apiCredential: "provider-key" });
 });
 
-test("secret authoring fields cannot become execution or runtime configuration", () => {
-  assert.throws(() => buildAuthoredArtPackage(framework("process", [
-    { id: "runtimeCommand", label: "Runtime", type: "secret", secret: true, required: true },
-  ]), {
-    id: "unsafe-runtime-art",
-    name: "Unsafe",
-    description: "",
-    values: { runtimeCommand: "plaintext-secret" },
-  }), /机密字段 runtimeCommand 不能直接作为 Art 执行配置/);
+test("secret authoring fields cannot become execution or runtime configuration", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
+  for (const language of ["en", "zh-Hans"] as const) {
+    setLanguage(language);
+    assert.throws(
+      () =>
+        buildAuthoredArtPackage(
+          framework("process", [{ id: "runtimeCommand", label: "Runtime", type: "secret", secret: true, required: true }]),
+          {
+            id: "unsafe-runtime-art",
+            name: "Unsafe",
+            description: "",
+            values: { runtimeCommand: "plaintext-secret" },
+          },
+        ),
+      { message: uiFormatFor(language, "art.authoring.error.secretExecutionField", { field: "runtimeCommand" }) },
+    );
+  }
 });
 
 test("default values follow field defaults and boolean shape", () => {
-  assert.deepEqual(defaultAuthoringValues([
-    { id: "method", label: "Method", type: "enum", default: "POST" },
-    { id: "enabled", label: "Enabled", type: "boolean" },
-  ]), { method: "POST", enabled: false });
+  assert.deepEqual(
+    defaultAuthoringValues([
+      { id: "method", label: "Method", type: "enum", default: "POST" },
+      { id: "enabled", label: "Enabled", type: "boolean" },
+    ]),
+    { method: "POST", enabled: false },
+  );
 });

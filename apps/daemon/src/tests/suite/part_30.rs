@@ -16,7 +16,7 @@ fn installed_javascript_surface_mounts_with_a_verified_entry_resource_and_fallba
             "children": [{
                 "id": "refresh",
                 "type": "button",
-                "props": { "label": "刷新" },
+                "props": { "label": "Refresh" },
                 "events": { "click": "refresh_price" }
             }]
         },

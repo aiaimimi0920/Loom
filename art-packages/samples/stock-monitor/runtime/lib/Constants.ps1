@@ -13,4 +13,4 @@ $script:MaxLiveAgeSeconds = 90
 $script:MaxOrderBookAgeSeconds = 120
 $script:ProviderVersion = "2.9.0"
 $script:UpstreamVersion = "2.7.3"
-$script:Disclaimer = "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
+$script:Disclaimer = "Quotes may be delayed and are for informational display only, not investment advice or trading instructions."

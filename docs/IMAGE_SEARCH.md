@@ -1,81 +1,29 @@
 # Image Search
 
-## Packages and credentials
+## Packages, cross-platform entrypoints, and credentials
 
-The `neuro.official/custom-image-search` Art uses the generic `mcp` framework
-and declares the independent `neuro.official/neuro-image-search` MCP package
-as a dependency. Sources live in `art-packages/samples/image-search` and
-`mcp-server-packages/image-search`. Otter does not launch the server or contain
-an image-search execution branch.
+The `neuro.official/custom-image-search` Art uses the generic `mcp` framework and declares the independent `neuro.official/neuro-image-search` MCP server package as a dependency (`art-packages/samples/image-search` and `mcp-server-packages/image-search`). Otter neither launches the MCP server nor embeds image-search logic.
 
-Configure **Brave API Key** through the Art dependency status or MCP service
-page. The service credential endpoint is
-`PUT /v1/mcp/servers/neuro-image-search/credentials`. The MCP package declares
-`brave_api_key`, which the framework maps to `BRAVE_API_KEY` for its
-`runtime/image-search-mcp.ps1` process. The server exposes `brave_image_search`
-over stdio and calls Brave without runtime npm installation or `npx`.
-Credential storage and platform limitations are described in
-[plugin permissions](plugin-permissions.md).
+`mcp-server-packages/image-search/mcp.server.json` declares cross-platform stdio entrypoints so the same MCP package operates on both Windows and Linux server hosts without runtime `npm install` or `npx`:
 
-The older Art-local server payload and read-only `art-mcp:` service projection
-belong to retired implementations. Current service management uses the
-independent MCP package and its credential lifecycle. Do not restore the old
-projection or put the Brave key into Art defaults, Otter state or manifests.
+- Windows default entry: `runtime/image-search-mcp.ps1`
+- Linux platform entry (`entry.platforms.linux`): `runtime/image-search-mcp.mjs`
 
-## Inputs, parameters and results
+Configure **Brave API Key** from either the Art dependency status view or the MCP service page. Both write the server-scoped credential through `PUT /v1/mcp/servers/neuro-image-search/credentials`. The `mcp` framework injects the `brave_api_key` credential as `BRAVE_API_KEY` into the managed MCP child process, which exposes `brave_image_search` over stdio. Credential storage guarantees and platform boundaries are documented in [plugin permissions](plugin-permissions.md). Never place `BRAVE_API_KEY` in Art manifests, Art user settings, or Otter session snapshots.
 
-The Art manifest declares `inputs: []`: image search is a generator and has no
-screenshot input. A resolved capability's explicit input list is authoritative,
-including an empty list; stale graph links do not create execution inputs.
-Only an absent capability input declaration permits the current unit-port fallback.
+## Inputs, parameters, and results
 
-Canonical `type: "secret"` or `data_type: "secret"` cannot be downgraded by
-`secret: false`. Secret defaults and known secret parameters must be excluded
-from Otter node state, session persistence, workflow snapshots and execution
-parameters. Credentials are resolved inside Loom's protected execution boundary.
+- The Art manifest declares `inputs: []`: image search is a generator node with no upstream screenshot input. Explicit empty capability input lists are authoritative and ignore stale graph edges.
+- Parameters with `type: "secret"` or `data_type: "secret"` cannot be downgraded by `secret: false` and are excluded from Otter node state, session persistence, workflow exports, and result metadata.
+- The Art exposes the search query and candidate count, converting MCP responses into candidate previews and a formal image output. Brave's `source` maps to the source-page URL and `url` maps to the downloadable image URL; if both strings are identical, the adapter omits the source-page field rather than inventing a page/Referer.
+- Package-local PowerShell modules split candidate normalization (`image-search-candidates.ps1`), outbound address/redirect/size-bounded fetching (`image-search-download.ps1`), shared I/O helpers (`common.ps1`), and bitmap thumbnail generation (`image-runtime-bitmap.ps1`).
+- The `mcp` framework validates tool arguments against `inputSchema` from `tools/list`, normalizing scalar types and enums, checking required fields, stripping undeclared fields when `additionalProperties` is `false`, and rejecting unsupported composed schemas (`$ref`, `allOf`, `anyOf`, `oneOf`) or nested object/array properties.
 
-The manifest exposes the search query and candidate count. The Art converts MCP
-results into image candidates and formal image output. Source-page URLs and
-downloadable image URLs have distinct meanings: Brave's `source` supplies the
-source page, while its `url` supplies the image URL. The adapter discards a
-source-page URL equal to the image URL rather than inventing a page/Referer.
+## Art settings and verification
 
-The runtime entry orchestrates requests through package-local
-`image-search-candidates.ps1` (bounded result normalization and provenance) and
-`image-search-download.ps1` (address policy, redirects, and bounded downloads).
-Shared request/path/output helpers remain in `common.ps1`; bitmap ownership and
-thumbnail transforms live in `image-runtime-bitmap.ps1`. Sample and smoke package
-builders include the complete module graph before hashing or signing the package.
+General non-secret Art preferences persist in `<control-plane>/art-user-settings.json` and project into `metadata.artUserSettings` on registry reads; read failures clear stale projections rather than exposing raw file errors, and never substitute for MCP `CredentialStore` bindings.
 
-The MCP framework obtains the selected tool's `inputSchema` from `tools/list`.
-It normalizes supported scalar types, aliases and enum values, checks required
-arguments, and omits undeclared properties when `additionalProperties` is false.
-Unsupported composed schemas such as `$ref`, `allOf`, `anyOf` and `oneOf`, and
-nested object/array property types, are rejected by the current host. There is
-no general complex-schema passthrough guarantee. Art/Otter control fields must
-not become accidental tool arguments, and secret-bearing call arguments must
-not be echoed into result metadata.
+Verification contracts:
 
-## Art settings and package updates
-
-For general Art preferences, `<control-plane>/art-user-settings.json` is the
-persistent authority. `metadata.artUserSettings` is a registry projection:
-registry reads and saves remove the previous projection and reconstruct it
-from settings for the qualified Art ID. Current registry lookup treats settings
-read/validation failures as absent preferences, clearing stale projected values;
-it does not promise the historical `art_settings_error` failure on every read.
-This Art-preference mechanism does not replace MCP service credential storage.
-
-When shipping a changed framework, update its version and reinstall dependent
-bundled Arts so dependency locks resolve to the intended active framework.
-Verify both a fresh control plane and upgrade from an existing installation.
-
-## Verification boundary
-
-`scripts/tests/Test-LoomImageSearchMcpServer.ps1` exercises the server contract;
-`scripts/tests/Test-LoomSampleArtInstallExecution.ps1` exercises independent
-package installation and execution with isolated fixtures. Fixture evidence
-does not establish current public Brave availability or native Otter acceptance.
-Use [release provenance](release-provenance.md) for exact-package joint gates.
-Historical phase 72-74 provider runs, candidate hashes and old-process blockers
-remain recoverable from Git tag `cleanup-base-20260928`.
+- `scripts/tests/Test-LoomImageSearchMcpServer.ps1` validates the stdio MCP server contract.
+- `scripts/tests/Test-LoomSampleArtInstallExecution.ps1` validates isolated installation, scoped credential injection, local fixture execution, and cleanup.

@@ -1,5 +1,6 @@
 // Owns bounded polling and receipt tracking, never a persistent language preference.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { uiText } from "../../i18n/index.ts";
 import { listOtterLocaleDevices, requestOtterLocale } from "../../services/loomApi/otterLocale.ts";
 import type { LoomManagedDevice } from "../../services/loomApi/otterTypes.ts";
 import { localeUnavailableReason, observeLocaleRequest, type TrackedLocaleRequest } from "./otterLanguageState.ts";
@@ -31,7 +32,7 @@ export function useOtterLanguageSettings(baseUrl: string, online: boolean, activ
         : null);
     } catch (error) {
       if (version === generation.current) {
-        setLoadError(error instanceof Error ? error.message : "读取 Otter 语言设置失败");
+        setLoadError(error instanceof Error ? error.message : uiText("settings.otterLanguage.loadFailed"));
       }
     } finally {
       if (refreshInFlight.current === version) refreshInFlight.current = null;
@@ -94,7 +95,7 @@ export function useOtterLanguageSettings(baseUrl: string, online: boolean, activ
     } catch (error) {
       if (version !== generation.current) return;
       // A lost HTTP response cannot establish whether Otter persisted the request.
-      setSubmitError(error instanceof Error ? error.message : "语言请求结果未确认");
+      setSubmitError(error instanceof Error ? error.message : uiText("settings.otterLanguage.submitUnconfirmed"));
       setTracked(current => current?.requestId === request.requestId ? { ...current, status: "unknown" } : current);
     } finally {
       if (version === generation.current) {

@@ -1,4 +1,4 @@
-// 显式自动回调登记的唯一 owner；每注册单槽，无线程、持久恢复或网络重放。
+// Sole owner of explicit auto-callback registrations; single slot per registration, with no background thread, persistent recovery, or network replay.
 use loom_protocol::local_art::live_trigger as local_trigger;
 #[derive(Default)]
 struct LocalArtTriggers(BTreeMap<String, LocalArtTrigger>);
@@ -127,7 +127,7 @@ impl LocalArtTriggers {
             if serde_json::to_vec(&delivery)
                 .map_or(true, |bytes| bytes.len() > local_trigger::MAX_DELIVERY)
             {
-                // 不能截断观察数据或无限累积；失败只保现有注册和固定状态。
+                // Never truncate observation data or accumulate unboundedly; failure preserves only the existing registration and fixed state.
                 entry.retire(
                     local_trigger::Status::Stopped,
                     local_trigger::StopReason::DeliveryLimit,

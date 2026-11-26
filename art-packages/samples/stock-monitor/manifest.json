@@ -1,7 +1,7 @@
 {
   "id": "custom-stock-monitor",
-  "name": "股票盯盘",
-  "description": "通过独立 stock-api MCP 服务聚合行情，并以 pysnowball 兼容实时源观察 A 股、港股与美股报价、分时和多周期 K 线，不提供交易功能。",
+  "name": "Stock Monitor",
+  "description": "Monitors A-share, Hong Kong, and US quotes plus intraday and multi-period candles through stock-api aggregation and a pysnowball-compatible live source, without trading.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -11,14 +11,14 @@
   "outputs": [
     {
       "name": "quote",
-      "label": "行情快照",
+      "label": "Quote Snapshot",
       "type": "object"
     }
   ],
   "params": [
     {
       "id": "code",
-      "label": "股票代码",
+      "label": "Stock Code",
       "widget": "text",
       "required": true,
       "default": "SZ000034",
@@ -26,7 +26,7 @@
     },
     {
       "id": "interval_seconds",
-      "label": "刷新间隔（秒）",
+      "label": "Refresh Interval (s)",
       "widget": "slider",
       "default": 5,
       "min": 1,
@@ -50,7 +50,7 @@
       "globalId": "NA20260802007"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "股票盯盘",
         "en-US": "Stock Monitor"
@@ -75,7 +75,7 @@
       "marketData": {
         "providerId": "stock-api",
         "providerName": "stock-api",
-        "marketScope": "A 股 / 港股 / 美股",
+        "marketScope": "A-Share / HK / US",
         "apiKeyRequired": false,
         "trading": false
       },
@@ -103,22 +103,22 @@
         "views": [
           {
             "id": "full",
-            "label": "全视图",
+            "label": "Full View",
             "fullSize": { "width": 960, "height": 820 }
           },
           {
             "id": "chart-table",
-            "label": "折线表格视图",
+            "label": "Chart & Table View",
             "fullSize": { "width": 940, "height": 760 }
           },
           {
             "id": "trade-price",
-            "label": "交易价格视图",
+            "label": "Order Book & Quote View",
             "fullSize": { "width": 620, "height": 620 }
           },
           {
             "id": "favorites-summary",
-            "label": "收藏股票价格汇总视图",
+            "label": "Watchlist Summary View",
             "fullSize": { "width": 640, "height": 420 }
           }
         ],
@@ -273,10 +273,10 @@
       "providerName": "stock-api",
       "upstreamVersion": "2.7.3",
       "sources": ["tencent", "sina", "eastmoney", "xueqiu", "pysnowball"],
-      "marketScope": "A 股 / 港股 / 美股",
+      "marketScope": "A-Share / HK / US",
       "apiKeyRequired": false,
       "trading": false,
-      "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
+      "disclaimer": "Quotes may be delayed and are for informational display only, not investment advice or trading instructions."
     },
     "plugin": {
       "packageVersion": "1.6.0",

@@ -1,6 +1,7 @@
 // Presents the official OCR capability without creating a second install path.
 import type { CapabilityCatalogItem, CapabilityPluginRecord } from "../../../services/loomApi";
 import { Badge, Button, Panel } from "@neuro/ui";
+import { useUiText } from "../../../i18n/index.ts";
 import {
   capabilityStatusLabel,
   capabilityStatusTone,
@@ -30,19 +31,23 @@ export function OfficialOcrCapabilityCard({
   onInstall,
   onManage,
 }: OfficialOcrCapabilityCardProps) {
+  const { t, tf } = useUiText();
   const installedSameVersion = Boolean(catalogItem && installed?.versions.some(
     (version) => version.version === catalogItem.entry.version,
   ));
   const canInstall = Boolean(catalogItem?.compatible && !installedSameVersion);
   const status = installed
     ? capabilityStatusLabel[installed.status]
-    : catalogItem ? (catalogItem.compatible ? "可下载安装" : "当前版本不兼容")
-      : catalogConfigured ? "官方目录暂未提供" : "等待官方目录配置";
+    : catalogItem ? (catalogItem.compatible ? t("settings.capabilities.ocr.statusInstallable") : t("settings.capabilities.ocr.statusIncompatible"))
+      : catalogConfigured ? t("settings.capabilities.ocr.statusNotInCatalog") : t("settings.capabilities.ocr.statusAwaitingCatalog");
   const detail = installed
-    ? "OCR、二维码和条码识别均由同一个按需能力包提供；停用后 Otter 不再加载模型或解码器。"
+    ? t("settings.capabilities.ocr.detailInstalled")
     : catalogItem
-      ? `下载 ${formatCapabilityBytes(catalogItem.entry.package.bytes)}，安装后约占用 ${formatCapabilityBytes(catalogItem.entry.diskBytes)}。下载包、SBOM 与 Provenance 均在安装前验证。`
-      : catalogDiagnostic || "配置经过签名验证的官方能力目录后，即可下载 OCR 模型与本地识别运行时。";
+      ? tf("settings.capabilities.ocr.detailCatalog", {
+          downloadSize: formatCapabilityBytes(catalogItem.entry.package.bytes),
+          diskSize: formatCapabilityBytes(catalogItem.entry.diskBytes),
+        })
+      : catalogDiagnostic || t("settings.capabilities.ocr.detailUnconfigured");
   const statusTone = installed
     ? capabilityStatusTone(installed.status)
     : catalogItem?.compatible ? "success" : "warning";
@@ -50,19 +55,22 @@ export function OfficialOcrCapabilityCard({
   return (
     <Panel className="capability-ocr-quickstart" aria-labelledby="official-ocr-title">
       <div className="capability-ocr-quickstart__copy">
-        <h3 id="official-ocr-title">OCR · 文本与二维码/条码识别</h3>
+        <h3 id="official-ocr-title">{t("settings.capabilities.ocr.title")}</h3>
         <p>{detail}</p>
-        <div className="capability-ocr-quickstart__signals" aria-label="OCR 能力特性">
-          <Badge>本地推理</Badge><Badge>按需加载</Badge><Badge>签名包</Badge><Badge>最小权限</Badge>
+        <div className="capability-ocr-quickstart__signals" aria-label={t("settings.capabilities.ocr.signalsAria")}>
+          <Badge>{t("settings.capabilities.ocr.signalLocalInference")}</Badge>
+          <Badge>{t("settings.capabilities.ocr.signalOnDemand")}</Badge>
+          <Badge>{t("settings.capabilities.ocr.signalSignedPackage")}</Badge>
+          <Badge>{t("settings.capabilities.ocr.signalLeastPrivilege")}</Badge>
         </div>
       </div>
       <div className="capability-ocr-quickstart__action">
         <Badge tone={statusTone} role="status" aria-live="polite">
-          {loading ? "读取状态…" : status}
+          {loading ? t("settings.capabilities.ocr.loadingStatus") : status}
         </Badge>
         {installed ? (
           <Button compact disabled={busy || loading} onClick={onManage}>
-            管理 OCR
+            {t("settings.capabilities.ocr.manageAction")}
           </Button>
         ) : (
           <Button compact variant="primary"
@@ -70,13 +78,13 @@ export function OfficialOcrCapabilityCard({
             aria-describedby="official-ocr-install-help"
             onClick={() => catalogItem && onInstall(catalogItem)}
           >
-            {busy ? "下载验证中…" : canInstall ? "下载并安装 OCR" : "当前无法下载"}
+            {busy ? t("settings.capabilities.ocr.verifyingAction") : canInstall ? t("settings.capabilities.ocr.installAction") : t("settings.capabilities.ocr.unavailableAction")}
           </Button>
         )}
         <small id="official-ocr-install-help">
           {catalogItem && !catalogItem.compatible
-            ? catalogItem.compatibilityDetail || "当前 Loom/Otter API 与该包不兼容。"
-            : "大模型包只通过受信任目录下载，不经过本地 ZIP 的小包上传通道。"}
+            ? catalogItem.compatibilityDetail || t("settings.capabilities.ocr.incompatibleFallback")
+            : t("settings.capabilities.ocr.catalogOnlyNote")}
         </small>
       </div>
     </Panel>

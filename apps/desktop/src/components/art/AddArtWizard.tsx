@@ -13,12 +13,13 @@ import {
   TabsRoot,
   Textarea,
 } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomFramework, LoomMcpServer, LoomToolDefinition, LoomWorkflowMetadata } from "../../services/loomApi";
 import { type ArtWizardMode, artWizardModes } from "../app/appShell";
 import { ArtPortEditor, FrameworkAuthoringFieldInput } from "./ArtWizardFields";
 import type { ArtCreationRequest, ArtWizardSubmitDraft } from "./artWizardModel";
-import { useAddArtWizardController } from "./useAddArtWizardController";
 import { CloudArtRequestFields } from "./CloudArtRequestFields";
+import { useAddArtWizardController } from "./useAddArtWizardController";
 import { WorkflowArtPreviewPolicy } from "./WorkflowArtPreviewPolicy";
 
 export function AddArtWizard({
@@ -40,6 +41,7 @@ export function AddArtWizard({
   busy: boolean;
   onCreate: (draft: ArtWizardSubmitDraft) => Promise<boolean>;
 }) {
+  const { t, tf } = useUiText();
   const controller = useAddArtWizardController({
     baseUrl,
     frameworks,
@@ -128,9 +130,9 @@ export function AddArtWizard({
       className="add-art-wizard"
       value={mode}
       onValueChange={(value) => setMode(value as ArtWizardMode)}
-      aria-label="创建 Art"
+      aria-label={t("art.action.createArt")}
     >
-      <TabList label="Art 类型" className="loom-art-mode-tabs">
+      <TabList label={t("art.wizard.modeTabsAria")} className="loom-art-mode-tabs">
         {artWizardModes.map((item) => (
           <Tab key={item.id} value={item.id}>
             {item.title}
@@ -147,18 +149,18 @@ export function AddArtWizard({
       >
         <div className="art-creator-panel__scroll">
           <div className="art-creator-identity">
-            <Field label="仓库名称">
+            <Field label={t("art.wizard.field.repositoryName")}>
               <Input
                 value={repositoryName}
                 onChange={(event) => setRepositoryName(event.target.value)}
                 placeholder={`${mode}-my-art`}
               />
             </Field>
-            <Field label="Art 名称">
+            <Field label={t("art.wizard.field.artName")}>
               <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={selectedMode.title} />
             </Field>
             <div className="art-creator-identity__description">
-              <Field label="描述">
+              <Field label={t("art.edit.field.description")}>
                 <Input
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
@@ -173,9 +175,9 @@ export function AddArtWizard({
 
             {mode === "mcp" ? (
               <div className="art-creator-fields">
-                <Field label="MCP 服务">
+                <Field label={t("art.wizard.mcp.service")}>
                   <Select value={mcpServerId} onChange={(event) => setMcpServerId(event.target.value)}>
-                    <option value="">选择服务</option>
+                    <option value="">{t("art.wizard.mcp.selectService")}</option>
                     {mcpServers.map((server) => (
                       <option key={server.id} value={server.id}>
                         {server.name || server.id}
@@ -183,7 +185,7 @@ export function AddArtWizard({
                     ))}
                   </Select>
                 </Field>
-                <Field label="MCP 工具">
+                <Field label={t("art.wizard.mcp.tool")}>
                   <Input
                     value={mcpToolName}
                     onChange={(event) => setMcpToolName(event.target.value)}
@@ -191,7 +193,7 @@ export function AddArtWizard({
                   />
                 </Field>
                 <div className="art-creator-field--wide">
-                  <Field label="默认参数">
+                  <Field label={t("art.wizard.mcp.defaultArguments")}>
                     <Textarea
                       compact
                       value={mcpArgumentsText}
@@ -208,15 +210,15 @@ export function AddArtWizard({
                     loading={mcpDiscoveryBusy}
                     disabled={mcpDiscoveryBusy}
                   >
-                    {"发现工具"}
+                    {t("art.wizard.mcp.discoverTools")}
                   </Button>
                   <Select
                     value={selectedMcpSchemaToolName}
                     onChange={(event) => setSelectedMcpSchemaToolName(event.target.value)}
                     disabled={!mcpTools.length}
-                    aria-label="已发现的 MCP 工具"
+                    aria-label={t("art.wizard.mcp.discoveredToolsAria")}
                   >
-                    <option value="">选择已发现工具</option>
+                    <option value="">{t("art.wizard.mcp.selectDiscoveredTool")}</option>
                     {mcpTools.map((tool, index) => {
                       const label = mcpToolLabel(tool);
                       return (
@@ -232,7 +234,7 @@ export function AddArtWizard({
                     onClick={useSelectedMcpToolSchema}
                     disabled={!selectedMcpSchemaToolName}
                   >
-                    使用结构
+                    {t("art.wizard.mcp.useSchema")}
                   </Button>
                 </div>
               </div>
@@ -241,21 +243,21 @@ export function AddArtWizard({
             {mode === "process" ? (
               <div className="art-script-creator">
                 <SegmentedControl
-                  label="脚本入口"
+                  label={t("art.wizard.script.entryAria")}
                   hideLabel
                   name="art-script-entry"
                   value={scriptEntryKind}
                   onValueChange={setScriptEntryKind}
                   options={[
-                    { value: "python", label: "Python" },
-                    { value: "command", label: "命令" },
+                    { value: "python", label: t("art.wizard.script.entryPython") },
+                    { value: "command", label: t("art.wizard.script.entryCommand") },
                   ]}
                 />
                 {scriptEntryKind === "python" ? (
                   <div className="art-creator-fields">
                     <div className="art-creator-field--wide">
                       <div className="art-creator-path-row">
-                        <Field label="源码文件">
+                        <Field label={t("art.wizard.script.sourceFile")}>
                           <Input
                             value={scriptSourcePath}
                             onChange={(event) => setScriptSourcePath(event.target.value)}
@@ -269,13 +271,13 @@ export function AddArtWizard({
                           loading={sourceBusyAction === "read"}
                           disabled={Boolean(sourceBusyAction)}
                         >
-                          {"读取"}
+                          {t("art.wizard.script.read")}
                         </Button>
                       </div>
                     </div>
                     <div className="art-creator-field--wide">
                       <div className="art-creator-path-row">
-                        <Field label="art.json（可选）">
+                        <Field label={t("art.wizard.script.artJsonOptional")}>
                           <Input
                             value={scriptArtJsonPath}
                             onChange={(event) => setScriptArtJsonPath(event.target.value)}
@@ -289,12 +291,12 @@ export function AddArtWizard({
                           loading={sourceBusyAction === "art-json"}
                           disabled={Boolean(sourceBusyAction)}
                         >
-                          {"读取"}
+                          {t("art.wizard.script.read")}
                         </Button>
                       </div>
                     </div>
                     <div className="art-creator-field--full">
-                      <Field label="源码">
+                      <Field label={t("art.wizard.script.sourceCode")}>
                         <Textarea
                           className="art-script-source"
                           value={scriptSourceCode}
@@ -312,14 +314,14 @@ export function AddArtWizard({
                         loading={sourceBusyAction === "infer"}
                         disabled={Boolean(sourceBusyAction)}
                       >
-                        {"推断端口"}
+                        {t("art.wizard.script.inferPorts")}
                       </Button>
                     </div>
                   </div>
                 ) : (
                   <div className="art-creator-fields">
                     <div className="art-creator-field--wide">
-                      <Field label="资源目录（可选）">
+                      <Field label={t("art.wizard.script.resourceDirOptional")}>
                         <Input
                           value={scriptSourceDirectory}
                           onChange={(event) => setScriptSourceDirectory(event.target.value)}
@@ -327,19 +329,19 @@ export function AddArtWizard({
                         />
                       </Field>
                     </div>
-                    <Field label="运行命令">
+                    <Field label={t("art.wizard.script.runtimeCommand")}>
                       <Input
                         value={command}
                         onChange={(event) => setCommand(event.target.value)}
                         placeholder="runtime/source/tool.exe"
                       />
                     </Field>
-                    <Field label="参数（每行一个）">
+                    <Field label={t("art.wizard.script.argsPerLine")}>
                       <Textarea compact value={argsText} onChange={(event) => setArgsText(event.target.value)} />
                     </Field>
                     <div className="art-creator-field--wide">
                       <div className="art-creator-path-row">
-                        <Field label="命令行">
+                        <Field label={t("art.wizard.script.commandLine")}>
                           <Input
                             value={rawCommandText}
                             onChange={(event) => setRawCommandText(event.target.value)}
@@ -347,7 +349,7 @@ export function AddArtWizard({
                           />
                         </Field>
                         <Button variant="secondary" type="button" onClick={importRawCommand}>
-                          解析
+                          {t("art.wizard.script.parse")}
                         </Button>
                       </div>
                     </div>
@@ -359,7 +361,7 @@ export function AddArtWizard({
             {mode === "workflow" ? (
               <div className="art-creator-fields">
                 <div className="art-creator-field--wide">
-                  <Field label="工作流">
+                  <Field label={t("art.wizard.workflow.field")}>
                     <Select
                       value={workflowId}
                       onChange={(event) => {
@@ -370,7 +372,7 @@ export function AddArtWizard({
                         setWorkflowId(event.target.value);
                       }}
                     >
-                      <option value="">选择已保存工作流</option>
+                      <option value="">{t("art.wizard.workflow.selectSaved")}</option>
                       {workflows.map((workflow) => (
                         <option key={workflow.id} value={workflow.id}>
                           {workflow.name || workflow.id}
@@ -379,7 +381,7 @@ export function AddArtWizard({
                     </Select>
                   </Field>
                 </div>
-                {workflowInterfaceLoading ? <Notice>读取流程结构...</Notice> : null}
+                {workflowInterfaceLoading ? <Notice>{t("art.wizard.workflow.loadingInterface")}</Notice> : null}
                 {workflowInterfaceError ? <Notice tone="danger">{workflowInterfaceError}</Notice> : null}
                 {workflowPreviewNodeOptions.length ? (
                   <WorkflowArtPreviewPolicy
@@ -413,7 +415,7 @@ export function AddArtWizard({
             className="art-creator-ports"
             title={
               <span className="art-creator-ports__title">
-                端口{" "}
+                {t("art.wizard.ports.title")}{" "}
                 <small>
                   {inputPorts.length} / {paramPorts.length} / {outputPorts.length}
                 </small>
@@ -436,7 +438,9 @@ export function AddArtWizard({
           {wizardMessage ? (
             <Notice tone={wizardMessage.kind === "error" ? "danger" : "success"}>{wizardMessage.text}</Notice>
           ) : null}
-          {!selectedFrameworkReady ? <Notice tone="warning">{selectedMode.title}未安装或未就绪。</Notice> : null}
+          {!selectedFrameworkReady ? (
+            <Notice tone="warning">{tf("art.wizard.frameworkNotReady", { title: selectedMode.title })}</Notice>
+          ) : null}
         </div>
         <div className="art-creator-panel__footer">
           <Button
@@ -445,7 +449,7 @@ export function AddArtWizard({
             type="submit"
             disabled={busy || Boolean(sourceBusyAction) || !selectedFrameworkReady}
           >
-            {"创建 Art"}
+            {t("art.action.createArt")}
           </Button>
         </div>
       </form>

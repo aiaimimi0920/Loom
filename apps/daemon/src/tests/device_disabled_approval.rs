@@ -1,4 +1,4 @@
-// 真实 HTTP 合同：等待批准可重试，管理员禁用不可被登记或签发恢复。
+// Real HTTP contract: pending approval is retryable, whereas admin disable cannot be cleared by re-registration or session issuance.
 #[test]
 fn disabled_approval_distinguishes_pending_and_preserves_disable_on_registration() {
     let f = Fixture::new();
@@ -43,7 +43,7 @@ fn disabled_approval_distinguishes_pending_and_preserves_disable_on_registration
                 .0,
                 200
             );
-            // 批准端点可能启用设备；重新显式禁用，以覆盖 approved + disabled。
+            // The approve endpoint may re-enable the device; explicitly disable again to cover `approved + disabled`.
             assert_eq!(wall_http::admin(f.port, "PUT", &format!("/v1/devices/{id}"), Some(json!({
                 "name":"Pending disabled Otter", "kind":"computer", "address":"hook://test", "enabled":false
             }))).0, 200);

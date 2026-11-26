@@ -169,7 +169,7 @@ async function readFailedArtExecutionFailureVisible(client, rootSelector) {
     const placeholder = node.querySelector('.otter-canvas-node__placeholder');
     const placeholderTitle = node.querySelector('.otter-canvas-node__placeholder-title')?.textContent?.trim() ?? '';
     return Boolean(placeholder)
-      && placeholderTitle === "执行失败"
+      && placeholderTitle === "Execution failed"
       && placeholder.className.includes('otter-canvas-node__placeholder--error')
       && node.className.includes('otter-canvas-node--status-error')
       && !node.querySelector('img');
@@ -220,7 +220,7 @@ async function main() {
         revision: thumbnail?.getAttribute('data-revision') ?? null,
         yamlVisible: Boolean(visible),
         advancedOpen: Array.from(document.querySelectorAll('details')).some((item) => item.open),
-        offlineTextVisible: document.body.innerText.includes('本地服务离线'),
+        offlineTextVisible: document.body.innerText.includes('Local service offline'),
         visibleText: document.body.innerText.slice(0, 1200),
         thumbnailNodes: [],
         failedArtThumbnailFailureVisible: false,

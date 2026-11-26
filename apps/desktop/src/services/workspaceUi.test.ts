@@ -17,10 +17,10 @@ const otterCanvasSource = `${otterCanvasThumbnailSource}\n${otterCanvasToolbarSo
 
 test("removes the standalone workflow workbench and its navigation entry points", () => {
   assert.doesNotMatch(appSource, /id: "workflows"/);
-  assert.doesNotMatch(appSource, /工作流工作台/);
+  assert.doesNotMatch(appSource, /workflowWorkbench/i);
   assert.doesNotMatch(appSource, /function WorkflowStudioPanel/);
   assert.doesNotMatch(appSource, /activeSection === "workflows"/);
-  assert.doesNotMatch(otterCanvasSource, /打开可视化工作流/);
+  assert.doesNotMatch(otterCanvasSource, /openVisualWorkflow/i);
 });
 
 test("keeps save workflow beside the live canvas zoom controls", () => {
@@ -33,10 +33,10 @@ test("keeps save workflow beside the live canvas zoom controls", () => {
 });
 
 test("keeps Otter zoom controls readable while preserving the fixed dark canvas", () => {
-  assert.match(otterCanvasSource, /<Field label="缩放">/);
+  assert.match(otterCanvasSource, /<Field label=\{t\("otter\.toolbar\.zoomLabel"\)\}>/);
   assert.match(
     otterCanvasSource,
-    /<Range[\s\S]*?className="otter-canvas-zoom__slider"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label="画布缩放"/,
+    /<Range[\s\S]*?className="otter-canvas-zoom__slider"[\s\S]*?min=\{0\}[\s\S]*?max=\{1000\}[\s\S]*?step=\{1\}[\s\S]*?aria-label=\{t\("otter\.toolbar\.zoomAria"\)\}/,
   );
   assert.match(otterCanvasSource, /className="otter-canvas-zoom__value">\{Math\.round\(scale \* 100\)\}%/);
   assert.match(otterCanvasSource, /aria-pressed=\{showMinimap\}/);

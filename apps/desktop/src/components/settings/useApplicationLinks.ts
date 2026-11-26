@@ -1,5 +1,6 @@
 // Owns validated external navigation and native log-location actions.
 import { invoke } from "@tauri-apps/api/core";
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import { normalizeHttpsExternalUrl } from "../../services/externalUrl";
 import { isDesktopTauriShell } from "../../services/loomRuntimeTarget";
 import { pushAppToast } from "../feedback/AppFeedback";
@@ -14,7 +15,7 @@ export function useApplicationLinks(
 
   const openApplicationLog = async (app: SettingsAppId, target: "directory" | "file") => {
     if (!isDesktopTauriShell()) {
-      pushAppToast({ level: "info", text: "请在宿主机本地查看服务端日志目录。" });
+      pushAppToast({ level: "info", text: uiText("settings.about.hostLogToast") });
       return;
     }
     try {
@@ -40,7 +41,10 @@ export function useApplicationLinks(
   const checkApplicationUpdate = (app: SettingsAppId) => {
     const repositoryUrl = diagnostics[app].repositoryUrl?.replace(/\/$/, "");
     if (!repositoryUrl) {
-      pushAppToast({ level: "warning", text: `${diagnostics[app].appName} 暂无更新地址` });
+      pushAppToast({
+        level: "warning",
+        text: uiFormat("settings.about.noUpdateUrlToast", { appName: diagnostics[app].appName }),
+      });
       return;
     }
     void openRepository(`${repositoryUrl}/releases/latest`);

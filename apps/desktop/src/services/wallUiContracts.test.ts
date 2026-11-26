@@ -15,6 +15,7 @@ test("wall controls consume the standard package while retaining the domain SVG 
   for (const source of [main, editor, endpoints, geometry, display, images]) {
     assert.match(source, /from "@neuro\/ui"/);
     assert.doesNotMatch(source, /<(?:button|select|textarea|details)\b|ghost-button|signal-button|studio-input/);
+    assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   }
   for (const source of [main, editor, endpoints, geometry, display]) assert.doesNotMatch(source, /<input\b/);
   assert.match(editor, /<WallLayoutPreview layout=\{layout\}/);
@@ -32,11 +33,11 @@ test("numeric fields preserve unique labels, blank NaN and native step/valueAsNu
 });
 
 test("small wall navigation keeps pressed buttons and larger catalogs use one controlled select", () => {
-  assert.match(main, /state\.layouts\.length > 6 \? \(\s*<Field label="墙面">/);
+  assert.match(main, /state\.layouts\.length > 6 \? \(\s*<Field label=\{t\("devices\.wall\.wallSelectLabel"\)\}>/);
   assert.match(main, /value=\{draft\?\.persisted \? draft\.layout\.wallId : ""\}/);
   assert.match(main, /if \(layout\) void abandon\(\(\) => catalog\.select\(layout\)\)/);
   assert.match(main, /aria-pressed=\{draft\?\.layout\.wallId === layout\.wallId\}/);
-  assert.match(main, /aria-label=\{`编辑墙面 \$\{layout\.wallId\}`\}/);
+  assert.match(main, /aria-label=\{tf\("devices\.wall\.editWallAriaLabel", \{ id: layout\.wallId \}\)\}/);
   assert.match(main, /title=\{layout\.wallId\}/);
 });
 
@@ -48,7 +49,7 @@ test("layout rows delegate collapse while preserving stable identity, source ref
   assert.match(editor, /current\.filter\(\(item\) => item\.source\.id !== entry\.source\.id\), entry\]\.slice\(-64\)/);
   assert.match(editor, /layout\.placements\.length >= 256/);
   assert.match(editor, /layout\.tiles\.length >= 64/);
-  assert.match(editor, /原有引用仍保留/);
+  assert.match(editor, /t\("devices\.wall\.editor\.missingSourceNotice"\)/);
 });
 
 test("display remains explicit commands and reports actual versioned endpoint receipts", () => {
@@ -57,7 +58,7 @@ test("display remains explicit commands and reports actual versioned endpoint re
   assert.match(display, /endpoint\.presentation\?\.revision === control\.revision/);
   assert.match(display, /endpoint\.presentation\.outcome === "applied"/);
   assert.match(display, /endpoint\.appliedRevision === layout\.revision/);
-  assert.match(display, /来源继续运行，未保存的布局草稿保留/);
+  assert.match(display, /t\("devices\.wall\.presentation\.inputPausedWarning"\)/);
   assert.match(endpoints, /Boolean\(control \|\| identification\)/);
   assert.match(endpoints, /onClick=\{\(\) => void identify\(endpoint\.endpointId\)\}/);
 });
@@ -68,9 +69,9 @@ test("wall editing retains conflicts, validation, scheduling guards and explicit
   assert.match(main, /catalog\.save\(activationDelayMs\)/);
   assert.match(main, /disabled=\{!schedulable\}/);
   assert.match(main, /activationDelayMs > 0 && !schedulable/);
-  assert.match(main, /requestAppConfirmation\(\{\s*title: "删除墙面"/);
+  assert.match(main, /requestAppConfirmation\(\{\s*title: t\("devices\.wall\.confirmDelete\.title"\)/);
   assert.match(main, /loading=\{catalog\.sourcesLoading\}/);
-  assert.match(main, /保存布局\s*<\/Button>/);
+  assert.match(main, /\{t\("devices\.wall\.saveLayoutAction"\)\}\s*<\/Button>/);
   assert.match(images, /loading=\{busy\}/);
   assert.match(images, /ticket === generation\.current/);
 });

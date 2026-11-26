@@ -1,4 +1,4 @@
-// 显式双仓联合门；真实HTTPS/设备身份和独立接收PNG oracle，不改生产协议或用户配置。
+// Explicit dual-repository joint gate; real HTTPS/device identity and independent received PNG oracle without altering production protocol or user config.
 mod native_joint {
     use super::*;
     pub(super) struct Otter(pub(super) std::process::Child);
@@ -103,7 +103,7 @@ mod native_joint {
             (result.status().as_u16(), result.json::<Value>().unwrap())
         };
         let input = root.join("input.json");
-        // 一次性合成私钥只写入隔离输入，不上命令行/日志/公开结果manifest。
+        // Ephemeral synthetic private key is written only to the isolated input file and never exposed in CLI args, logs, or public result manifests.
         write_once(&input,&serde_json::to_vec(&json!({"origin":origin,"certificate":info["certificate"],
             "targetDeviceId":target.id,"identity":{"schemaVersion":1,"deviceId":source.id,
             "privateKey":BASE64.encode(source.key.to_bytes()),"publicKey":BASE64.encode(source.key.verifying_key().to_bytes())}})).unwrap());

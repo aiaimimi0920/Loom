@@ -32,9 +32,9 @@ test("account presentation preserves explicit authorization, cancellation and po
 
 test("resource empty pages keep independent opaque pagination and actual install eligibility", () => {
   const resources = source("CloudResourcesPanel"), downloads = source("CloudDownloadsPanel");
-  assert.match(resources, /<EmptyState title="暂无资源"/);
+  assert.match(resources, /<EmptyState title=\{t\("settings\.cloud\.resources\.empty"\)\}/);
   assert.match(resources, /read\(page.nextCursor!\)/);
-  assert.match(downloads, /<EmptyState title="暂无可下载内容"/);
+  assert.match(downloads, /<EmptyState title=\{t\("settings\.cloud\.downloads\.empty"\)\}/);
   assert.match(downloads, /read\(page.nextAfter!\)/);
   assert.match(downloads, /canInstallCloudPackage\(item\) && <Button/);
   assert.match(downloads, /parseCloudDownload\(await postJson/);

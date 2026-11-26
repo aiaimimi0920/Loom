@@ -101,7 +101,7 @@ lifecycle and fails if either fingerprint changes.
 Windows uses Job Objects; Linux requires Bubblewrap PID namespaces with a pinned
 init pidfd. Process groups are not a containment fallback: `setsid` descendants
 must remain inside the kernel-owned lifetime boundary. Unsupported platforms or
-Linux hosts fail closed for managed launches. See [Linux deployment and tests](LINUX_PROCESS_ISOLATION.md).
+Linux hosts fail closed for managed launches. See [runtime security boundaries](RUNTIME_SECURITY.md#3-linux-managed-process-containment).
 This is not a complete AppContainer, restricted-token filesystem broker, or
 seccomp profile. Direct arbitrary network, filesystem, GPU, and clipboard access
 is therefore not claimed as fully OS-denied.

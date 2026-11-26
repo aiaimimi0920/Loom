@@ -22,14 +22,14 @@ fn update_art_version(
         Err(error) => return invalid_request(error.to_string()),
     };
     if semver::Version::parse(request.version.trim()).is_err() {
-        return invalid_request("目标版本必须是有效的 SemVer");
+        return invalid_request("target version must be valid SemVer");
     }
     let tool = match tool_registry.get_tool(art_id) {
         Ok(Some(tool)) => tool,
         Ok(None) => {
             return structured_error(
                 404,
-                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` 不存在") }),
+                json!({ "code": "tool_not_found", "message": format!("Art `{art_id}` does not exist") }),
             )
         }
         Err(error) => return tool_registry_error_response(error),

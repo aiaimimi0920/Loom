@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, CopyButton, Input, Notice, Stack } from "@neuro/ui";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { useUiText } from "../../i18n/index.ts";
 import { accountError, accountRequest, type AccountView } from "../../services/accountLogin";
 
 export function AccountSettingsPanel({ baseUrl }: { baseUrl: string }) {
+  const { t, tf } = useUiText();
   const [view, setView] = useState<AccountView>({ status: "signed_out" });
   const [origin, setOrigin] = useState("");
-  const [deviceName, setDeviceName] = useState("我的电脑");
+  const [deviceName, setDeviceName] = useState(() => t("settings.cloud.account.defaultDeviceName"));
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const generation = useRef(0);
@@ -55,37 +57,37 @@ export function AccountSettingsPanel({ baseUrl }: { baseUrl: string }) {
     try {
       if (isTauri()) await invoke("open_loom_account_login", { baseUrl, requestId: view.requestId });
       else window.open(view.authorizationUrl, "_blank", "noopener,noreferrer");
-    } catch { setError("无法打开浏览器，请复制登录地址后打开。"); }
+    } catch { setError(t("settings.cloud.account.openBrowserFailed")); }
   }
 
   return (
-    <section className="settings-general-panel settings-account-panel" aria-label="Loom 账号">
-      <header className="settings-general-panel__header"><strong>账号与设备</strong></header>
+    <section className="settings-general-panel settings-account-panel" aria-label={t("settings.cloud.account.panelAria")}>
+      <header className="settings-general-panel__header"><strong>{t("settings.cloud.account.header")}</strong></header>
       {view.status === "signed_out" && <>
-        <label className="settings-network-row"><span>账号服务地址</span><Input aria-label="账号服务地址" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder="https://你的平台地址" disabled={busy} /></label>
-        <label className="settings-network-row"><span>设备名称</span><Input aria-label="设备名称" value={deviceName} maxLength={80} onChange={(event) => setDeviceName(event.target.value)} disabled={busy} /></label>
-        <Stack horizontal><Button compact variant="primary" disabled={busy || !origin.trim() || !deviceName.trim()} onClick={() => void perform("start", { origin, deviceName })}>登录账号</Button></Stack>
-        {view.remoteRevoked === false && <Notice tone="warning">已退出并清除本机凭据；账号服务暂不可达，中心设备记录尚未删除。</Notice>}
+        <label className="settings-network-row"><span>{t("settings.cloud.account.originLabel")}</span><Input aria-label={t("settings.cloud.account.originLabel")} value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder={t("settings.cloud.account.originPlaceholder")} disabled={busy} /></label>
+        <label className="settings-network-row"><span>{t("settings.cloud.account.deviceNameLabel")}</span><Input aria-label={t("settings.cloud.account.deviceNameLabel")} value={deviceName} maxLength={80} onChange={(event) => setDeviceName(event.target.value)} disabled={busy} /></label>
+        <Stack horizontal><Button compact variant="primary" disabled={busy || !origin.trim() || !deviceName.trim()} onClick={() => void perform("start", { origin, deviceName })}>{t("settings.cloud.account.signIn")}</Button></Stack>
+        {view.remoteRevoked === false && <Notice tone="warning">{t("settings.cloud.account.remoteRevokePending")}</Notice>}
       </>}
       {view.status === "pending" && <>
-        <p>请在浏览器完成登录，并核对校验码：<code>{view.fingerprint}</code></p>
-        <p>账号服务：{view.origin}</p>
+        <p>{t("settings.cloud.account.pendingPrompt")}<code>{view.fingerprint}</code></p>
+        <p>{tf("settings.cloud.account.serviceOrigin", { origin: view.origin })}</p>
         <Stack horizontal>
-          <Button compact variant="primary" onClick={() => void openAuthorization()}>在浏览器中继续</Button>
-          <CopyButton compact label="复制登录地址" errorLabel="无法复制登录地址。" onCopy={() => navigator.clipboard.writeText(view.authorizationUrl)}>复制登录地址</CopyButton>
-          <Button compact disabled={busy} onClick={() => void perform("logout")}>取消登录</Button>
+          <Button compact variant="primary" onClick={() => void openAuthorization()}>{t("settings.cloud.account.continueInBrowser")}</Button>
+          <CopyButton compact label={t("settings.cloud.account.copyLoginUrl")} errorLabel={t("settings.cloud.account.copyLoginUrlFailed")} onCopy={() => navigator.clipboard.writeText(view.authorizationUrl)}>{t("settings.cloud.account.copyLoginUrl")}</CopyButton>
+          <Button compact disabled={busy} onClick={() => void perform("logout")}>{t("settings.cloud.account.cancelSignIn")}</Button>
         </Stack>
       </>}
       {view.status === "signed_in" && <>
-        <p>已登录：{view.session.username || view.session.accountId}</p>
-        <p>设备：{view.session.deviceName}</p>
-        <p>账号服务：{view.origin}</p>
+        <p>{tf("settings.cloud.account.signedInAs", { user: view.session.username || view.session.accountId })}</p>
+        <p>{tf("settings.cloud.account.deviceSummary", { device: view.session.deviceName })}</p>
+        <p>{tf("settings.cloud.account.serviceOrigin", { origin: view.origin })}</p>
         <Stack horizontal>
-          <Button compact disabled={busy} onClick={() => void perform("refresh")}>检查登录状态</Button>
-          <Button compact disabled={busy} onClick={() => void perform("logout")}>退出登录</Button>
+          <Button compact disabled={busy} onClick={() => void perform("refresh")}>{t("settings.cloud.account.checkStatus")}</Button>
+          <Button compact disabled={busy} onClick={() => void perform("logout")}>{t("settings.cloud.account.signOut")}</Button>
         </Stack>
       </>}
-      {busy && <Notice>正在处理账号请求...</Notice>}
+      {busy && <Notice>{t("settings.cloud.account.processing")}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
     </section>
   );

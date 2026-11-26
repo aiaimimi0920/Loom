@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import {
   MAX_IMPORT_TEXT_CHARS,
   MAX_TEMPLATE_DEPTH,
@@ -62,8 +63,12 @@ const templateJsonValues = (value: unknown, ports: ParsedPort[], direction: Temp
   while (stack.length) {
     const frame = stack.pop()!;
     valuesSeen += 1;
-    if (valuesSeen > MAX_TEMPLATE_VALUES) throw new RangeError("Imported JSON has too many values.");
-    if (frame.depth > MAX_TEMPLATE_DEPTH) throw new RangeError("Imported JSON is nested too deeply.");
+    if (valuesSeen > MAX_TEMPLATE_VALUES) {
+      throw new RangeError(uiText("otter.workflowStudio.error.jsonTooManyValues"));
+    }
+    if (frame.depth > MAX_TEMPLATE_DEPTH) {
+      throw new RangeError(uiText("otter.workflowStudio.error.jsonTooDeep"));
+    }
 
     if (Array.isArray(frame.value)) {
       const output = new Array<unknown>(frame.value.length);
@@ -103,7 +108,9 @@ const templateJsonValues = (value: unknown, ports: ParsedPort[], direction: Temp
       setContainerValue(frame.parent, frame.key, frame.value);
       continue;
     }
-    if (ports.length >= MAX_TEMPLATE_PORTS) throw new RangeError("Imported JSON produces too many ports.");
+    if (ports.length >= MAX_TEMPLATE_PORTS) {
+      throw new RangeError(uiText("otter.workflowStudio.error.jsonTooManyPorts"));
+    }
 
     const name = safeName(frame.namePath, direction === "input" ? "param" : "result");
     ports.push({

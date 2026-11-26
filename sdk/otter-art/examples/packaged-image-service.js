@@ -1,6 +1,6 @@
 // @ts-check
 /// <reference path="../native-art.d.ts" />
-// 直接分发这份JS；配置/图片走签名包资源，不使用浏览器、文件或任意网络接口。
+// Distribute this JS directly; config and images come from signed package resources without browser, file, or arbitrary network APIs.
 NeuroSurface.define({
     mount({ root, snapshot }) {
         const assets = snapshot.state.package;
@@ -19,9 +19,9 @@ NeuroSurface.define({
         canvas.height = picture.height;
         canvas.getContext("2d").drawImage(picture, 0, 0);
         const button = document.createElement("button");
-        button.textContent = "运行";
+        button.textContent = "Run";
         const status = document.createElement("span");
-        status.textContent = "就绪";
+        status.textContent = "Ready";
         root.replaceChildren(button, canvas, status);
         const run = async () => {
             let mode = "online";
@@ -43,7 +43,7 @@ NeuroSurface.define({
             });
         };
         button.addEventListener("click", run);
-        // 原生dispose先调用清理；不把监听器或异步实例保存到其他Art。
+        // Native dispose runs cleanup first; never retain listeners or async handles across Art instances.
         return () => button.removeEventListener("click", run);
     },
 });

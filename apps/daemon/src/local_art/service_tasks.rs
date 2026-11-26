@@ -1,4 +1,4 @@
-//! 每个 daemon 实例独占任务表和线程。保留终态到 grant 到期，防重试重放；满额拒绝，不排无界队列。
+//! Each daemon instance owns its task table and worker threads. Retains terminal entries until grant expiry to prevent retry replay; rejects at capacity instead of unbounded queueing.
 use super::*;
 use loom_capability_runtime::InvocationControl;
 use loom_protocol::local_art::service::{Owner, Reply, Status, Submit, PROTOCOL};
@@ -121,8 +121,8 @@ impl Tasks {
         {
             return Ok(reply);
         }
-        // command_scope可能等待插件初始化；不能持任务表锁阻挡既有cancel/shutdown，
-        // 也不能把等待耗时加回期限。重锁后再次核同call和容量，仍只有一个worker。
+        // `command_scope` may wait for plugin initialization; do not hold the task table lock to block concurrent cancel/shutdown,
+        // and never add wait time back onto the deadline. Re-verify the call and capacity after relocking so only one worker spawns.
         let gate = if image_context.confirmable {
             Some(confirmation::Gate::new(
                 &runtime,
@@ -347,7 +347,7 @@ impl Task {
         if let Ok(mut state) = self.state.lock() {
             state.image = None;
             if !terminal(state.reply.status) {
-                // runtime完成后仍可能在编码图片；Task的取消必须覆盖该未提交阶段。
+                // The task may still be encoding PNG bytes after the runtime finishes; cancellation must cover that uncommitted window.
                 self.control.cancel();
                 state.reply.status = if error.is_some() {
                     Status::Failed
@@ -376,7 +376,7 @@ impl Task {
             if terminal(state.reply.status) {
                 return;
             }
-            // 包换代/撤权/到期可发生在runtime终态与PNG编码之间；提交前最后复核。
+            // Package generation replacement, revocation, or expiry can occur between runtime completion and PNG encoding; re-verify right before commit.
             let invalid = if !self.lease.valid() {
                 Some("local_art_authorization_changed")
             } else if self.gate.as_ref().is_some_and(|gate| !gate.current()) {

@@ -50,7 +50,7 @@ fn daemon_start_finishing_after_exit_is_reaped_instead_of_registered() {
     LOOM_EXITING.store(true, Ordering::Release);
     let error = register_owned_daemon_process(child).expect_err("exit rejects late daemon");
 
-    assert!(error.contains("正在退出"));
+    assert!(error.contains("Loom is exiting"));
     assert_eq!(owned_daemon_process_id(), None);
     LOOM_EXITING.store(false, Ordering::Release);
 }

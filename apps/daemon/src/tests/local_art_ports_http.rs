@@ -1,4 +1,4 @@
-// 精确安装包→Device/审批→当前签名端口证明；旧 prepare 路由明确拒绝。
+// Exact installed package -> Device/approval -> current signed port proof; retired prepare routes are explicitly rejected.
 mod ports_http {
     use super::*;
     use loom_protocol::local_art::package::visibility as ports;
@@ -11,6 +11,7 @@ mod ports_http {
     #[test]
     fn current_port_proof_uses_immutable_manifest_and_rejects_retired_routes() {
         let zip = package_http::zip(|m| {
+            // Intentional UTF-8/CJK custom port name literal to verify non-ASCII port proof signing.
             m["inputs"] = json!([{"name":"caption","type":"text"},{"name":"原始图片","data_type":"Image"}]);
             m["outputs"] = json!([{"name":"processed","execution_type":"image"}]);
         });
@@ -32,7 +33,7 @@ mod ports_http {
         assert!(loom_plugin_security::local_art_grant::verify_package(&bytes,
             f.issuer["keyId"].as_str().unwrap(), f.issuer["publicKey"].as_str().unwrap()).is_err());
         for route in ["/v1/art/local/prepare", "/v1/art/local/prepare-cached", "/v1/art/local/prepare-resumable", "/v1/art/local/prepare-package", "/v2/art/local/prepare-package"] {
-            // 所有旧准备路径均不再获得Device准入，不恢复旧路由。
+            // All retired prepare paths are denied Device admission and are never restored.
             assert_eq!(device(f.port, &f.token, "POST", route, Some(f.request.clone())).0, 403, "{route}");
         }
         assert_eq!(f.approve(1, false).0, 200);

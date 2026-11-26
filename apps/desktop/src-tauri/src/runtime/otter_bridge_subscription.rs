@@ -120,9 +120,9 @@ pub(super) fn start() -> Result<(), String> {
     let mut owner = OWNER
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .map_err(|_| "订阅状态不可用")?;
+        .map_err(|_| "Subscription state is unavailable")?;
     if LOOM_EXITING.load(Ordering::Acquire) {
-        return Err("Loom 正在退出".into());
+        return Err("Loom is exiting".into());
     }
     if owner.is_none() {
         // No private discovery location means no integration, not a fatal UI error.
@@ -131,7 +131,8 @@ pub(super) fn start() -> Result<(), String> {
             return Ok(());
         };
         let manifest = PathBuf::from(appdata).join("Neuro/capabilities/loom.json");
-        *owner = Some(Subscription::start(manifest).map_err(|_| "无法启动本地订阅")?);
+        *owner =
+            Some(Subscription::start(manifest).map_err(|_| "Failed to start local subscription")?);
     }
     Ok(())
 }
@@ -147,7 +148,7 @@ pub(super) fn stop() {
 
 fn require_main(label: &str) -> Result<(), String> {
     if label != "main" {
-        return Err("仅主窗口可读取本地订阅".into());
+        return Err("Only the main window may read the local subscription".into());
     }
     Ok(())
 }
@@ -160,7 +161,7 @@ pub(super) fn read_otter_bridge_subscription_state(
     let owner = OWNER
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .map_err(|_| "订阅状态不可用")?;
+        .map_err(|_| "Subscription state is unavailable")?;
     let Some(owner) = owner.as_ref() else {
         return Ok(Counters::default().snapshot());
     };
@@ -168,7 +169,7 @@ pub(super) fn read_otter_bridge_subscription_state(
         .shared
         .counters
         .lock()
-        .map_err(|_| "订阅状态不可用")?
+        .map_err(|_| "Subscription state is unavailable")?
         .snapshot();
     Ok(state)
 }

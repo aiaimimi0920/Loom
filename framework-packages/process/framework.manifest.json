@@ -1,6 +1,6 @@
 {
   "id": "process",
-  "name": "脚本",
+  "name": "Script",
   "description": "Executes command, script, and Python-backed Art packages through one local process boundary.",
   "version": "0.1.2",
   "publisher": {
@@ -40,7 +40,7 @@
   ],
   "authoringSchema": {
     "schemaVersion": 1,
-    "title": "脚本 Art",
+    "title": "Script Art",
     "description": "Create an Art backed by a packaged command, script, or Python entry.",
     "fields": [
       { "id": "runtimeCommand", "label": "Runtime command", "type": "string", "required": true },

@@ -364,13 +364,13 @@ impl FrameworkRegistry {
         let key = match self.resolve_state_key(id) {
             Ok(Some(key)) if self.package_manifest(&key).is_some() => key,
             Err(error) => return (false, error.to_string()),
-            _ => return (false, "未安装".to_owned()),
+            _ => return (false, "Not installed".to_owned()),
         };
         if !self.is_installed(&key) {
-            return (false, "未安装".to_owned());
+            return (false, "Not installed".to_owned());
         }
         if !self.is_enabled(&key) {
-            return (false, "已禁用".to_owned());
+            return (false, "Disabled".to_owned());
         }
         let runtime_root = self.root.join(FRAMEWORK_PACKAGES_DIR);
         framework_ready_in(&key, Some(&runtime_root))
@@ -416,9 +416,9 @@ impl FrameworkRegistry {
             ),
         };
         let (ready, ready_detail) = if !installed {
-            (false, "未安装".to_owned())
+            (false, "Not installed".to_owned())
         } else if !enabled {
-            (false, "已禁用".to_owned())
+            (false, "Disabled".to_owned())
         } else {
             self.readiness(state_key.as_deref().unwrap_or(id))
         };

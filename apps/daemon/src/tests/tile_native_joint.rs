@@ -1,4 +1,4 @@
-// 真实LAN/签名授权/原生呈现联合；管理员只布置图像，不伪造终端register/connect/heartbeat。
+// Real LAN, signed grants, and native presentation joint gate; admin arranges images only without spoofing endpoint register/connect/heartbeat.
 mod tile_native_joint {
     use super::*;
     use std::process::{Child, Command};
@@ -176,7 +176,7 @@ mod tile_native_joint {
         ConcurrencyTestFixture,
         SharedLiveSessionStore,
     ) {
-        // 故障现场和合成profile保留在本次TEMP；不使用Root的自动删除策略。
+        // Preserve failure state and synthetic profiles under TEMP for this run rather than auto-deleting via Root.
         let root = unique_temp_dir(&format!("tile-native-joint-{}", Uuid::new_v4()));
         let (port, server, sessions) = start_with_setup(&root, |daemon| {
             if let Some((package, framework)) = packages {

@@ -145,7 +145,7 @@ impl StoredLiveFrame {
             image::ColorType::Rgba8 => 4,
             _ => return Err("live_jpeg_color_unsupported"),
         };
-        // live_jpeg_decoder 已限制为至多 64 MiB BGRA；解码直接写入最终帧，避免中间整帧缓冲。
+        // live_jpeg_decoder is already bounded to at most 64 MiB BGRA; decode directly into the destination frame to avoid an intermediate full-frame buffer.
         let pixels = metadata.width as usize * metadata.height as usize;
         let payload_len = pixels * 4;
         let mut bytes = vec![0; 64 + payload_len];
@@ -160,7 +160,7 @@ impl StoredLiveFrame {
     }
 }
 
-// 只接受上方 JPEG 解码器确认的 8 位通道数；反向扩展避免覆盖尚未读取的紧凑像素。
+// Accepts only 8-bit channel counts verified by the JPEG decoder above; reverse expansion avoids overwriting unread packed pixels.
 fn expand_live_bgra_in_place(payload: &mut [u8], channels: usize) {
     debug_assert!((1..=4).contains(&channels) && payload.len() % 4 == 0);
     for pixel in (0..payload.len() / 4).rev() {

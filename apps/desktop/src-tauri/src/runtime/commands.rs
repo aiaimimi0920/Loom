@@ -28,8 +28,8 @@ pub(super) async fn install_packaged_framework(
 ) -> Result<Value, String> {
     run_blocking_command(move || {
         let resolved_base_url = resolve_command_base_url(base_url);
-        let current_exe =
-            std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+        let current_exe = std::env::current_exe()
+            .map_err(|error| format!("Failed to locate Loom.exe: {error}"))?;
         install_packaged_framework_from_exe(&resolved_base_url, &id, &current_exe)
     })
     .await
@@ -41,8 +41,8 @@ pub(super) async fn bootstrap_packaged_arts(
 ) -> Result<PackagedArtBootstrapResult, String> {
     run_blocking_command(move || {
         let resolved_base_url = resolve_command_base_url(base_url);
-        let current_exe =
-            std::env::current_exe().map_err(|error| format!("无法定位 Loom.exe：{error}"))?;
+        let current_exe = std::env::current_exe()
+            .map_err(|error| format!("Failed to locate Loom.exe: {error}"))?;
         bootstrap_packaged_arts_from_exe(
             &resolved_base_url,
             &current_exe,

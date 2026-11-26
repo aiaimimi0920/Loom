@@ -36,7 +36,7 @@ fn register_publisher_identity(body: &str, control_plane_root: &Path) -> Result<
             400,
             json!({
                 "code": "custom_art_store_not_supported",
-                "message": "Loom 不支持选择第三方 Art 商店"
+                "message": "Loom does not support third-party Art stores"
             }),
         );
     }
@@ -74,7 +74,7 @@ fn rotate_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u
             400,
             json!({
                 "code": "custom_art_store_not_supported",
-                "message": "Loom 不支持选择第三方 Art 商店"
+                "message": "Loom does not support third-party Art stores"
             }),
         );
     }
@@ -136,7 +136,7 @@ fn rotate_publisher_identity(body: &str, control_plane_root: &Path) -> Result<(u
         {
             return structured_error(
                 502,
-                json!({ "code": "publisher_rotation_invalid", "message": "Art 商店返回了无效的轮换结果" }),
+                json!({ "code": "publisher_rotation_invalid", "message": "Art store returned an invalid key rotation result" }),
             );
         }
         let next_identity = LocalPublisherIdentity {
@@ -174,7 +174,7 @@ fn reveal_publisher_private_key(control_plane_root: &Path) -> Result<(u16, Strin
         )),
         Ok(None) => structured_error(
             404,
-            json!({ "code": "publisher_private_key_missing", "message": "当前用户私钥不可用" }),
+            json!({ "code": "publisher_private_key_missing", "message": "Current publisher private key is unavailable" }),
         ),
         Err(error) => structured_error(
             500,
@@ -265,7 +265,7 @@ fn reveal_plugin_credential(body: &str, control_plane_root: &Path) -> Result<(u1
     if request.name.starts_with("loom-") {
         return structured_error(
             403,
-            json!({ "code": "credential_reserved", "message": "系统保留凭据不可通过该接口读取" }),
+            json!({ "code": "credential_reserved", "message": "System-reserved credentials cannot be revealed through this endpoint" }),
         );
     }
     match CredentialStore::new(control_plane_root).reveal(&request.name, &request.scope) {
@@ -400,21 +400,21 @@ fn framework_error_response(
             404,
             json!({
                 "code": "unknown_framework",
-                "message": format!("未知框架 `{unknown_id}`")
+                "message": format!("unknown framework `{unknown_id}`")
             }),
         ),
         FrameworkError::FrameworkNotInstalled(framework_id) => structured_error(
             409,
             json!({
                 "code": "framework_not_installed",
-                "message": format!("框架 `{framework_id}` 未安装")
+                "message": format!("framework `{framework_id}` is not installed")
             }),
         ),
         FrameworkError::NoRollback { id } => structured_error(
             409,
             json!({
                 "code": "framework_rollback_unavailable",
-                "message": format!("框架 `{id}` 没有可回滚版本")
+                "message": format!("framework `{id}` has no rollback version")
             }),
         ),
         FrameworkError::InvalidPackage {
@@ -424,7 +424,7 @@ fn framework_error_response(
             400,
             json!({
                 "code": "invalid_framework_package",
-                "message": format!("框架包 `{package_id}` 无效：{reason}")
+                "message": format!("framework package `{package_id}` is invalid: {reason}")
             }),
         ),
         FrameworkError::CorruptState { path, reason } => structured_error(
@@ -434,7 +434,7 @@ fn framework_error_response(
                 "framework": id,
                 "path": path,
                 "message": format!(
-                    "框架状态文件 `{path}` 无法读取（{reason}）：请先修复或删除该文件，再安装、启停或卸载框架"
+                    "framework state file `{path}` is unreadable ({reason}); repair or remove the file before installing, toggling, or uninstalling the framework"
                 )
             }),
         ),
@@ -460,7 +460,7 @@ fn tool_readiness(
         Ok(None) => {
             return structured_error(
                 404,
-                json!({ "code": "tool_not_found", "message": format!("工具 `{id}` 不存在") }),
+                json!({ "code": "tool_not_found", "message": format!("tool `{id}` does not exist") }),
             )
         }
         Err(error) => return tool_registry_error_response(error),
@@ -468,11 +468,11 @@ fn tool_readiness(
     let framework_id = loom_tool_registry::framework::framework_id_for_execution(&tool.execution);
     let installed = framework_registry.is_installed(framework_id);
     let (ready, detail) = if !tool.enabled {
-        (false, "Art 已禁用".to_owned())
+        (false, "Art is disabled".to_owned())
     } else if installed {
         framework_registry.readiness(framework_id)
     } else {
-        (false, "框架未安装".to_owned())
+        (false, "framework is not installed".to_owned())
     };
     Ok((
         200,

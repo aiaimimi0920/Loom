@@ -262,7 +262,7 @@ pub(super) fn normalize_mcp_image_search_returns_friendly_message_for_provider_b
     assert_eq!(result["content"][0]["type"], "text");
     assert_eq!(
         result["content"][0]["text"],
-        "图片搜索未返回可用结果：搜索服务将该查询判定为可能敏感，请尝试更换关键词。"
+        "Image search returned no usable results: the search provider flagged this query as potentially sensitive; try different keywords."
     );
 }
 
@@ -305,7 +305,7 @@ pub(super) fn normalize_mcp_image_search_returns_friendly_message_for_empty_resu
     assert_eq!(result["content"][0]["type"], "text");
     assert_eq!(
         result["content"][0]["text"],
-        "图片搜索未返回可用结果，请尝试更换关键词。"
+        "Image search returned no usable results; try different keywords."
     );
 }
 

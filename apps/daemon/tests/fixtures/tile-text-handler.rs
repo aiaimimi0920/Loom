@@ -1,4 +1,4 @@
-//! 独立真实Art进程；只记录实际输入并产生声明式patch和正式结果，不调用Otter实现。
+//! Independent live Art process; logs actual input and emits declarative patches and formal results without invoking Otter implementations.
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 fn invocation(v: &Value) -> Option<&Value> {

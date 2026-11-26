@@ -57,10 +57,9 @@ function Write-RuntimeSuccess {
 }
 
 function Limit-MessageLength {
-    # 按 Unicode 文本元素截断，不按 UTF-16 码元。Substring(0, 400) 可能正好切在代理对中间，
-    # 留下一个孤立高位代理；那不是合法 Unicode，ConvertTo-Json 会把它写成 \ud83d 这类无配对
-    # 转义，宿主再解析就得到损坏字符串。上游错误消息是原样回显的（含 emoji），所以这条路径
-    # 真的会被走到。
+    # Truncate on Unicode text-element boundaries rather than UTF-16 code units. Substring(0, 400)
+    # can split a surrogate pair and leave a lone high surrogate that ConvertTo-Json serializes as
+    # an unpaired \uD83D escape, corrupting the string when decoded by the host.
     param(
         [AllowNull()][string]$Message,
         [int]$MaxLength = 400
@@ -82,15 +81,15 @@ function Write-RuntimeError {
     param([string]$Message)
     [Console]::Out.Write(([ordered]@{
         status = "error"
-        # 非 Surface 路径此前完全不截断，一条上游长消息能把整份错误响应撑到任意大小。
+        # Bound non-Surface error payloads so oversized upstream diagnostics cannot bloat stdout.
         error = [ordered]@{ code = "stock_monitor_failed"; message = (Limit-MessageLength -Message $Message) }
     } | ConvertTo-Json -Depth 20 -Compress))
 }
 
 function Write-SurfaceErrorState {
-    # -RejectAction：动作 id 不在声明列表里。此时这个动作的任何字段都不可信，既不读它的
-    # payload，也不把它的 actionId/requestId 回显进状态；错误文案用固定常量，避免调用方
-    # 控制的文本进入渲染节点与持久状态。
+    # -RejectAction: actionId is undeclared. Treat every field on the action as untrusted: ignore
+    # its payload, omit actionId/requestId from correlation echoes, and emit a fixed error string so
+    # caller-controlled text cannot enter rendered nodes or persisted state.
     param(
         [object]$Action,
         [string]$Message,
@@ -117,7 +116,7 @@ function Write-SurfaceErrorState {
     $statePatch = [ordered]@{
         schemaVersion = 2
         provider = [ordered]@{ id = "stock-api"; name = "stock-api" }
-        marketScope = "A 股 / 港股 / 美股"
+        marketScope = "A-Share / HK / US"
         code = $code
         intervalSeconds = $interval
         period = $period
@@ -125,16 +124,16 @@ function Write-SurfaceErrorState {
         marketStatus = $marketStatus
         lastTradingDate = $lastTradingDate
         status = "error"
-        statusText = "行情获取失败"
+        statusText = "Failed to fetch quote"
         error = $Message
         disclaimer = $script:Disclaimer
     }
-    # 被拒动作不参与关联回显：客户端等不到自己的 requestId，会退回只看 revision 的解锁分支。
+    # Rejected actions omit correlation echoes so the client falls back to revision-based unlock.
     $echoAction = if ($RejectAction) { $null } else { $Action }
     [void](Add-ActionEcho -StatePatch $statePatch -Action $echoAction)
     Write-SurfaceResponse -Patches ([object[]]@([ordered]@{
         operations = [object[]]@(
-            (New-SetOperation -NodeId "status" -Path "/props/text" -Value "行情获取失败"),
+            (New-SetOperation -NodeId "status" -Path "/props/text" -Value "Failed to fetch quote"),
             (New-SetOperation -NodeId "quote_change" -Path "/props/text" -Value $Message),
             (New-SetOperation -NodeId "symbol" -Path "/props/value" -Value $code),
             (New-SetOperation -NodeId "interval" -Path "/props/value" -Value ([string]$interval)),
@@ -145,11 +144,10 @@ function Write-SurfaceErrorState {
 }
 
 function New-FormalQuote {
-    # -ReferenceState：Surface 路径用。此时 history/orderBook/liveTape/favoriteQuotes 已经在
-    # 同一份响应的 statePatch 里，Surface 也只从 authoritativeState 读它们，再在 result.outputs
-    # 里重复一遍就是把 2000 行 K 线第二次写上 stdout、第二次经过宿主存储、第二次推给客户端。
-    # 这里只留计数与指向状态的引用标记。非 Surface 路径（Write-RuntimeSuccess）没有状态可引用，
-    # 仍然带完整数组，那是这个 art 的 quote 输出端口契约。
+    # -ReferenceState: used on the Surface path where history/orderBook/liveTape/favoriteQuotes are
+    # already carried in statePatch of the same response. Referencing authoritativeState avoids
+    # serializing up to 2,000 K-line rows a second time across stdout, host storage, and client push.
+    # Non-Surface execution (Write-RuntimeSuccess) still embeds the full arrays per the quote port contract.
     param(
         [object]$Snapshot,
         [switch]$ReferenceState

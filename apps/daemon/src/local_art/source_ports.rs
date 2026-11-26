@@ -1,4 +1,4 @@
-//! 只投影 resolver 验证过的不可变 manifest；当前目录 capability 不能替代包证明。
+//! Projects only immutable manifests verified by the resolver; live directory capabilities never substitute for signed package proofs.
 use super::*;
 use loom_protocol::local_art::package::ports::{Port, Ports, MAX_PORTS};
 
@@ -46,7 +46,7 @@ pub(super) fn resolve(tool: &loom_tool_registry::ToolDefinition) -> LocalResult<
 pub(super) fn visibility(
     tool: &loom_tool_registry::ToolDefinition,
 ) -> LocalResult<loom_protocol::local_art::package::visibility::Visibility> {
-    // 当前包只读取单端口 bool；旧能力级映射不参与签名默认值。
+    // Current packages read only per-port booleans; retired capability-level maps do not participate in signed defaults.
     let project = |values: &[Value]| {
         values
             .iter()

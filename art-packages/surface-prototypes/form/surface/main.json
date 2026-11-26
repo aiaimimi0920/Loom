@@ -20,14 +20,14 @@
             "id": "title",
             "type": "text",
             "props": {
-              "text": "创建项目"
+              "text": "Create Project"
             }
           },
           {
             "id": "project_name_label",
             "type": "text",
             "props": {
-              "text": "项目名称 *"
+              "text": "Project Name *"
             }
           },
           {
@@ -35,14 +35,14 @@
             "type": "input",
             "props": {
               "value": "",
-              "placeholder": "必填"
+              "placeholder": "Required"
             },
             "events": {
               "input": "form_validate",
               "change": "form_validate"
             },
             "accessibility": {
-              "label": "项目名称，必填"
+              "label": "Project name, required"
             }
           },
           {
@@ -53,7 +53,7 @@
               "visible": false
             },
             "accessibility": {
-              "label": "项目名称错误",
+              "label": "Project name error",
               "live": "assertive"
             }
           },
@@ -61,7 +61,7 @@
             "id": "notes_label",
             "type": "text",
             "props": {
-              "text": "备注（可选）"
+              "text": "Notes (optional)"
             }
           },
           {
@@ -69,14 +69,14 @@
             "type": "textarea",
             "props": {
               "value": "",
-              "placeholder": "可留空"
+              "placeholder": "Optional"
             },
             "events": {
               "input": "form_notes_input",
               "change": "form_notes_input"
             },
             "accessibility": {
-              "label": "项目备注，可选"
+              "label": "Project notes, optional"
             }
           },
           {
@@ -87,10 +87,10 @@
             "id": "form_status",
             "type": "text",
             "props": {
-              "text": "尚未提交"
+              "text": "Not submitted"
             },
             "accessibility": {
-              "label": "表单状态",
+              "label": "Form status",
               "live": "polite"
             }
           },
@@ -106,7 +106,7 @@
                 "id": "cancel",
                 "type": "button",
                 "props": {
-                  "label": "取消"
+                  "label": "Cancel"
                 },
                 "events": {
                   "click": "form_cancel"
@@ -116,7 +116,7 @@
                 "id": "submit",
                 "type": "button",
                 "props": {
-                  "label": "提交"
+                  "label": "Submit"
                 },
                 "events": {
                   "click": "form_submit"

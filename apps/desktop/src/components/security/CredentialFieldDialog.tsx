@@ -1,6 +1,7 @@
 // Composes typed credential drafts; validation, revealing and persistence remain in the security owner.
 import { Button, Dialog, Input, Select, Textarea } from "@neuro/ui";
 import { useRef, type RefObject } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomCredentialValueType } from "../../services/loomApi";
 import { credentialValueTypeLabels, type CredentialFieldDraft } from "../feedback/AppFeedback";
 
@@ -23,12 +24,13 @@ export function CredentialFieldDialog({
   fallbackFocusRef?: RefObject<HTMLElement | null>;
   returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
+  const { t } = useUiText();
   const nameInput = useRef<HTMLInputElement>(null);
   if (!draft) return null;
   return (
     <Dialog
       open
-      title={draft.original ? "编辑字段" : "添加字段"}
+      title={draft.original ? t("security.credential.editTitle") : t("security.credential.addTitle")}
       className="loom-credential-dialog"
       busy={busy}
       initialFocusRef={nameInput}
@@ -43,13 +45,13 @@ export function CredentialFieldDialog({
       <div className="loom-credential-dialog__fields">
         <Input
           ref={nameInput}
-          aria-label="字段名字"
-          placeholder="名字"
+          aria-label={t("security.credential.nameAria")}
+          placeholder={t("security.credential.namePlaceholder")}
           value={draft.name}
           onChange={(event) => onChange({ ...draft, name: event.target.value })}
         />
         <Select
-          aria-label="字段格式"
+          aria-label={t("security.credential.formatAria")}
           value={draft.valueType}
           onChange={(event) =>
             onChange({ ...draft, valueType: event.target.value as LoomCredentialValueType, value: "" })
@@ -65,28 +67,28 @@ export function CredentialFieldDialog({
         </Select>
         {draft.valueType === "boolean" ? (
           <Select
-            aria-label="字段值"
+            aria-label={t("security.credential.valueAria")}
             value={draft.value}
             onChange={(event) => onChange({ ...draft, value: event.target.value })}
           >
-            <option value="">选择</option>
+            <option value="">{t("security.credential.selectOption")}</option>
             <option value="true">true</option>
             <option value="false">false</option>
           </Select>
         ) : draft.valueType === "json" ? (
           <Textarea
             className="loom-credential-dialog__value"
-            aria-label="字段值"
+            aria-label={t("security.credential.valueAria")}
             placeholder="{}"
             value={draft.value}
             onChange={(event) => onChange({ ...draft, value: event.target.value })}
           />
         ) : (
           <Input
-            aria-label="字段值"
+            aria-label={t("security.credential.valueAria")}
             type={draft.valueType === "string" ? "text" : "number"}
             step={draft.valueType === "integer" ? 1 : "any"}
-            placeholder="值"
+            placeholder={t("security.credential.valuePlaceholder")}
             value={draft.value}
             onChange={(event) => onChange({ ...draft, value: event.target.value })}
           />
@@ -95,13 +97,13 @@ export function CredentialFieldDialog({
       <div className="loom-device-dialog__actions loom-device-dialog__actions--split">
         {draft.original ? (
           <Button variant="danger" disabled={busy} onClick={onDelete}>
-            删除
+            {t("common.delete")}
           </Button>
         ) : (
           <span />
         )}
         <Button variant="primary" loading={busy} disabled={busy || !draft.name.trim() || !draft.value} onClick={onSave}>
-          保存
+          {t("common.save")}
         </Button>
       </div>
     </Dialog>

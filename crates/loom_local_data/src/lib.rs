@@ -109,9 +109,14 @@ impl ParsedLoomEndpoint {
         }
         (host, self.port)
             .to_socket_addrs()
-            .map_err(|error| format!("无法解析 Loom 服务端地址 `{host}:{}`：{error}", self.port))?
+            .map_err(|error| {
+                format!(
+                    "Failed to resolve Loom server address `{host}:{}`: {error}",
+                    self.port
+                )
+            })?
             .next()
-            .ok_or_else(|| format!("未找到 Loom 服务端地址 `{host}:{}`", self.port))
+            .ok_or_else(|| format!("Could not find Loom server address `{host}:{}`", self.port))
     }
 }
 
@@ -134,11 +139,11 @@ pub fn parse_loom_endpoint_url(
         ("http", rest)
     } else if let Some(rest) = trimmed.strip_prefix("https://") {
         if !allow_remote {
-            return Err("Loom 本地服务地址必须使用 http:// 回环地址。".to_owned());
+            return Err("Loom local service URL must use an http:// loopback address.".to_owned());
         }
         ("https", rest)
     } else {
-        return Err("Loom 服务地址必须以 http:// 或 https:// 开头。".to_owned());
+        return Err("Loom server URL must start with http:// or https://.".to_owned());
     };
 
     if rest.is_empty()
@@ -147,13 +152,13 @@ pub fn parse_loom_endpoint_url(
         || rest.contains('#')
         || rest.contains('@')
     {
-        return Err("Loom 服务地址只能包含主机与端口，不能包含路径、查询参数或凭据。".to_owned());
+        return Err("Loom server URL may contain only a host and port, without paths, query parameters, or credentials.".to_owned());
     }
 
     let (host_raw, port_raw) = if let Some(bracketed) = rest.strip_prefix('[') {
         let end = bracketed
             .find(']')
-            .ok_or_else(|| "IPv6 主机地址缺少右括号 `]`。".to_owned())?;
+            .ok_or_else(|| "IPv6 host address is missing its closing bracket `]`.".to_owned())?;
         let host = &bracketed[..end];
         let remainder = &bracketed[end + 1..];
         let port = if let Some(port) = remainder.strip_prefix(':') {
@@ -161,7 +166,7 @@ pub fn parse_loom_endpoint_url(
         } else if scheme == "https" && allow_remote {
             "443"
         } else {
-            return Err("Loom 服务地址必须显式包含端口。".to_owned());
+            return Err("Loom server URL must include an explicit port.".to_owned());
         };
         (host, port)
     } else if let Some((host, port)) = rest.rsplit_once(':') {
@@ -169,17 +174,17 @@ pub fn parse_loom_endpoint_url(
     } else if scheme == "https" && allow_remote {
         (rest, "443")
     } else {
-        return Err("Loom 服务地址必须包含端口。".to_owned());
+        return Err("Loom server URL must include a port.".to_owned());
     };
 
     if host_raw.is_empty() {
-        return Err("Loom 服务主机不能为空。".to_owned());
+        return Err("Loom server host cannot be empty.".to_owned());
     }
     let port = port_raw
         .parse::<u16>()
-        .map_err(|error| format!("Loom 服务端口无效：{error}"))?;
+        .map_err(|error| format!("Invalid Loom server port: {error}"))?;
     if port == 0 {
-        return Err("Loom 服务端口不能为 0。".to_owned());
+        return Err("Loom server port cannot be 0.".to_owned());
     }
 
     let parsed_ip = host_raw.parse::<IpAddr>().ok().map(|ip| ip.to_canonical());
@@ -189,11 +194,13 @@ pub fn parse_loom_endpoint_url(
     let is_private_lan = parsed_ip.is_some_and(is_private_lan_ip);
 
     if !allow_remote && !is_loopback {
-        return Err("Loom 桌面端本地模式只连接回环地址上的本地服务。".to_owned());
+        return Err(
+            "Loom desktop connects only to local services on loopback addresses.".to_owned(),
+        );
     }
     if scheme == "http" && !is_loopback && !is_private_lan {
         return Err(
-            "远程公网或域名 Loom 服务端必须使用 https://；明文 http:// 仅限本机回环或家庭局域网私有 IP。"
+            "Remote public or domain Loom servers must use https://; plaintext http:// is allowed only for loopback or private LAN IPs."
                 .to_owned(),
         );
     }
@@ -256,11 +263,15 @@ impl LoomConnectionStore {
     pub fn load_profile(&self) -> Result<LoomConnectionProfile, String> {
         let path = self.profile_path();
         match read_bounded(&path, MAX_CONNECTION_FILE_BYTES) {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes)
-                .map_err(|error| format!("无法解析 Loom 连接配置 `{}`：{error}", path.display())),
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).map_err(|error| {
+                format!(
+                    "Failed to parse Loom connection profile `{}`: {error}",
+                    path.display()
+                )
+            }),
             Ok(None) => Ok(LoomConnectionProfile::default()),
             Err(error) => Err(format!(
-                "无法读取 Loom 连接配置 `{}`：{error}",
+                "Failed to read Loom connection profile `{}`: {error}",
                 path.display()
             )),
         }
@@ -270,8 +281,9 @@ impl LoomConnectionStore {
         let path = self.remote_token_path();
         match read_bounded(&path, MAX_TOKEN_BYTES) {
             Ok(Some(bytes)) => {
-                let raw = String::from_utf8(bytes)
-                    .map_err(|error| format!("远程连接令牌不是 UTF-8：{error}"))?;
+                let raw = String::from_utf8(bytes).map_err(|error| {
+                    format!("Remote connection token is not valid UTF-8: {error}")
+                })?;
                 let trimmed = raw.trim();
                 if trimmed.is_empty() {
                     Ok(None)
@@ -282,7 +294,7 @@ impl LoomConnectionStore {
             }
             Ok(None) => Ok(None),
             Err(error) => Err(format!(
-                "无法读取远程连接令牌 `{}`：{error}",
+                "Failed to read remote connection token `{}`: {error}",
                 path.display()
             )),
         }
@@ -321,7 +333,10 @@ impl LoomConnectionStore {
             .map(|value| parse_loom_endpoint_url(value, true).map(|ep| ep.origin()))
             .transpose()?;
         if update.mode == ConnectionMode::Remote && normalized_remote_url.is_none() {
-            return Err("切换到远程服务端模式时必须填写有效的 Loom 服务端地址。".to_owned());
+            return Err(
+                "A valid Loom server URL is required when switching to remote server mode."
+                    .to_owned(),
+            );
         }
 
         if update.clear_remote_token {
@@ -334,7 +349,7 @@ impl LoomConnectionStore {
         {
             validate_token(token)?;
             write_private_atomic(&self.remote_token_path(), format!("{token}\n").as_bytes())
-                .map_err(|error| format!("无法保存远程连接令牌：{error}"))?;
+                .map_err(|error| format!("Failed to save remote connection token: {error}"))?;
         }
 
         let profile = LoomConnectionProfile {
@@ -350,10 +365,10 @@ impl LoomConnectionStore {
                 .filter(|value| !value.is_empty()),
         };
         let mut encoded = serde_json::to_vec_pretty(&profile)
-            .map_err(|error| format!("无法序列化 Loom 连接配置：{error}"))?;
+            .map_err(|error| format!("Failed to serialize Loom connection profile: {error}"))?;
         encoded.push(b'\n');
         write_private_atomic(&self.profile_path(), &encoded)
-            .map_err(|error| format!("无法保存 Loom 连接配置：{error}"))?;
+            .map_err(|error| format!("Failed to save Loom connection profile: {error}"))?;
         self.status(default_local_url)
     }
 }
@@ -363,7 +378,7 @@ fn validate_token(token: &str) -> Result<(), String> {
         || token.len() > MAX_TOKEN_BYTES
         || token.bytes().any(|byte| byte <= b' ' || byte == 0x7f)
     {
-        return Err("Loom 认证令牌格式无效。".to_owned());
+        return Err("Invalid Loom authentication token format.".to_owned());
     }
     Ok(())
 }

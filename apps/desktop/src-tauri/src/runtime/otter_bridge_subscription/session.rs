@@ -20,7 +20,8 @@ struct Manifest {
 }
 
 pub(super) fn run(manifest: &Path, shared: &Shared) -> Result<(), ()> {
-    let bytes = read_bounded_regular_file(manifest, 1024 * 1024, "本地能力清单").map_err(|_| ())?;
+    let bytes = read_bounded_regular_file(manifest, 1024 * 1024, "local capability manifest")
+        .map_err(|_| ())?;
     let descriptor: Manifest = serde_json::from_slice(&bytes).map_err(|_| ())?;
     if shared.cancelled() {
         return Ok(());

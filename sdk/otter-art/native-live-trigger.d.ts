@@ -1,4 +1,4 @@
-// 只读、无凭据自动回调事件；条件求值和注册/停止由Loom与可信宿主持有。
+// Read-only, credential-free live-trigger event payload; condition evaluation, registration, and teardown remain owned by Loom and the trusted host.
 import type { JsonValue } from "./native-art";
 export interface ArtLiveObservation {
     readonly observationId: string;

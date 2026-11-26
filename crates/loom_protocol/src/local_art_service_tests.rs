@@ -1,4 +1,4 @@
-//! 精确归属、权限与终态约束；验签和实时设备撤销由服务端路由测试另行覆盖。
+//! Exact ownership, permission, and terminal-state invariants; signature verification and live device revocation are covered separately by server route tests.
 use super::*;
 use serde_json::json;
 fn grant() -> Grant {
@@ -91,7 +91,7 @@ fn service_input_progress_and_timeout_are_bounded() {
         input: json!({}),
         timeout_ms: 1000,
     };
-    // 外层签名在路由验签；协议关系校验绝不被当作可信许可。
+    // Outer signatures are verified at the HTTP route boundary; relational protocol validation is never treated as a trusted grant.
     assert_eq!(submit.validate(&g, "device:1", 1000), Ok(()));
     submit.timeout_ms = 0;
     assert_eq!(submit.validate(&g, "device:1", 1000), Err(Error::Time));

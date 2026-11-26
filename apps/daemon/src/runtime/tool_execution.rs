@@ -129,7 +129,7 @@ fn execute_registered_tool(
                 409,
                 json!({
                     "code": "art_disabled",
-                    "message": format!("Art {tool_id} 已禁用"),
+                    "message": format!("Art {tool_id} is disabled"),
                     "artId": tool_id,
                 }),
             );
@@ -140,7 +140,7 @@ fn execute_registered_tool(
                 409,
                 json!({
                     "code": "framework_not_ready",
-                    "message": format!("Art {tool_id} 的框架 {framework} 不可运行：{detail}"),
+                    "message": format!("Framework {framework} for Art {tool_id} is not runnable: {detail}"),
                     "framework": framework,
                     "artId": tool_id,
                 }),

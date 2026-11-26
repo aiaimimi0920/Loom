@@ -1,7 +1,7 @@
 {
   "id": "surface-project-form",
-  "name": "项目表单",
-  "description": "分布式 Surface 原型：必填与可选参数、即时校验、高风险确认、提交和取消。",
+  "name": "Project Form",
+  "description": "Distributed Surface prototype: required and optional fields, live validation, high-risk confirmation, submit, and cancellation.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -11,7 +11,7 @@
   "outputs": [
     {
       "name": "submission",
-      "label": "提交结果",
+      "label": "Submission Result",
       "type": "object"
     }
   ],
@@ -31,7 +31,7 @@
       "globalId": "NA20260811003"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "项目表单",
         "en-US": "Project Form"

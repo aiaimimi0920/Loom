@@ -25,7 +25,7 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
     {
       workflowNodeId: "a",
       target: "width",
-      label: "A / 宽度",
+      label: "A / Width",
       uiType: "int",
       executionType: "number",
       widget: "slider",
@@ -34,10 +34,10 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
       min: 64,
       max: 2048,
       step: 64,
-      group: "尺寸",
+      group: "Size",
     },
-    { workflowNodeId: "a", target: "mode", label: "A / 模式", uiType: "string", executionType: "text" },
-    { workflowNodeId: "b", target: "lang", label: "B / 语言", uiType: "string", executionType: "text" },
+    { workflowNodeId: "a", target: "mode", label: "A / Mode", uiType: "string", executionType: "text" },
+    { workflowNodeId: "b", target: "lang", label: "B / Language", uiType: "string", executionType: "text" },
   ];
   const exposed = new Set(["a::width", "b::lang"]);
   const values = { "a::width": "512", "a::mode": "fit", "b::lang": "en" };
@@ -45,7 +45,7 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
   const { yaml, tool } = buildWorkflowArtBundle({
     snapshot,
     workflowId: "wf-1",
-    workflowName: "链",
+    workflowName: "Chain",
     params,
     exposed,
     values,
@@ -81,7 +81,7 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
   assert.deepEqual((tool.params as Array<Record<string, unknown>>)[0], {
     id: "width",
     name: "width",
-    label: "A / 宽度",
+    label: "A / Width",
     widget: "slider",
     type: "int",
     executionType: "number",
@@ -90,7 +90,7 @@ test("buildWorkflowArtBundle exposes selected params and bakes the rest into wit
     min: 64,
     max: 2048,
     step: 64,
-    group: "尺寸",
+    group: "Size",
   });
 });
 
@@ -136,13 +136,13 @@ test("buildWorkflowArtBundle preserves target ports for multi-image edges", () =
   const { yaml, tool } = buildWorkflowArtBundle({
     snapshot,
     workflowId: "color-compress",
-    workflowName: "颜色迁移+压缩",
+    workflowName: "Color transfer + compress",
     params: [],
     exposed: new Set(),
     values: {},
   });
-  assert.equal(tool.name, "颜色迁移+压缩");
-  assert.equal(tool.description, "由 Otter 工作流创建的 Art。");
+  assert.equal(tool.name, "Color transfer + compress");
+  assert.equal(tool.description, "Art created from an Otter workflow.");
   const workflow = parseWorkflowYamlLite(yaml);
   const color = workflow.nodes.find((node) => node.id === "color");
   const compress = workflow.nodes.find((node) => node.id === "compress");
@@ -164,7 +164,7 @@ test("buildWorkflowArtBundle preserves target ports for multi-image edges", () =
   ]);
   assert.deepEqual(
     (tool.inputs as Array<{ name: string; label: string }>).map((input) => [input.name, input.label]),
-    [["input", "输入图像"], ["input_2", "参考图像"]],
+    [["input", "Input image"], ["input_2", "Reference image"]],
   );
 
   const fallbackYaml = buildSubWorkflowYaml(
@@ -188,7 +188,7 @@ test("buildWorkflowArtBundle emits Otter screenshot sources as executable sticke
   const { yaml, tool } = buildWorkflowArtBundle({
     snapshot: workflowSnapshot,
     workflowId: "otter-image-flow",
-    workflowName: "截图处理",
+    workflowName: "Screenshot processing",
     params: [],
     exposed: new Set(),
     values: {},

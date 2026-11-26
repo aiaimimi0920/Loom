@@ -28,11 +28,12 @@ test("canvas zoom keeps its nonlinear mapping and original native range contract
 
 test("canvas actions keep fixed visible labels through loading and minimap selection", () => {
   assert.match(toolbar, /loading=\{saving\}/);
-  assert.match(toolbar, /保存为工作流\s*<\/Button>/);
-  assert.match(toolbar, /aria-pressed=\{showMinimap\}[\s\S]*?>\s*缩略图\s*<\/Button>/);
+  assert.match(toolbar, /t\("otter\.canvas\.saveWorkflow"\)/);
+  assert.match(toolbar, /\{resolvedSaveLabel\}\s*<\/Button>/);
+  assert.match(toolbar, /aria-pressed=\{showMinimap\}[\s\S]*?>\s*\{t\("otter\.toolbar\.minimap"\)\}\s*<\/Button>/);
   assert.match(workflow, /loading=\{workflowBusyAction === "desktop"\}/);
   assert.match(workflow, /loading=\{workflowBusyAction === "art"\}/);
-  assert.doesNotMatch(toolbar + workflow, /"保存中"|"添加中"|"处理中"|"隐藏缩略图"/);
+  assert.doesNotMatch(toolbar + workflow, /saving\.\.\.|adding\.\.\.|processing\.\.\.|hideMinimap/i);
 });
 
 test("exposure flags preserve keyed constant editors and exact parameter value semantics", () => {
@@ -45,11 +46,11 @@ test("exposure flags preserve keyed constant editors and exact parameter value s
   assert.match(exposure, /min=\{row\.param\.min\}\s+max=\{row\.param\.max\}/);
   assert.match(exposure, /row\.param\.step \?\? \(uiType === "int" \? 1 : undefined\)/);
   assert.equal((exposure.match(/onValueChange\(row\.key, event\.target\.value\)/g) || []).length, 3);
-  assert.doesNotMatch(exposure, /\{!isExposed|勾选要外露|运行时输入.*<\//);
+  assert.doesNotMatch(exposure, /\{!isExposed/);
 });
 
 test("rename delegates modal lifetime and only submits a nonempty idle form", () => {
-  assert.match(rename, /<Dialog\s+title="重命名工作流"/);
+  assert.match(rename, /<Dialog\s+title=\{t\("otter\.rename\.title"\)\}/);
   assert.match(rename, /busy=\{busy\}/);
   assert.match(rename, /initialFocusRef=\{inputRef\}/);
   assert.match(rename, /if \(!busy && value\.trim\(\)\) onSubmit\(\)/);
@@ -75,8 +76,8 @@ test("canvas peripheral CSS cannot restyle standard choices, fields, slider or m
 test("derived input metadata scrolls independently and cannot push parameter editors on selection", () => {
   assert.match(css, /\.otter-canvas-workflow-io__group\s*\{[^}]*block-size: 9rem/);
   assert.match(css, /\.otter-canvas-workflow-io__list\s*\{[^}]*grid-auto-rows: max-content;[^}]*overflow: auto/);
-  assert.match(workflow, /tabIndex=\{0\} aria-label="工作流输入属性"/);
-  assert.match(workflow, /tabIndex=\{0\} aria-label="工作流输出属性"/);
+  assert.match(workflow, /tabIndex=\{0\} aria-label=\{t\("otter\.interface\.inputsAria"\)\}/);
+  assert.match(workflow, /tabIndex=\{0\} aria-label=\{t\("otter\.interface\.outputsAria"\)\}/);
 });
 
 test("workflow deletion restores focus after commit and explicit selection cancels that intent", () => {

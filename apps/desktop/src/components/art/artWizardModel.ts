@@ -1,4 +1,5 @@
 // Pure Art wizard draft conversion and workflow binding helpers.
+import { uiText } from "../../i18n/index.ts";
 import { LoomToolDefinition } from "../../services/loomApi";
 import {
   type ParsedPort,
@@ -99,7 +100,9 @@ export const createPortDraft = (
   return {
     id: overrides.id || "",
     name: overrides.name || (direction === "input" ? "input" : "result"),
-    label: overrides.label || (direction === "input" ? "输入" : "结果"),
+    label:
+      overrides.label ||
+      (direction === "input" ? uiText("art.wizard.portDefault.input") : uiText("art.wizard.portDefault.result")),
     type,
     executionType: overrides.executionType || defaultExecutionTypeForPort(type, direction),
     widget: overrides.widget || "",
@@ -294,23 +297,79 @@ export const defaultWizardPorts = (mode: ArtWizardMode) => {
   switch (mode) {
     case "process":
       return {
-        inputs: [createPortDraft("input", { name: "input", label: "输入", type: "file", executionType: "image_path" })],
-        outputs: [createPortDraft("output", { name: "result", label: "结果", type: "file", executionType: "image_path" })],
+        inputs: [
+          createPortDraft("input", {
+            name: "input",
+            label: uiText("art.wizard.portDefault.input"),
+            type: "file",
+            executionType: "image_path",
+          }),
+        ],
+        outputs: [
+          createPortDraft("output", {
+            name: "result",
+            label: uiText("art.wizard.portDefault.result"),
+            type: "file",
+            executionType: "image_path",
+          }),
+        ],
       };
     case "cloud_api":
       return {
-        inputs: [createPortDraft("input", { name: "image", label: "图像", type: "image", executionType: "image_path" })],
-        outputs: [createPortDraft("output", { name: "result", label: "结果", type: "image", executionType: "image_path" })],
+        inputs: [
+          createPortDraft("input", {
+            name: "image",
+            label: uiText("art.wizard.portDefault.image"),
+            type: "image",
+            executionType: "image_path",
+          }),
+        ],
+        outputs: [
+          createPortDraft("output", {
+            name: "result",
+            label: uiText("art.wizard.portDefault.result"),
+            type: "image",
+            executionType: "image_path",
+          }),
+        ],
       };
     case "mcp":
       return {
-        inputs: [createPortDraft("input", { name: "arguments", label: "参数", type: "string", executionType: "string" })],
-        outputs: [createPortDraft("output", { name: "result", label: "结果", type: "string", executionType: "string" })],
+        inputs: [
+          createPortDraft("input", {
+            name: "arguments",
+            label: uiText("art.wizard.portDefault.arguments"),
+            type: "string",
+            executionType: "string",
+          }),
+        ],
+        outputs: [
+          createPortDraft("output", {
+            name: "result",
+            label: uiText("art.wizard.portDefault.result"),
+            type: "string",
+            executionType: "string",
+          }),
+        ],
       };
     case "workflow":
       return {
-        inputs: [createPortDraft("input", { name: "input", label: "工作流输入", type: "image", executionType: "image_path" })],
-        outputs: [createPortDraft("output", { name: "result", label: "工作流结果", type: "image", executionType: "image_path" })],
+        inputs: [
+          createPortDraft("input", {
+            name: "input",
+            label: uiText("art.wizard.portDefault.workflowInput"),
+            type: "image",
+            executionType: "image_path",
+          }),
+        ],
+        outputs: [
+          createPortDraft("output", {
+            name: "result",
+            label: uiText("art.wizard.portDefault.workflowResult"),
+            type: "image",
+            executionType: "image_path",
+          }),
+        ],
       };
     default:
       return {
@@ -323,7 +382,10 @@ export const defaultWizardPorts = (mode: ArtWizardMode) => {
 export const toolPortFromDraft = (port: ArtWizardPortDraft, direction: "input" | "output") => {
   const next: Record<string, unknown> = {
     name: port.name.trim() || (direction === "input" ? "input" : "result"),
-    label: port.label.trim() || port.name.trim() || (direction === "input" ? "输入" : "结果"),
+    label:
+      port.label.trim() ||
+      port.name.trim() ||
+      (direction === "input" ? uiText("art.wizard.portDefault.input") : uiText("art.wizard.portDefault.result")),
     type: port.type.trim() || "string",
     executionType: port.executionType.trim() || defaultExecutionTypeForPort(port.type, direction),
   };

@@ -26,7 +26,7 @@
             "id": "title",
             "type": "text",
             "props": {
-              "text": "股票盯盘"
+              "text": "Stock Monitor"
             },
             "style": {
               "color": "#f7f8ef",
@@ -38,7 +38,7 @@
             "id": "status",
             "type": "text",
             "props": {
-              "text": "等待首次刷新"
+              "text": "Waiting for initial refresh"
             },
             "style": {
               "color": "#d9ff38",
@@ -65,7 +65,7 @@
               "change": "stock_symbol_commit"
             },
             "accessibility": {
-              "label": "股票代码"
+              "label": "Stock code"
             }
           },
           {
@@ -74,26 +74,26 @@
             "props": {
               "value": "minute",
               "options": [
-                { "value": "minute", "label": "分时" },
-                { "value": "five-day", "label": "五日" },
-                { "value": "day", "label": "日 K" },
-                { "value": "week", "label": "周 K" },
-                { "value": "month", "label": "月 K" },
-                { "value": "quarter", "label": "季 K" },
-                { "value": "year", "label": "年 K" },
-                { "value": "minute-120", "label": "120 分钟" },
-                { "value": "minute-60", "label": "60 分钟" },
-                { "value": "minute-30", "label": "30 分钟" },
-                { "value": "minute-15", "label": "15 分钟" },
-                { "value": "minute-5", "label": "5 分钟" },
-                { "value": "minute-1", "label": "1 分钟" }
+                { "value": "minute", "label": "Intraday" },
+                { "value": "five-day", "label": "5D" },
+                { "value": "day", "label": "1D" },
+                { "value": "week", "label": "1W" },
+                { "value": "month", "label": "1M" },
+                { "value": "quarter", "label": "1Q" },
+                { "value": "year", "label": "1Y" },
+                { "value": "minute-120", "label": "120m" },
+                { "value": "minute-60", "label": "60m" },
+                { "value": "minute-30", "label": "30m" },
+                { "value": "minute-15", "label": "15m" },
+                { "value": "minute-5", "label": "5m" },
+                { "value": "minute-1", "label": "1m" }
               ]
             },
             "events": {
               "change": "stock_period_commit"
             },
             "accessibility": {
-              "label": "行情周期"
+              "label": "Market period"
             }
           },
           {
@@ -102,34 +102,34 @@
             "props": {
               "value": "5",
               "options": [
-                { "value": "1", "label": "1 秒" },
-                { "value": "3", "label": "3 秒" },
-                { "value": "5", "label": "5 秒" },
-                { "value": "15", "label": "15 秒" },
-                { "value": "30", "label": "30 秒" },
-                { "value": "60", "label": "1 分" },
-                { "value": "120", "label": "2 分" },
-                { "value": "300", "label": "5 分" }
+                { "value": "1", "label": "1s" },
+                { "value": "3", "label": "3s" },
+                { "value": "5", "label": "5s" },
+                { "value": "15", "label": "15s" },
+                { "value": "30", "label": "30s" },
+                { "value": "60", "label": "1m" },
+                { "value": "120", "label": "2m" },
+                { "value": "300", "label": "5m" }
               ]
             },
             "events": {
               "change": "stock_interval_commit"
             },
             "accessibility": {
-              "label": "刷新间隔"
+              "label": "Refresh interval"
             }
           },
           {
             "id": "refresh",
             "type": "button",
             "props": {
-              "label": "刷新"
+              "label": "Refresh"
             },
             "events": {
               "click": "stock_refresh"
             },
             "accessibility": {
-              "label": "刷新行情"
+              "label": "Refresh quote"
             }
           }
         ]
@@ -161,7 +161,7 @@
           "fontWeight": 700
         },
         "accessibility": {
-          "label": "当前价格",
+          "label": "Current price",
           "live": "polite"
         }
       },
@@ -169,7 +169,7 @@
         "id": "quote_change",
         "type": "text",
         "props": {
-          "text": "等待真实行情"
+          "text": "Waiting for live quote"
         },
         "style": {
           "color": "#929a9f",
@@ -180,7 +180,7 @@
         "id": "quote_metrics",
         "type": "text",
         "props": {
-          "text": "开 --  高 --  低 --  昨收 --"
+          "text": "Open --  High --  Low --  Prev --"
         },
         "style": {
           "color": "#929a9f",
@@ -191,7 +191,7 @@
         "id": "provider",
         "type": "text",
         "props": {
-          "text": "数据源：stock-api MCP · 行情可能延迟，不构成投资建议或交易指令"
+          "text": "Source: stock-api MCP · Quotes may be delayed, not investment advice or trading instructions"
         },
         "style": {
           "color": "#929a9f",
@@ -206,22 +206,22 @@
       "id": "stock-api",
       "name": "stock-api"
     },
-    "marketScope": "A 股 / 港股 / 美股",
+    "marketScope": "A-Share / HK / US",
     "code": "SZ000034",
     "market": "SZ",
     "intervalSeconds": 5,
     "period": "minute",
-    "periodLabel": "分时",
+    "periodLabel": "Intraday",
     "marketStatus": "closed",
     "lastTradingDate": null,
     "status": "idle",
-    "statusText": "等待首次刷新",
+    "statusText": "Waiting for initial refresh",
     "quote": null,
     "history": [],
     "orderBook": null,
     "liveTape": null,
     "lastUpdatedAt": null,
     "error": null,
-    "disclaimer": "行情可能延迟，仅用于信息展示，不构成投资建议或交易指令"
+    "disclaimer": "Quotes may be delayed and are for informational display only, not investment advice or trading instructions."
   }
 }

@@ -64,7 +64,7 @@ pub fn run() {
             if !is_remote_connection_mode() {
                 std::thread::spawn(|| {
                     if let Err(error) = start_loom_daemon_blocking() {
-                        eprintln!("[ERROR] Loom 本地服务启动失败：{error}");
+                        eprintln!("[ERROR] Failed to start Loom local service: {error}");
                     }
                 });
             }
@@ -72,8 +72,8 @@ pub fn run() {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))?;
                 window.set_icon(icon)?;
             }
-            let show_item = MenuItem::with_id(app, "show", "显示 Loom", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Show Loom", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
             let mut tray_builder = TrayIconBuilder::with_id("loom")
                 .menu(&tray_menu)

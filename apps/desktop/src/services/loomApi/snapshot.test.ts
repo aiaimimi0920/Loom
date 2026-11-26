@@ -49,8 +49,8 @@ async function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Prom
 
 test("retains the last available Art data while the daemon is temporarily offline", () => {
   const previous = readinessSnapshot("online");
-  previous.tools = [{ id: "color-transfer", name: "颜色迁移" } as LoomSnapshot["tools"][number]];
-  previous.workflows = [{ id: "workflow-art", name: "颜色迁移-压缩" } as LoomSnapshot["workflows"][number]];
+  previous.tools = [{ id: "color-transfer", name: "Color transfer" } as LoomSnapshot["tools"][number]];
+  previous.workflows = [{ id: "workflow-art", name: "Color transfer compress" } as LoomSnapshot["workflows"][number]];
   const offline = readinessSnapshot("offline");
 
   const retained = retainAvailableSnapshotData(previous, offline);
@@ -63,10 +63,10 @@ test("retains the last available Art data while the daemon is temporarily offlin
 
 test("retains only modules that failed in an otherwise online snapshot", () => {
   const previous = readinessSnapshot("online");
-  previous.tools = [{ id: "image-compression", name: "图片压缩" } as LoomSnapshot["tools"][number]];
-  previous.mcpServers = [{ id: "old-mcp", name: "旧服务" } as LoomSnapshot["mcpServers"][number]];
+  previous.tools = [{ id: "image-compression", name: "Image compression" } as LoomSnapshot["tools"][number]];
+  previous.mcpServers = [{ id: "old-mcp", name: "Legacy server" } as LoomSnapshot["mcpServers"][number]];
   const degraded = readinessSnapshot("online");
-  degraded.error = "Loom 本地服务在线，但部分模块暂不可用：/v1/tools returned HTTP 500";
+  degraded.error = "Local Loom service is online, but some modules are temporarily unavailable: /v1/tools returned HTTP 500";
 
   const retained = retainAvailableSnapshotData(previous, degraded);
 
@@ -316,5 +316,5 @@ test("browser fallback reports offline when the daemon disappears after core pro
 
   assert.equal(snapshot.connectionState, "offline");
   assert.equal(snapshot.health, null);
-  assert.match(snapshot.error ?? "", /读取模块状态期间离线/);
+  assert.match(snapshot.error ?? "", /offline while reading module status/);
 });

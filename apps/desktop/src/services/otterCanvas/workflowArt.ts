@@ -1,5 +1,6 @@
 // Builds the YAML and tool contract for wrapping a frozen Otter pipeline as an Art.
 
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import type { LoomToolDefinition } from "../loomApi.ts";
 import { serializeWorkflowGraphLite, type WorkflowStudioNode } from "../workflowStudio.ts";
 import { inferCanvasWorkflowInterface } from "./instantiation.ts";
@@ -48,7 +49,7 @@ export function buildWorkflowArtBundle(options: {
       "workflow node id",
     );
     if (workflowNodeIds.has(workflowNodeId)) {
-      throw new Error(`Duplicate workflow node id: ${workflowNodeId}`);
+      throw new Error(uiFormat("otter.error.duplicateWorkflowNodeId", { nodeId: workflowNodeId }));
     }
     workflowNodeIds.add(workflowNodeId);
     rawToWorkflowId.set(node.id, workflowNodeId);
@@ -125,9 +126,9 @@ export function buildWorkflowArtBundle(options: {
       name: workflowParam,
       label: port.semanticTarget?.toLowerCase().includes("reference")
         || port.semanticTarget?.toLowerCase() === "ref"
-        ? "参考图像"
+        ? uiText("otter.port.referenceImage")
         : index === 0
-          ? "输入图像"
+          ? uiText("otter.port.inputImage")
           : port.label,
       widget: "image_link",
       type: "image",
@@ -181,7 +182,7 @@ export function buildWorkflowArtBundle(options: {
   const tool: LoomToolDefinition = {
     id: `otter-wf-${workflowId}`,
     name: workflowName,
-    description: "由 Otter 工作流创建的 Art。",
+    description: uiText("otter.workflowArt.defaultDescription"),
     enabled: true,
     execution: {
       type: "workflow",
@@ -191,7 +192,7 @@ export function buildWorkflowArtBundle(options: {
     inputs: toolInputs,
     params: toolParams,
     outputs: [
-      { name: "result", label: "输出图像", type: "image", executionType: "image_buffer" },
+      { name: "result", label: uiText("otter.port.outputImage"), type: "image", executionType: "image_buffer" },
     ],
     metadata: {
       otterWorkflow: { managedBy: "otter-workflow" },

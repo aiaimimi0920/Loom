@@ -1,5 +1,6 @@
 // Hydrates a selected workflow interface without owning the wizard's editable ports or preview policy.
 import { useEffect, useState, type Dispatch, type SetStateAction, type RefObject } from "react";
+import { uiText } from "../../i18n/index.ts";
 import { getWorkflowBundle, type LoomToolDefinition } from "../../services/loomApi";
 import {
   collectWorkflowParamBindingCandidates,
@@ -108,7 +109,9 @@ export function useArtWorkflowInterface({
         if (!active) return;
         setWorkflowParamCandidates([]);
         setWorkflowGraph(null);
-        setWorkflowInterfaceError(error instanceof Error ? error.message : "无法读取流程结构。");
+        setWorkflowInterfaceError(
+          error instanceof Error ? error.message : uiText("art.wizard.workflow.error.loadInterfaceFailed"),
+        );
       })
       .finally(() => {
         if (active) setWorkflowInterfaceLoading(false);

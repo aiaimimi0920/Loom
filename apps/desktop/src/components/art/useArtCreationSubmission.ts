@@ -1,5 +1,6 @@
 // Owns authored-package assembly and ordered creation submission; presentation remains in the registry.
 import { useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { buildAuthoredArtPackage } from "../../services/artAuthoring";
 import { frameworkIdentity } from "../../services/artHubUi";
 import {
@@ -43,6 +44,7 @@ export function useArtCreationSubmission({
   reloadFrameworks: () => Promise<void>;
   setRegistryMessage: (message: StudioMessage | null) => void;
 }) {
+  const { t, tf } = useUiText();
   const [busyWizard, setBusyWizard] = useState(false);
   const createArtToolFromWizard = async (draft: ArtWizardSubmitDraft): Promise<boolean> => {
     const selectedFramework =
@@ -99,7 +101,7 @@ export function useArtCreationSubmission({
         }
         if (draft.mode === "process" && draft.scriptEntryKind === "python") {
           if (!draft.scriptSourceCode.trim() && !draft.scriptSourcePath.trim()) {
-            throw new Error("请输入 Python 源码路径或源码内容。");
+            throw new Error(t("art.wizard.error.missingPythonSource"));
           }
           const source = draft.scriptSourceCode.trim()
             ? draft.scriptSourceCode
@@ -151,7 +153,7 @@ export function useArtCreationSubmission({
         }
         setRegistryMessage({
           kind: "info",
-          text: `已创建并安装 Art ${derivedName}。`,
+          text: tf("art.wizard.message.createdAndInstalled", { name: derivedName }),
         });
         await refresh();
         await reloadFrameworks();
@@ -159,7 +161,7 @@ export function useArtCreationSubmission({
       } catch (error) {
         setRegistryMessage({
           kind: "error",
-          text: error instanceof Error ? error.message : "无法创建框架 Art 包。",
+          text: error instanceof Error ? error.message : t("art.wizard.error.createPackageFailed"),
         });
         return false;
       } finally {
@@ -205,7 +207,7 @@ export function useArtCreationSubmission({
       }
       case "mcp": {
         if (!draft.mcpServerId.trim() || !draft.mcpToolName.trim()) {
-          setRegistryMessage({ kind: "error", text: "MCP 关联 Art 需要 MCP 服务和工具名。" });
+          setRegistryMessage({ kind: "error", text: t("art.wizard.error.mcpFieldsRequired") });
           return false;
         }
         execution = {
@@ -217,7 +219,7 @@ export function useArtCreationSubmission({
       }
       case "workflow": {
         if (!draft.workflowId.trim()) {
-          setRegistryMessage({ kind: "error", text: "工作流 Art 需要已保存工作流。" });
+          setRegistryMessage({ kind: "error", text: t("art.wizard.error.workflowRequired") });
           return false;
         }
         execution = {
@@ -228,7 +230,10 @@ export function useArtCreationSubmission({
         break;
       }
       default: {
-        setRegistryMessage({ kind: "error", text: `框架 ${draft.mode} 没有可用的 authoring schema。` });
+        setRegistryMessage({
+          kind: "error",
+          text: tf("art.wizard.error.missingAuthoringSchema", { framework: draft.mode }),
+        });
         return false;
       }
     }
@@ -255,13 +260,13 @@ export function useArtCreationSubmission({
     setBusyWizard(true);
     try {
       await createAuthoredArtPackage(baseUrl, tool, runtime);
-      setRegistryMessage({ kind: "info", text: `已创建并安装 Art ${derivedName}。` });
+      setRegistryMessage({ kind: "info", text: tf("art.wizard.message.createdAndInstalled", { name: derivedName }) });
       await refresh();
       return true;
     } catch (error) {
       setRegistryMessage({
         kind: "error",
-        text: error instanceof Error ? error.message : "无法通过添加 Art 向导创建 Art。",
+        text: error instanceof Error ? error.message : t("art.wizard.error.createWizardFailed"),
       });
       return false;
     } finally {

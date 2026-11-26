@@ -1,4 +1,5 @@
 // Canvas workflow, durable workflow bundle, and tool-definition clients.
+import { uiFormat } from "../../i18n/index.ts";
 import type { LoomToolDefinition, LoomWorkflowBundle, LoomWorkflowBundleResponse } from "./coreTypes.ts";
 import { deleteJson, getJson, putJson } from "./transport.ts";
 
@@ -24,7 +25,7 @@ export async function getWorkflowBundle(baseUrl: string, workflowId: string): Pr
     `/v1/workflows/${encodeURIComponent(workflowId)}`,
   );
   if (!response.workflow) {
-    throw new Error(`Loom 本地服务没有返回工作流 ${workflowId}。`);
+    throw new Error(uiFormat("otter.error.workflowNotReturned", { workflowId }));
   }
   return response.workflow;
 }

@@ -1,4 +1,4 @@
-// 双原生Application使用真实Surface/Device/LAN端点；父门仅观察权威状态，不注入controller/input。
+// Dual native Applications using real Surface/Device/LAN endpoints; the parent gate observes authoritative state only without injecting controller or input.
 #[test]
 #[ignore = "explicit native viewer and Source menus over real Loom LAN HTTPS/WSS"]
 fn live_viewer_source_native_menu_input_and_release() {
@@ -79,7 +79,7 @@ fn live_viewer_source_native_menu_input_and_release() {
         .wait_for_frame(session, 0, 0, Duration::from_secs(3))
         .unwrap()
         .unwrap();
-    // Expected来自固定协议字节和独立像素常量，非新renderer或消息mapper。
+    // Expected values come from fixed protocol bytes and independent pixel constants rather than any new renderer or message mapper.
     assert_eq!(frame.bytes.len(), 80);
     assert_eq!(&frame.bytes[..8], b"NLLV\x01\x01\x00\x40");
     assert_eq!(&frame.bytes[40..48], &[0, 0, 0, 2, 0, 0, 0, 2]);
@@ -221,7 +221,7 @@ fn live_viewer_source_native_menu_input_and_release() {
         let output = PathBuf::from(output);
         assert!(output.is_absolute());
         fs::create_dir(&output).unwrap();
-        // 仅导出无凭据回执；input/私钥/profile及服务数据库不进入证据包。
+        // Export only credential-free receipts; inputs, private keys, profiles, and service databases never enter the evidence bundle.
         for name in [
             "source-ready.json",
             "source-input-applied.json",

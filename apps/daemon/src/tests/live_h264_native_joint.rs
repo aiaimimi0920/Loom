@@ -1,4 +1,4 @@
-// 真实Source/Viewer菜单、系统codec和LAN链；额外本机Viewer socket只发送真实视频控制。
+// Real Source/Viewer menus, system codec, and LAN chain; the extra local Viewer socket sends only real video control messages.
 #[test]
 #[ignore = "explicit native H264 Source and viewer menus over real Loom LAN"]
 fn live_h264_native_source_viewer_current_keyframes() {
@@ -105,7 +105,7 @@ fn h264_native_joint(reconnect: bool, control_reconnect: bool, source_reconnect:
     };
     let ready = read("source-ready.json");
     let session = ready["session"].as_str().unwrap();
-    // child就绪仅证明本地send；101先于服务媒体worker启动，不能当作远端接收屏障。
+    // Child readiness proves only local send; HTTP 101 precedes the server media worker startup and is not a remote receive barrier.
     let raw = f
         .live_sessions
         .wait_for_frame(session, 0, 0, Duration::from_secs(3))
@@ -192,7 +192,7 @@ fn h264_native_joint(reconnect: bool, control_reconnect: bool, source_reconnect:
         assert!(after.source_connected && !after.closed);
         assert_eq!(after.viewer_connections.get(&viewer_device), Some(&1));
     }
-    // 本机额外连接沿原Device/nonce认证及member准入；没有直接改video negotiation状态。
+    // Extra local connection uses standard Device/nonce authentication and member admission without directly mutating video negotiation state.
     let (probe_device, probe_token) = pair(f.port, "H264 control probe");
     let attach_probe = || {
         f.live_sessions.attach_viewer(&probe_device,serde_json::from_value(json!({"protocolVersion":"loom.live.v1",

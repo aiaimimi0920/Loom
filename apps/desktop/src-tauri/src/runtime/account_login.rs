@@ -10,10 +10,14 @@ pub(super) async fn open_loom_naccount_login(
         let base_url = resolve_command_base_url(base_url);
         let view = http_post_json(&base_url, "/v1/naccount/status", &serde_json::json!({}))?;
         if view["status"] != "pending" || view["requestId"] != request_id {
-            return Err("登录请求已失效，请重新登录。".into());
+            return Err("Sign-in request has expired; please sign in again.".into());
         }
-        let url = tauri::Url::parse(view["authorizationUrl"].as_str().ok_or("登录地址无效")?)
-            .map_err(|_| "登录地址无效")?;
+        let url = tauri::Url::parse(
+            view["authorizationUrl"]
+                .as_str()
+                .ok_or("Invalid sign-in URL")?,
+        )
+        .map_err(|_| "Invalid sign-in URL")?;
         if url.origin().ascii_serialization() != "https://naccount-auth.aiaimimi.com"
             || url.path() != "/oauth2/v1/authorize"
             || !url.username().is_empty()
@@ -23,7 +27,7 @@ pub(super) async fn open_loom_naccount_login(
                 .query_pairs()
                 .any(|(key, value)| key == "state" && value == request_id)
         {
-            return Err("登录地址无效".into());
+            return Err("Invalid sign-in URL".into());
         }
         diagnostics::open_url_in_default_browser(url.as_str())
     })
@@ -45,7 +49,8 @@ pub(super) async fn open_loom_account_login(
 }
 
 fn authorization_url(view: &Value, request_id: &str) -> Result<tauri::Url, String> {
-    let invalid = || "登录请求已失效或地址无效，请重新登录。".to_owned();
+    let invalid =
+        || "Sign-in request has expired or its URL is invalid; please sign in again.".to_owned();
     if request_id.len() != 64
         || !request_id.bytes().all(|byte| byte.is_ascii_hexdigit())
         || view["status"] != "pending"

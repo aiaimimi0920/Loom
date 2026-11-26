@@ -1,8 +1,8 @@
-# Neuro Surface SDK 1.0
+# Neuro Surface SDK 1.0 (`loom.surface.v1`)
 
-`neuro-surface.d.ts` 描述 Otter WebView2 沙箱当前实际提供的 JavaScript/TypeScript Surface API。TypeScript 仅用于开发与打包，Art 包内必须放编译后的 JavaScript；Otter 不引入 Node、TypeScript、Python、Deno、QuickJS 或通用 WASM 运行时。
+`neuro-surface.d.ts` defines the JavaScript/TypeScript Surface API provided inside Otter's sandboxed WebView2 Surface host. TypeScript is used at build/authoring time only; packaged Arts must ship compiled JavaScript, and the Surface sandbox exposes no Node.js, TypeScript, Python, Deno, QuickJS, or general WASM runtime.
 
-## 最小入口
+## Minimal entrypoint
 
 ```ts
 /// <reference path="./neuro-surface.d.ts" />
@@ -10,7 +10,7 @@
 NeuroSurface.define({
     mount({ root, snapshot, emit }) {
         const button = document.createElement("button");
-        button.textContent = String(snapshot.authoritativeState ?? "刷新");
+        button.textContent = String(snapshot.authoritativeState ?? "Refresh");
         button.addEventListener("click", () => {
             emit({
                 nodeId: "refresh",
@@ -24,15 +24,15 @@ NeuroSurface.define({
         return () => button.remove();
     },
     update({ snapshot }) {
-        // 使用新的 Snapshot 更新已有 DOM，不在终端执行业务逻辑。
+        // Reconcile existing DOM against the new authoritative snapshot; business execution stays in Loom.
         void snapshot;
     },
 });
 ```
 
-## Art 多视图与完整尺寸
+## Multi-view declarations and logical `fullSize`
 
-Surface Art 可以在 `metadata.capabilities.surface` 中声明多个面向用户的视图。每个视图必须有唯一、安全的 `id`、非空 `label` 和自己的 `fullSize`；只要声明了 `views`，就必须同时声明一个指向其中某个视图的 `defaultViewId`：
+A Surface Art may declare multiple user-selectable views under `metadata.capabilities.surface`. Every view requires a unique safe `id`, a non-empty `label`, and its own logical `fullSize`; whenever `views` is present, `defaultViewId` must name one of those views:
 
 ```json
 {
@@ -40,25 +40,29 @@ Surface Art 可以在 `metadata.capabilities.surface` 中声明多个面向用�
   "apiVersion": "1.0",
   "variants": [{ "runtime": "javascript", "entry": "surface/main.js" }],
   "views": [
-    { "id": "full", "label": "全视图", "fullSize": { "width": 960, "height": 820 } },
-    { "id": "price", "label": "交易价格视图", "fullSize": { "width": 620, "height": 620 } }
+    { "id": "full", "label": "Full View", "fullSize": { "width": 960, "height": 820 } },
+    { "id": "price", "label": "Compact Quote View", "fullSize": { "width": 620, "height": 620 } }
   ],
   "defaultViewId": "full"
 }
 ```
 
-- 新建 Art 节点时，Otter 使用默认视图的 `fullSize`，并把当前视图作为 `snapshot.viewId` 传给 Surface。
-- 用户通过 `Ctrl+E` 打开 Art 编辑栏并切换视图；切换后节点恢复到目标视图声明的完整尺寸。
-- 用户通过 `Ctrl+鼠标滚轮` 对节点做等比例缩放。Surface 始终在声明的逻辑完整尺寸内排版，再由 Otter 统一缩放整个内容，因此文字、图形和交互坐标会一起缩放。
-- Surface 应按每个完整尺寸完成布局，不应依赖节点根滚动条才能显示该视图的目标内容。
-- JSON Schema 能要求 `views` 与 `defaultViewId` 同时出现；`loom-plugin validate` 还会强制检查视图 ID 唯一且默认 ID 确实属于 `views`。
+- Creating a new Art node mounts `defaultViewId` at its declared `fullSize` and passes the active view ID as `snapshot.viewId`.
+- Pressing `Ctrl+E` opens the Art editor bar to switch views, resizing the node to the target view's `fullSize`.
+- `Ctrl + Mouse Wheel` scales the node proportionally: the Surface lays out within its logical `fullSize` while Otter scales typography, graphics, and pointer coordinates uniformly.
+- `loom-plugin validate` enforces both JSON Schema presence rules and cross-field uniqueness/membership of `defaultViewId` in `views`.
 
-## 安全边界
+## Sandbox security boundaries
 
-- `fetch`、`XMLHttpRequest`、`WebSocket`、`EventSource` 和 `sendBeacon` 不可用于网络访问。
-- 不提供 Node API、Tauri IPC、文件系统、宿主 DOM 或原生插件。
-- 每个 attachment 使用隔离 iframe、CSP、MessageChannel token、心跳、事件速率、计时器与 DOM 节点预算。
-- `resources` 与 `NeuroSurface.resource()` 只返回 Host 已校验并已租用资源的本地 URL。
-- 业务事件必须通过 `emit()` 上报 Loom；正式结果、权威状态和权限确认由 Loom/Host 提交。
+- Network APIs (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`) are blocked.
+- Node APIs, Tauri IPC, filesystem paths, host DOM handles, and native plugins are unavailable.
+- Each attachment runs inside an isolated `iframe` enforced by CSP, a `MessageChannel` capability token, heartbeat liveness, event-rate caps, timer caps, and DOM node budgets.
+- `resources` and `NeuroSurface.resource()` resolve only host-verified, lease-bound local resource URLs.
+- User interactions emit typed events via `emit()`; authoritative state updates, high-risk confirmations, and formal result commits are owned by Loom and the Otter host.
 
-使用 `loom-plugin validate <ART_DIR>` 校验 Surface manifest、声明式场景、动作引用、高风险确认和包内入口，再使用 `loom-plugin pack <ART_DIR> <OUTPUT_ZIP>` 生成确定性包。
+Validate Surface manifests, declarative scenes, action bindings, confirmation flags, and entry paths before packing:
+
+```powershell
+loom-plugin validate <ART_DIR>
+loom-plugin pack <ART_DIR> <OUTPUT_ZIP>
+```

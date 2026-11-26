@@ -18,7 +18,7 @@ pub(super) fn application_log_dir(app: &str) -> Result<PathBuf, String> {
                     .map(|root| root.join("Otter").join("logs"))
             })
             .unwrap_or_else(|| std::env::temp_dir().join("Otter").join("logs"))),
-        _ => Err("不支持的应用诊断目标。".to_owned()),
+        _ => Err("Unsupported application diagnostics target.".to_owned()),
     }
 }
 
@@ -70,7 +70,7 @@ pub(super) fn application_diagnostics(app: &str) -> Result<ApplicationDiagnostic
                 log_file.is_file().then_some(log_file),
             )
         }
-        _ => return Err("不支持的应用诊断目标。".to_owned()),
+        _ => return Err("Unsupported application diagnostics target.".to_owned()),
     };
     Ok(ApplicationDiagnostics {
         app: app.to_owned(),
@@ -100,7 +100,7 @@ pub(super) fn open_local_path(path: &Path, file: bool) -> Result<(), String> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+        .map_err(|error| format!("Failed to open `{}`: {error}", path.display()))
 }
 
 #[cfg(target_os = "macos")]
@@ -109,7 +109,7 @@ pub(super) fn open_local_path(path: &Path, _file: bool) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+        .map_err(|error| format!("Failed to open `{}`: {error}", path.display()))
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -118,7 +118,7 @@ pub(super) fn open_local_path(path: &Path, _file: bool) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开 `{}`：{error}", path.display()))
+        .map_err(|error| format!("Failed to open `{}`: {error}", path.display()))
 }
 
 #[tauri::command]
@@ -127,8 +127,12 @@ pub(super) fn open_application_log_location(app: String, target: String) -> Resu
     match target.trim() {
         "directory" => {
             let path = PathBuf::from(diagnostics.log_dir);
-            fs::create_dir_all(&path)
-                .map_err(|error| format!("无法创建日志目录 `{}`：{error}", path.display()))?;
+            fs::create_dir_all(&path).map_err(|error| {
+                format!(
+                    "Failed to create log directory `{}`: {error}",
+                    path.display()
+                )
+            })?;
             open_local_path(&path, false)
         }
         "file" => {
@@ -136,10 +140,12 @@ pub(super) fn open_application_log_location(app: String, target: String) -> Resu
                 .log_file
                 .map(PathBuf::from)
                 .filter(|path| path.is_file())
-                .ok_or_else(|| format!("{} 暂无可查看的日志。", diagnostics.app_name))?;
+                .ok_or_else(|| {
+                    format!("No log files are available for {}.", diagnostics.app_name)
+                })?;
             open_local_path(&path, true)
         }
-        _ => Err("不支持的日志打开方式。".to_owned()),
+        _ => Err("Unsupported log open target.".to_owned()),
     }
 }
 
@@ -185,7 +191,7 @@ pub(super) fn open_url_in_default_browser(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "系统浏览器无法打开地址（ShellExecuteW={status}）。"
+            "Default browser failed to open URL (ShellExecuteW={status})."
         ))
     }
 }
@@ -196,7 +202,7 @@ pub(super) fn open_url_in_default_browser(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开仓库地址：{error}"))
+        .map_err(|error| format!("Failed to open repository URL: {error}"))
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -205,14 +211,14 @@ pub(super) fn open_url_in_default_browser(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法打开仓库地址：{error}"))
+        .map_err(|error| format!("Failed to open repository URL: {error}"))
 }
 
 #[tauri::command]
 pub(super) fn open_external_url(url: String) -> Result<(), String> {
     let url = url.trim();
     if !url.starts_with("https://") || !is_allowed_repository_url(url) {
-        return Err("只允许打开 Loom 或 Otter 的官方仓库地址。".to_owned());
+        return Err("Only official Loom or Otter repository URLs may be opened.".to_owned());
     }
     open_url_in_default_browser(url)
 }
@@ -221,7 +227,7 @@ pub(super) fn open_external_url(url: String) -> Result<(), String> {
 pub(super) fn open_mcp_source_url(url: String) -> Result<(), String> {
     let url = url.trim();
     if !is_safe_external_https_url(url) {
-        return Err("只允许打开不包含账号信息的 HTTPS MCP 来源地址。".to_owned());
+        return Err("Only HTTPS MCP source URLs without credentials may be opened.".to_owned());
     }
     open_url_in_default_browser(url)
 }

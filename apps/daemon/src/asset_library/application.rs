@@ -1,4 +1,4 @@
-//! 便携应用按资源 UUID 隔离，原子切换活动记录，更新不覆盖或删除旧版程序。
+//! Isolates portable applications by resource UUID and atomically switches active records; updates never overwrite or delete prior versions.
 mod package;
 use super::InstallPackage;
 use anyhow::{ensure, Result};
@@ -61,7 +61,7 @@ pub(crate) fn install(root: &Path, package: &InstallPackage) -> Result<Value> {
         package.download["sha256"] == digest,
         "application_digest_changed"
     );
-    // 当前软件封装未定义签名；必须遵守宿主策略，绝不伪装已签名或受信任。
+    // Application archives currently define no signature; enforce the host trust policy and never spoof signed or trusted status.
     loom_plugin_security::TrustStore::load(&root.join("plugin-trust.json"))?
         .effective_policy()
         .enforce(loom_protocol::PackageTrustStatus::Unsigned)?;
@@ -80,7 +80,7 @@ pub(crate) fn install(root: &Path, package: &InstallPackage) -> Result<Value> {
         }
         None => package::unpack(&package.bytes, &stage.0, label)?,
     };
-    // 每次安装独占目录，避免把曾被本地修改的历史文件当成新下载的可信字节。
+    // Allocate an exclusive directory per install so locally modified historical files are never mistaken for newly downloaded trusted bytes.
     let target = versions.join(uuid::Uuid::new_v4().simple().to_string());
     fs::rename(&stage.0, &target)?;
     let state = json!({"resourceId":resource, "publicationId":package.download["publicationId"],

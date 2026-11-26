@@ -1,4 +1,5 @@
 // Capability Plugin catalog, permission, and lifecycle clients.
+import { uiText } from "../../i18n/index.ts";
 import { getJson, postJson, putJson } from "./transport.ts";
 
 export type CapabilityLifecycleStatus =
@@ -180,7 +181,7 @@ export async function installLocalCapability(
     "/v1/capability-plugins/install",
     { zipBase64 },
   );
-  if (!response.package) throw new Error("Loom 本地服务没有返回已安装的能力扩展。");
+  if (!response.package) throw new Error(uiText("settings.capabilities.api.missingInstalledPackage"));
   return response.package;
 }
 
@@ -193,7 +194,7 @@ export async function installCatalogCapability(
     "/v1/capability-plugins/catalog/install",
     { qualifiedId },
   );
-  if (!response.package) throw new Error("Loom 本地服务没有返回目录安装结果。");
+  if (!response.package) throw new Error(uiText("settings.capabilities.api.missingCatalogInstall"));
   return response.package;
 }
 
@@ -217,7 +218,7 @@ const mutateCapability = async (
     pluginPath(qualifiedId, action),
     body,
   );
-  if (!response.plugin) throw new Error("Loom 本地服务没有返回能力扩展状态。");
+  if (!response.plugin) throw new Error(uiText("settings.capabilities.api.missingPluginState"));
   return response.plugin;
 };
 
@@ -259,6 +260,6 @@ export const saveCapabilitySettings = async (
     pluginPath(qualifiedId, "settings"),
     { expectedRevision, packageDigest, values },
   );
-  if (!response.settings) throw new Error("Loom 本地服务没有返回能力扩展设置。");
+  if (!response.settings) throw new Error(uiText("settings.capabilities.api.missingPluginSettings"));
   return response.settings;
 };

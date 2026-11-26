@@ -1,4 +1,4 @@
-// 真实HTTPS包资源→在线Otter退出→Loom停服→新Otter使用原期限完整缓存，无真实设备投送。
+// Real HTTPS package resources -> online Otter exits -> Loom stops -> new Otter runs from full cached package within original expiry without live device delivery.
 mod package_joint {
     use super::*;
     use ed25519_dalek::SigningKey;
@@ -38,6 +38,7 @@ mod package_joint {
         let executable = PathBuf::from(std::env::var_os("OTTER_NATIVE_TEST_EXE").unwrap());
         assert!(executable.is_absolute() && executable.is_file());
         let zip=package_http::zip(|m| {
+            // Intentional UTF-8/CJK custom port name literal to verify non-ASCII port signing across processes.
             m["inputs"]=json!([{"name":"原始图片","type":"image","defaultVisible":false}]);
             m["outputs"]=json!([{"name":"image","type":"image","defaultVisible":false},{"name":"answer","type":"number","defaultVisible":false}]);
         });

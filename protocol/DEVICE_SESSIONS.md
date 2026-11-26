@@ -1,71 +1,32 @@
-# 设备会话鉴权错误合同
+# Device Session Authentication and Error Contract
 
-设备使用 Ed25519 身份，经 `POST /v1/devices/requests` 登记，再由管理员批准。
-登记不等于批准；新登记设备为 `pending` 且 `enabled=true`。
-同公钥重复登记不得解除管理员禁用或创建替代身份。
+Remote and local paired devices authenticate with Ed25519 identities registered via `POST /v1/devices/requests` and explicitly approved by a Loom administrator. Registration never implies approval: newly registered devices start as `approval = "pending"` with `enabled = true`, and re-registering an existing public key never clears an administrator disablement or creates a duplicate identity.
 
-公开登记响应保留 `devices` / `pending` 数组，但两者合计只包含本次提交公钥
-对应的一条回执。回执字段仅有 `id`、`publicKey`、`name`、`approval`、`enabled`；
-`name` 和 `publicKey` 回显本次有效输入，不返回管理员保存的名称或地址。
-新申请、重复待批准申请和已批准/禁用身份的重复登记均采用同一最小响应，
-不会返回其他设备、本机信息、连接数、时间字段或 session epoch。重复登记不会
-修改已有身份或延长过期时间。管理员 `GET /v1/devices` 和添加设备接口仍返回
-完整管理列表；公开回执不授予批准、会话或管理权限。
-新设备 ID 使用随机 UUID，不再编码创建时间。升级前的时间编码 ID 保持不变，
-避免破坏已配对 Otter、会话和引用；知道其公钥的调用方仍会收到该旧 ID，因此
-不能把旧身份的回执描述成完全隐藏历史时间。此兼容边界不允许枚举其他身份。
+## Public pairing receipts and identity privacy
 
-## 配对申请预算
+- Public `POST /v1/devices/requests` responses retain `devices` / `pending` arrays containing only the single receipt matching the submitted public key (`id`, `publicKey`, `name`, `approval`, `enabled`), echoing caller-supplied `name` and `publicKey` rather than administrator-edited labels or addresses.
+- New requests, duplicate pending requests, and repeated submissions for approved or disabled keys return the same minimal receipt shape without leaking other devices, host metadata, connection counts, timestamps, or `sessionEpoch` values.
+- New device IDs use random v4 UUIDs. Pre-existing legacy IDs are preserved to avoid breaking paired installations without allowing third-party enumeration. Administrator `GET /v1/devices` and `POST /v1/devices` routes return the full management view.
 
-管理员设备列表的 `online` 为运行时派生字段：设备必须仍启用、已批准、公钥有效，
-且当前 epoch 的未撤销、未过期会话在最近 30 秒成功签发或通过了 Device/nonce 认证。
-会话的 15 分钟有效期及 `otterConnected` 历史标记不代表在线。`lastSeenAt` 优先返回
-当前会话最近活动时间；活动不写回持久身份文件。Loom 主机的 `isLocal` 服务占位
-不计入桌面默认在线终端数量；“全部登记”仍保留离线及禁用身份的管理入口。
+## Pairing request budgets and online state
 
-公开登记最多保留 128 个 `pending` 设备。容量满时，新公钥返回
-`429 / device_pairing_capacity`，不写入新设备；已有公钥的重复登记仍可查询，
-但不会刷新创建时间、延长有效期或重复写入。管理员直接添加已批准设备不受此
-公开申请额度限制。
+- In administrator device views, `online` is derived at runtime: the device must be enabled, approved, hold a valid public key, and have an unrevoked, unexpired current-epoch session issued or authenticated via `Device` + nonce within the last 30 seconds (`lastSeenAt` reflects live session activity without writing disk on every request).
+- Public registration retains at most **128** `pending` devices. When full, new public keys fail with `429 / device_pairing_capacity` while existing keys can still query their receipt without extending TTL. Direct administrator device creation bypasses the public pending quota.
+- Unmanaged pending requests expire **10 minutes** after creation and are lazily pruned and persisted during startup, registration, list reads, and approval operations. Disabled requests, identities with non-zero `sessionEpoch`, and approved devices never auto-expire so public re-registration cannot bypass disablement or revocation.
 
-尚未被管理员管理的申请自创建起 10 分钟过期，在启动、登记、设备列表读取和
-批准操作时惰性清理并持久化。过期 ID 不可继续批准，设备需重新申请。
-禁用的申请、带有非零 `sessionEpoch` 的历史身份以及已批准设备不会因申请
-过期而删除，避免公开重登记绕过管理员禁用或撤销；这些待批准记录仍计入额度，
-由管理员明确处理。已存在的超额旧记录不会被静默截断，新申请会被拒绝，直到
-正常过期或管理员操作释放容量。持久化失败会恢复内存状态，不声称清理成功。
-启动时若仅过期清理无法写回，会保留记录并记录警告，而非使可读取设备表的
-daemon 离线；后续登记、列表和批准操作继续重试清理，失败时返回错误。
+## Challenge issuance and session redemption
 
-## Challenge 与签发
+`POST /v1/device-sessions/challenges` issues a one-time challenge (`201 Created`), and `POST /v1/device-sessions` redeems the client's `loom.device-session.v1` Ed25519 signature for a short-lived (15-minute) opaque `Device` session token (`201 Created`). Loom stores only the SHA-256 hash of the session token and verifies current device authorization at both steps.
 
-`POST /v1/device-sessions/challenges` 成功返回 `201`；客户端签名后通过
-`POST /v1/device-sessions` 请求短期会话，成功同样返回 `201`。
-两阶段都检查当前设备授权；已撤销的 challenge 不可用于签发新凭据。
+Unused challenges are bounded to **256** globally and **4** per device, each valid for **60 seconds**. Expired challenges are pruned before checking authorization and capacity under the same registry lock; capacity exhaustion returns `429` without evicting or extending existing valid challenges.
 
-尚未使用的 challenge 最多保留 256 条，单设备最多 4 条，每条有效期仍为
-60 秒。创建前先清理过期记录、检查当前设备授权，再在同一 registry 锁内检查
-容量并插入。容量满时返回 `429`，不会驱逐现有有效挑战，也不会刷新其到期时间；
-已有挑战仍可正常签名兑换会话。兑换、撤销或过期清理会释放容量。客户端应使用
-已取得的挑战，或在其到期后有界退避重试，不应立即循环申请。
-
-| 情况 | HTTP / error.code | 客户端处理 |
+| Condition | HTTP / `error.code` | Required Client Behavior |
 | --- | --- | --- |
-| 设备不存在 | `404 / device_not_found` | 终止此次签发，不自动创建替代身份 |
-| 设备已禁用，无论是否曾获批 | `403 / device_disabled` | 终止此次签发，不进入批准等待轮询 |
-| 设备未获批且未禁用 | `403 / device_not_authorized` | 保留现有有界批准等待行为 |
-| 缺少配对公钥 | `409 / device_key_missing` | 终止此次签发 |
-| 全局未使用挑战达到 256 条 | `429 / device_challenge_capacity` | 使用已有挑战或等待过期后有界重试 |
-| 单设备未使用挑战达到 4 条 | `429 / device_challenge_device_capacity` | 使用已有挑战或等待过期后有界重试 |
+| Device ID does not exist | `404 / device_not_found` | Abort issuance; do not auto-create a replacement identity |
+| Device is disabled (regardless of prior approval) | `403 / device_disabled` | Abort issuance; do not enter pending-approval polling |
+| Device is pending approval and not disabled | `403 / device_not_authorized` | Continue bounded approval-wait polling |
+| Device record has no pairing public key | `409 / device_key_missing` | Abort issuance |
+| Global unused challenges reached 256 | `429 / device_challenge_capacity` | Redeem an existing challenge or retry with bounded backoff after expiry |
+| Per-device unused challenges reached 4 | `429 / device_challenge_device_capacity` | Redeem an existing challenge or retry with bounded backoff after expiry |
 
-设备授权错误优先于容量错误；两种容量同时满时返回全局容量错误。
-
-禁用检查优先于批准状态。保留待批准的旧错误码，使既有 Otter 可以继续首次
-配对；为禁用使用独立错误码，使既有 Otter 将其视为不可重试签发错误。
-升级 Loom 前，旧服务仍可能将禁用返回为 `device_not_authorized`，本次合同不
-声称旧服务已具有此区分。
-
-这里约束的是一次设备签发及其批准等待循环，不等于所有上层后台任务都已停止。
-例如 Surface 连接恢复仍有独立退避周期；不要把返回此错误后的低频探测，或
-其它模块的设备登记，归为观看端自动续期成功。LiveRelay 已接入媒体的设备被
-禁用后仍通过原有 `live_media_device_revoked` 终止，其旧窗口不得自动恢复。
+Authorization errors take precedence over capacity errors (`device_disabled` precedes `device_not_authorized`), and global capacity takes precedence over per-device capacity. Disabling a device that already holds an active Live media WebSocket closes the stream with WebSocket policy code `1008` and reason `live_media_device_revoked`.

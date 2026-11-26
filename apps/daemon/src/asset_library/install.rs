@@ -1,4 +1,4 @@
-//! 安装只接受发布 ID 和用户所选摘要，绝不接受客户端提供的本机文件路径。
+//! Installation accepts only a publication ID and user-selected digest, never a client-supplied local file path.
 use super::{download, error, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -28,7 +28,7 @@ pub(crate) struct InstallPackage {
 
 pub(crate) fn prepare_install(root: &Path, body: &str) -> Result<InstallPackage> {
     let input = parse_input(body)?;
-    // 重新取票并下载，沿用当前授权、撤销、大小和摘要校验，不把旧缓存视为新授权。
+    // Re-fetch a ticket and download under current authorization, revocation, size, and digest checks rather than treating stale cache as fresh authorization.
     let receipt = download::handle(
         root,
         &json!({"publicationId":input.publication_id, "taskId":input.task_id}).to_string(),
@@ -84,7 +84,7 @@ fn checked_package(input: &Input, receipt: Value) -> Result<InstallPackage> {
         .as_u64()
         .filter(|n| *n > 0 && *n <= limit)
         .ok_or_else(invalid)?;
-    // 路径仅来自本进程下载回执；读取后再次验摘要，防止保存与安装间内容被改写。
+    // Path comes solely from the in-process download receipt; re-verify the digest after reading so post-save tampering is rejected.
     let path = receipt["path"].as_str().ok_or_else(invalid)?;
     let metadata = fs::symlink_metadata(path).map_err(|_| invalid())?;
     if !metadata.is_file() || loom_security::metadata_has_link_semantics(&metadata) {
@@ -95,7 +95,7 @@ fn checked_package(input: &Input, receipt: Value) -> Result<InstallPackage> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        // 持有句柄直到安装结束；Windows 拒绝其他句柄写入和删除该下载文件。
+        // Hold the handle until installation completes; Windows denies concurrent write and delete access to this downloaded file.
         options.share_mode(1);
     }
     let mut file = options.open(path).map_err(|_| invalid())?;
@@ -151,7 +151,7 @@ fn checked_package(input: &Input, receipt: Value) -> Result<InstallPackage> {
 #[path = "install_tests.rs"]
 mod tests;
 
-/// 仅测试二进制允许回环 trial；生产服务地址、身份和门禁不可配置为此路径。
+/// Loopback trials are compiled into test binaries only; production service origins, identities, and gates can never route here.
 #[cfg(test)]
 pub(crate) fn prepare_trial_install(config: &Value) -> Result<InstallPackage> {
     assert_eq!(config["mode"], "local-trial-only");

@@ -1,4 +1,4 @@
-// 只保留会话累计值和一个最新发送样本；不保存媒体或按帧增长的历史。
+// Retains only session totals and the latest sent sample; stores no media or per-frame history.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LiveMediaDiagnostics {
@@ -39,7 +39,7 @@ impl LiveMediaForwardSample {
             epoch: frame.epoch,
             frame_id: frame.frame_id,
             binary_bytes: frame.bytes.len() as u64,
-            // 新连接或 epoch 切换不能把未曾订阅的帧算作丢帧。
+            // New connections or epoch switches must not count unsubscribed frames as dropped.
             skipped_frames: if after_epoch == frame.epoch && after_frame_id > 0 {
                 frame
                     .frame_id

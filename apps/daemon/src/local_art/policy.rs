@@ -109,7 +109,7 @@ fn load(root: &Path) -> LocalResult<Document> {
     validate(&document.approvals).map_err(|_| fail(503, "local_art_policy_invalid"))?;
     Ok(document)
 }
-// 调用者必须持 LOCK；自动触发以整个策略修订围栏保守减权，不新增持久授权表。
+// Caller must hold LOCK; auto-triggers conservatively drop privileges across the whole policy revision fence without adding a persistent grant table.
 pub(super) fn revision_unlocked(root: &Path) -> LocalResult<u64> {
     Ok(load(root)?.revision)
 }

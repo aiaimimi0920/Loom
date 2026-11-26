@@ -11,10 +11,10 @@ test("security controls and credential summaries use the standard package", () =
     assert.match(source, /from "@neuro\/ui"/);
     assert.doesNotMatch(source, /<(?:button|input|select|textarea)\b|studio-input|icon-button|ghost-button/);
   }
-  assert.match(list, /<DataTable\s+label="全局凭据字段"/);
+  assert.match(list, /<DataTable\s+label=\{t\("security\.credential\.tableLabel"\)\}/);
   assert.match(list, /getRowKey=\{credentialFieldId\}/);
   assert.match(list, /rowHeader: true/);
-  assert.match(list, /已安全保存`\}>••••••••/);
+  assert.match(list, /tf\("security\.credential\.savedAria", \{ name: credential\.name \}\)\}>••••••••/);
   assert.doesNotMatch(list, /credential\.value\b|revealPluginCredential/);
 });
 
@@ -29,14 +29,14 @@ test("security keeps explicit secret reading and original global credential filt
 });
 
 test("security policy, user validation and mutation feedback remain application-owned", () => {
-  assert.match(panel, /<Field label="安装策略">/);
+  assert.match(panel, /<Field label=\{t\("security\.policy\.label"\)\}>/);
   for (const policy of ["require_signed", "require_trusted", "allow_unsigned"])
     assert.ok(panel.includes(`value="${policy}"`));
   assert.match(panel, /trust\.policy === "require_trusted"/);
   assert.ok(panel.includes("/^(?:NU\\d{11}|L\\d{10})$/.test(trustedUserId.trim())"));
   assert.match(panel, /key\.publisherId === userId && !key\.revoked/);
   assert.match(panel, /loading=\{busy === "identity"\}/);
-  assert.doesNotMatch(panel, /重置中/);
+  assert.match(panel, /\{t\("security\.identity\.resetAction"\)\}/);
   assert.match(panel, /<Panel className="trusted-user-library__row" key=\{userId\}/);
 });
 

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "stock-api",
-  "name": "股票行情",
-  "description": "通过固定版本 stock-api 提供标准化聚合行情，并以 pysnowball 兼容实时源和既有 Xueqiu 回退提供十档盘口。",
+  "name": "Stock Market Data",
+  "description": "Provides standardized aggregated market quotes via a pinned stock-api version, plus ten-level order books through a pysnowball-compatible live source with Xueqiu fallback.",
   "version": "2.9.0",
   "publisher": {
     "id": "neuro.official",
@@ -23,7 +23,7 @@
   "credentials": [
     {
       "id": "pysnowball_token",
-      "label": "雪球 Cookie（可选）",
+      "label": "Xueqiu Cookie (optional)",
       "required": false,
       "target": {
         "kind": "env",

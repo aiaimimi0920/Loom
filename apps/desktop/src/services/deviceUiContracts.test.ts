@@ -12,7 +12,7 @@ const security = source("security/PluginSecurityPanel.tsx");
 
 test("device workspaces use standard tabs while retaining per-page mount and key boundaries", () => {
   assert.match(workspace, /<TabsRoot asChild value=\{page\}/);
-  assert.match(workspace, /<TabList label="设备管理页面"/);
+  assert.match(workspace, /<TabList label=\{t\("devices\.tabs\.ariaLabel"\)\}/);
   assert.match(workspace, /<Tab key=\{item\.value\} value=\{item\.value\}/);
   for (const page of ["devices", "walls"]) {
     assert.match(workspace, new RegExp(`<TabPanel value="${page}" forceMount hidden=\\{page !== "${page}"\\}`));
@@ -21,7 +21,7 @@ test("device workspaces use standard tabs while retaining per-page mount and key
     assert.match(workspace, new RegExp(`page === "${page}" &&`));
   }
   assert.match(workspace, /key=\{props\.baseUrl \+ String\(props\.online\)\}/);
-  assert.doesNotMatch(workspace, /<button|device-workspace-tabs/);
+  assert.doesNotMatch(workspace, /<button|device-workspace-tabs|[\u4e00-\u9fff]/);
 });
 
 test("device cards and forms consume standard components rather than a parallel control skin", () => {
@@ -36,13 +36,15 @@ test("device cards and forms consume standard components rather than a parallel 
   assert.match(panel, /aria-pressed=\{selected\}/);
   assert.match(panel, /<Badge tone=\{device\.online \? "success" : "neutral"\}/);
   assert.match(panel, /target\?\.isConnected && !target\.closest\("\[hidden\], \[inert\]"\)/);
-  assert.doesNotMatch(panel, /添加电脑、平板或其他客户端后会显示在这里/);
+  assert.doesNotMatch(panel, /\u6dfb\u52a0\u7535\u8111\u3001\u5e73\u677f\u6216\u5176\u4ed6\u5ba2\u6237\u7aef\u540e\u4f1a\u663e\u793a\u5728\u8fd9\u91cc|[\u4e00-\u9fff]/);
+  assert.doesNotMatch(dialogs, /[\u4e00-\u9fff]/);
+  assert.doesNotMatch(controller, /[\u4e00-\u9fff]/);
 });
 
 test("pending approval uses stable flat checkboxes up to six devices and searchable dropdown beyond that", () => {
   assert.match(dialogs, /pending\.length > 6 \? \(\s*<MultiSelect/);
   assert.match(dialogs, /values=\{selectedPendingIds\}\s+onValuesChange=\{setSelectedPendingIds\}/);
-  assert.match(dialogs, /aria-label="待批准设备"/);
+  assert.match(dialogs, /aria-label=\{t\("devices\.managed\.dialog\.pendingLabel"\)\}/);
   assert.match(dialogs, /<Checkbox\s+key=\{device\.id\}/);
   assert.match(dialogs, /checked=\{checked\}\s+disabled=\{busy\}/);
   assert.match(
@@ -56,7 +58,7 @@ test("device mutations retain trimming, sequential approvals, local-host protect
   assert.match(controller, /const name = editingDevice\.name\.trim\(\)/);
   assert.match(controller, /const address = editingDevice\.address\.trim\(\)/);
   assert.doesNotMatch(controller, /addManagedDevice|submitDevice|draftName/);
-  assert.doesNotMatch(dialogs, /添加设备|submitDevice|addName/);
+  assert.doesNotMatch(dialogs, /\u6dfb\u52a0\u8bbe\u5907|submitDevice|addName/);
   assert.match(
     controller,
     /for \(const deviceId of selectedPendingIds\) \{\s*response = await approveManagedDevice\(baseUrl, deviceId\)/,

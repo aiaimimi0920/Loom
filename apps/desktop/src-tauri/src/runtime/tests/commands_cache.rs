@@ -209,7 +209,7 @@ fn destructive_cache_validation_rejects_relative_and_protected_roots() {
     );
     let protected = std::env::temp_dir();
     let error = clear_directory_contents(&protected).expect_err("temp root must be protected");
-    assert!(error.contains("拒绝清理"), "{error}");
+    assert!(error.contains("Refusing to clean"), "{error}");
 
     let root = unique_temp_dir("cache-file-root");
     let file = root.join("not-a-directory");

@@ -1,4 +1,4 @@
-name: 图片融合并压缩
+name: Image Blend And Compress
 nodes:
   - id: blend
     uses: neuro.official/custom-image-blend-script

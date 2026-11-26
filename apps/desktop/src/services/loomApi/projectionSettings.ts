@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import { getJson, putJson } from "./transport.ts";
 export interface ProjectionDeviceRef { deviceId: string; peerId?: string }
 export interface ProjectionDeviceChoice extends ProjectionDeviceRef { name: string }
@@ -12,12 +13,12 @@ export interface ProjectionSettings { revision: number; groups: ProjectionGroup[
 export interface ProjectionSettingsView { settings: ProjectionSettings; devices: ProjectionDeviceChoice[]; directoryStatus: string }
 export const projectionDeviceKey = (device: ProjectionDeviceRef) => JSON.stringify([device.peerId ?? null, device.deviceId]);
 export function projectionGroupNameError(name: string): string {
-  if (!name.trim()) return "设备组名称不能为空";
-  if (new TextEncoder().encode(name).length > 128) return "设备组名称不能超过 128 个 UTF-8 字节";
-  if ([...name].some((character) => { const code = character.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); })) return "设备组名称不能包含控制字符";
+  if (!name.trim()) return uiText("devices.projectionSettings.groupName.empty");
+  if (new TextEncoder().encode(name).length > 128) return uiText("devices.projectionSettings.groupName.tooLong");
+  if ([...name].some((character) => { const code = character.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); })) return uiText("devices.projectionSettings.groupName.controlChars");
   return "";
 }
-const invalid = () => new Error("投射规则响应无效，请刷新 Loom 配置");
+const invalid = () => new Error(uiText("devices.projectionSettings.error.invalidResponse"));
 const path = "/v1/projection-settings";
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();

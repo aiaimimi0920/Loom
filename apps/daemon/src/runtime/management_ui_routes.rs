@@ -24,9 +24,9 @@ fn build_management_ui_status(enable_management_ui: bool) -> ManagementUiStatus 
 
 #[cfg(feature = "management-ui")]
 const MANAGEMENT_UI_LOGIN_HTML: &str = concat!(
-    "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">",
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
-    "<title>Loom 管理控制台登录</title>",
+    "<title>Loom Management Console Sign In</title>",
     "<style>",
     "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#ebf1f8;",
     "font-family:system-ui,-apple-system,sans-serif;color:#1e293b}",
@@ -39,11 +39,11 @@ const MANAGEMENT_UI_LOGIN_HTML: &str = concat!(
     "font-weight:600;font-size:.95rem;cursor:pointer}",
     "button:hover{background:#1d4ed8}",
     "</style></head><body><main class=\"card\">",
-    "<h1>Loom Web 管理控制台</h1>",
-    "<p>请输入服务端 <code>daemon-token</code> 以建立安全会话（HttpOnly Cookie，不在地址栏保留令牌）。</p>",
+    "<h1>Loom Web Management Console</h1>",
+    "<p>Enter the server <code>daemon-token</code> to establish a secure session (HttpOnly cookie; token is not kept in the URL bar).</p>",
     "<form method=\"get\" action=\"/ui/\">",
-    "<input type=\"password\" name=\"token\" placeholder=\"粘贴 daemon-token\" autocomplete=\"current-password\" required>",
-    "<button type=\"submit\">进入管理台</button>",
+    "<input type=\"password\" name=\"token\" placeholder=\"Paste daemon-token\" autocomplete=\"current-password\" required>",
+    "<button type=\"submit\">Open Console</button>",
     "</form></main></body></html>"
 );
 

@@ -1,4 +1,4 @@
-//! 应用包只验证封装和启动入口，不运行程序、不执行安装脚本。
+//! Application archive verification checks only packaging layout and launch entrypoints without executing programs or installer scripts.
 use anyhow::{ensure, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

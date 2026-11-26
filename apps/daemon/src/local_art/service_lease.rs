@@ -1,4 +1,4 @@
-//! 服务任务只保留已验签范围与会话撤销句柄；不保存 Device token，不自动延长许可。
+//! Service tasks retain only verified grant scope and session revocation handles; never store Device tokens or auto-extend grants.
 use super::*;
 
 pub(super) struct Lease {

@@ -1,18 +1,19 @@
+import { uiText } from "../../../i18n/index.ts";
 import type {
   CapabilityLifecycleStatus,
   CapabilityPluginRecord,
 } from "../../../services/loomApi";
 
 export const capabilityStatusLabel: Record<CapabilityLifecycleStatus, string> = {
-  installed_disabled: "已停用",
-  approval_required: "等待权限确认",
-  activating: "正在启用",
-  active: "运行中",
-  faulted: "运行故障",
-  disabling: "正在停用",
-  upgrading: "正在更新",
-  rolling_back: "正在回滚",
-  uninstalling: "正在卸载",
+  get installed_disabled() { return uiText("settings.capabilities.status.installedDisabled"); },
+  get approval_required() { return uiText("settings.capabilities.status.approvalRequired"); },
+  get activating() { return uiText("settings.capabilities.status.activating"); },
+  get active() { return uiText("settings.capabilities.status.active"); },
+  get faulted() { return uiText("settings.capabilities.status.faulted"); },
+  get disabling() { return uiText("settings.capabilities.status.disabling"); },
+  get upgrading() { return uiText("settings.capabilities.status.upgrading"); },
+  get rolling_back() { return uiText("settings.capabilities.status.rollingBack"); },
+  get uninstalling() { return uiText("settings.capabilities.status.uninstalling"); },
 };
 
 export const capabilityStatusTone = (status: CapabilityLifecycleStatus) => {
@@ -35,17 +36,22 @@ export const formatCapabilityBytes = (bytes: number) => {
 
 export const shortCapabilityDigest = (digest?: string) => digest
   ? `${digest.slice(0, 12)}…${digest.slice(-8)}`
-  : "无";
+  : uiText("settings.capabilities.none");
 
 export const activeCapabilityVersion = (plugin: CapabilityPluginRecord) =>
   plugin.versions.find((version) => version.digest === plugin.activeDigest) ?? null;
 
-export const permissionLabel = (permission: string) => ({
-  "hook.unit.image.read": "读取当前贴图图像",
-  "hook.notice.show": "在贴图内显示通知",
-  "hook.unit.attachments.read": "读取贴图能力数据",
-  "hook.unit.attachments.write": "写入贴图能力数据",
-  "hook.overlay.render": "在贴图内绘制扩展界面",
-  "hook.clipboard.write": "写入系统剪贴板",
-  "hook.command.invoke": "响应 Otter 扩展命令",
-}[permission] ?? permission);
+const PERMISSION_MESSAGE_IDS: Readonly<Record<string, string>> = {
+  "hook.unit.image.read": "settings.capabilities.permission.unitImageRead",
+  "hook.notice.show": "settings.capabilities.permission.noticeShow",
+  "hook.unit.attachments.read": "settings.capabilities.permission.unitAttachmentsRead",
+  "hook.unit.attachments.write": "settings.capabilities.permission.unitAttachmentsWrite",
+  "hook.overlay.render": "settings.capabilities.permission.overlayRender",
+  "hook.clipboard.write": "settings.capabilities.permission.clipboardWrite",
+  "hook.command.invoke": "settings.capabilities.permission.commandInvoke",
+};
+
+export const permissionLabel = (permission: string) => {
+  const id = PERMISSION_MESSAGE_IDS[permission];
+  return id ? uiText(id) : permission;
+};

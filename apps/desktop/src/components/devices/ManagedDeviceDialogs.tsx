@@ -13,6 +13,7 @@ import {
   Switch,
 } from "@neuro/ui";
 import { useRef } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomDeviceKind } from "../../services/loomApi";
 import { deviceKindLabels, type useManagedDevicesController } from "./useManagedDevicesController";
 
@@ -23,6 +24,7 @@ export function ManagedDeviceDialogs({
   controller: ReturnType<typeof useManagedDevicesController>;
   resolveReturnFocus: (target: HTMLElement | null) => HTMLElement | null;
 }) {
+  const { t, tf } = useUiText();
   const {
     busyId,
     approvalDialogOpen,
@@ -43,7 +45,7 @@ export function ManagedDeviceDialogs({
       {approvalDialogOpen ? (
         <Dialog
           open
-          title="批准设备"
+          title={t("devices.managed.approveDevices")}
           className="loom-device-dialog"
           busy={busy}
           resolveReturnFocus={resolveReturnFocus}
@@ -52,16 +54,20 @@ export function ManagedDeviceDialogs({
           }}
         >
           <div className="loom-device-dialog__pending">
-            <Badge>{pending.length} 台待批准</Badge>
+            <Badge>{tf("devices.managed.dialog.pendingBadge", { count: pending.length })}</Badge>
             {pending.length === 0 ? (
-              <EmptyState title="暂无待批准设备" />
+              <EmptyState title={t("devices.managed.dialog.noPending")} />
             ) : pending.length > 6 ? (
               <MultiSelect
-                label="待批准设备"
+                label={t("devices.managed.dialog.pendingLabel")}
                 values={selectedPendingIds}
                 onValuesChange={setSelectedPendingIds}
                 disabled={busy}
-                search={{ label: "搜索待批准设备", placeholder: "搜索设备", emptyMessage: "没有匹配设备" }}
+                search={{
+                  label: t("devices.managed.dialog.searchPendingLabel"),
+                  placeholder: t("devices.managed.dialog.searchPendingPlaceholder"),
+                  emptyMessage: t("devices.common.noMatchingDevices"),
+                }}
                 options={pending.map((device) => ({
                   value: device.id,
                   label: device.name,
@@ -69,7 +75,7 @@ export function ManagedDeviceDialogs({
                 }))}
               />
             ) : (
-              <div className="loom-device-dialog__choices" role="group" aria-label="待批准设备">
+              <div className="loom-device-dialog__choices" role="group" aria-label={t("devices.managed.dialog.pendingLabel")}>
                 {pending.map((device) => {
                   const checked = selectedPendingIds.includes(device.id);
                   return (
@@ -99,7 +105,7 @@ export function ManagedDeviceDialogs({
           </div>
           <div className="loom-device-dialog__actions">
             <Button variant="quiet" onClick={() => setApprovalDialogOpen(false)} disabled={busy}>
-              取消
+              {t("devices.common.cancel")}
             </Button>
             <Button
               variant="primary"
@@ -107,7 +113,7 @@ export function ManagedDeviceDialogs({
               loading={busyId === "approve-selected"}
               disabled={busy || selectedPendingIds.length === 0}
             >
-              批准
+              {t("devices.managed.dialog.approveAction")}
             </Button>
           </div>
         </Dialog>
@@ -115,7 +121,7 @@ export function ManagedDeviceDialogs({
       {editingDevice ? (
         <Dialog
           open
-          title="编辑设备"
+          title={t("devices.managed.editDialog.title")}
           description={editingDevice.id}
           className="loom-device-dialog"
           busy={busy}
@@ -126,7 +132,7 @@ export function ManagedDeviceDialogs({
           }}
         >
           <div className="loom-device-dialog__fields">
-            <Field label="设备名称">
+            <Field label={t("devices.managed.editDialog.nameLabel")}>
               <Input
                 ref={editName}
                 disabled={editingDevice.isLocal}
@@ -134,7 +140,7 @@ export function ManagedDeviceDialogs({
                 onChange={(event) => setEditingDevice({ ...editingDevice, name: event.target.value })}
               />
             </Field>
-            <Field label="设备类型">
+            <Field label={t("devices.managed.editDialog.kindLabel")}>
               <Select
                 disabled={editingDevice.isLocal}
                 value={editingDevice.kind}
@@ -148,7 +154,7 @@ export function ManagedDeviceDialogs({
               </Select>
             </Field>
             <div className="loom-device-dialog__wide">
-              <Field label="连接地址">
+              <Field label={t("devices.managed.editDialog.addressLabel")}>
                 <Input
                   disabled={editingDevice.isLocal}
                   value={editingDevice.address}
@@ -158,12 +164,12 @@ export function ManagedDeviceDialogs({
             </div>
             {editingDevice.isLocal ? (
               <Notice className="loom-device-dialog__wide" tone="info">
-                Loom 启动主机始终启用，不能删除。
+                {t("devices.managed.editDialog.localHostNotice")}
               </Notice>
             ) : (
               <Switch
                 className="loom-device-dialog__wide"
-                label="启用设备"
+                label={t("devices.managed.editDialog.enableSwitch")}
                 checked={editingDevice.enabled ?? true}
                 onChange={(event) => setEditingDevice({ ...editingDevice, enabled: event.target.checked })}
               />
@@ -172,18 +178,18 @@ export function ManagedDeviceDialogs({
           <div className="loom-device-dialog__actions loom-device-dialog__actions--split">
             {!editingDevice.isLocal ? (
               <Button variant="danger" disabled={busy} onClick={() => void removeDevice(editingDevice)}>
-                删除
+                {t("devices.common.delete")}
               </Button>
             ) : (
               <span />
             )}
             <div>
               <Button variant="quiet" disabled={busy} onClick={() => setEditingDevice(null)}>
-                取消
+                {t("devices.common.cancel")}
               </Button>
               {!editingDevice.isLocal ? (
                 <Button variant="primary" disabled={busy} loading={busy} onClick={() => void saveEditedDevice()}>
-                  保存
+                  {t("devices.common.save")}
                 </Button>
               ) : null}
             </div>

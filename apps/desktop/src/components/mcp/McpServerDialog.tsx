@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Checkbox, Dialog, Field, Input, Notice, Select, Textarea } from "@neuro/ui";
 
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../../services/loomApi";
 import { isValidMcpRemoteUrl, parseMcpKeyValueLines } from "../../services/mcpMarketplace";
 import type { McpEditorState } from "./McpHubTypes";
@@ -35,6 +36,7 @@ export function McpServerDialog({
   onClose: () => void;
   onSave: (server: LoomMcpServer) => Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [id, setId] = useState("");
   const [name, setName] = useState("");
@@ -102,12 +104,13 @@ export function McpServerDialog({
     !invalidRemoteUrl;
   const title =
     editor.mode === "create"
-      ? "添加 MCP"
+      ? t("mcp.dialog.title.create")
       : editor.mode === "install"
-        ? "安装 MCP"
+        ? t("mcp.dialog.title.install")
         : editor.mode === "link"
-          ? "链接添加"
-          : "编辑 MCP";
+          ? t("mcp.dialog.title.link")
+          : t("mcp.dialog.title.edit");
+  const separator = t("mcp.listSeparator");
   const validationDescription =
     [
       missingEnvironmentKeys.length > 0 ? "mcp-server-missing-environment" : null,
@@ -155,17 +158,17 @@ export function McpServerDialog({
       >
         <div className="mcp-server-dialog__scroll">
           <div className="mcp-server-dialog__grid">
-            <Field label="名称">
+            <Field label={t("mcp.dialog.field.name")}>
               <Input ref={nameInputRef} value={name} onChange={(event) => setName(event.target.value)} />
             </Field>
-            <Field label="ID">
+            <Field label={t("mcp.dialog.field.id")}>
               <Input value={id} disabled={editor.mode !== "create"} onChange={(event) => setId(event.target.value)} />
             </Field>
           </div>
-          <Field label="描述">
+          <Field label={t("mcp.dialog.field.description")}>
             <Input value={description} onChange={(event) => setDescription(event.target.value)} />
           </Field>
-          <Field label="连接方式">
+          <Field label={t("mcp.dialog.field.transport")}>
             {editor.marketItem?.installOptions.length ? (
               <Select
                 value={installOptionId}
@@ -194,31 +197,31 @@ export function McpServerDialog({
                 value={transport}
                 onChange={(event) => setTransport(event.target.value as "stdio" | "streamable-http")}
               >
-                <option value="stdio">本地 · stdio</option>
-                <option value="streamable-http">远程 · Streamable HTTP</option>
+                <option value="stdio">{t("mcp.installOption.localStdio")}</option>
+                <option value="streamable-http">{t("mcp.installOption.remoteHttp")}</option>
               </Select>
             )}
           </Field>
           {transport === "stdio" ? (
             <>
-              <Field label="启动命令">
+              <Field label={t("mcp.dialog.field.command")}>
                 <Input
                   value={command}
                   onChange={(event) => setCommand(event.target.value)}
-                  placeholder="npx、uvx、docker 或本地程序"
+                  placeholder={t("mcp.dialog.placeholder.command")}
                 />
               </Field>
               <div className="mcp-server-dialog__grid">
-                <Field label="参数">
+                <Field label={t("mcp.dialog.field.args")}>
                   <Textarea
                     value={args}
                     aria-invalid={unresolvedArguments}
                     aria-describedby={unresolvedArguments ? "mcp-server-unresolved-arguments" : undefined}
                     onChange={(event) => setArgs(event.target.value)}
-                    placeholder="每行一个参数"
+                    placeholder={t("mcp.dialog.placeholder.args")}
                   />
                 </Field>
-                <Field label="环境变量">
+                <Field label={t("mcp.dialog.field.environment")}>
                   <Textarea
                     value={environment}
                     aria-invalid={invalidEnvironmentLines.length > 0 || missingEnvironmentKeys.length > 0}
@@ -231,14 +234,14 @@ export function McpServerDialog({
                         .join(" ") || undefined
                     }
                     onChange={(event) => setEnvironment(event.target.value)}
-                    placeholder="KEY=value，每行一个"
+                    placeholder={t("mcp.dialog.placeholder.environment")}
                   />
                 </Field>
               </div>
             </>
           ) : (
             <>
-              <Field label="MCP 地址">
+              <Field label={t("mcp.dialog.field.url")}>
                 <Input
                   value={url}
                   aria-invalid={unresolvedRemoteUrl || invalidRemoteUrl}
@@ -253,7 +256,7 @@ export function McpServerDialog({
                   placeholder="https://example.com/mcp"
                 />
               </Field>
-              <Field label="请求头">
+              <Field label={t("mcp.dialog.field.headers")}>
                 <Textarea
                   value={headers}
                   aria-invalid={invalidHeaderLines.length > 0 || missingHeaderKeys.length > 0}
@@ -266,54 +269,58 @@ export function McpServerDialog({
                       .join(" ") || undefined
                   }
                   onChange={(event) => setHeaders(event.target.value)}
-                  placeholder="Authorization=Bearer ...，每行一个"
+                  placeholder={t("mcp.dialog.placeholder.headers")}
                 />
               </Field>
             </>
           )}
           {missingEnvironmentKeys.length > 0 ? (
             <Notice id="mcp-server-missing-environment" tone="warning">
-              需要填写：{missingEnvironmentKeys.join("、")}
+              {tf("mcp.dialog.notice.missingEnvironment", { keys: missingEnvironmentKeys.join(separator) })}
             </Notice>
           ) : null}
           {unresolvedArguments ? (
             <Notice id="mcp-server-unresolved-arguments" tone="warning">
-              请将参数中的占位符替换为实际值。
+              {t("mcp.dialog.notice.unresolvedArguments")}
             </Notice>
           ) : null}
           {missingHeaderKeys.length > 0 ? (
             <Notice id="mcp-server-missing-headers" tone="warning">
-              需要填写请求头：{missingHeaderKeys.join("、")}
+              {tf("mcp.dialog.notice.missingHeaders", { keys: missingHeaderKeys.join(separator) })}
             </Notice>
           ) : null}
           {unresolvedRemoteUrl ? (
             <Notice id="mcp-server-unresolved-url" tone="warning">
-              请将地址中的变量替换为实际值。
+              {t("mcp.dialog.notice.unresolvedUrl")}
             </Notice>
           ) : null}
           {invalidRemoteUrl ? (
             <Notice id="mcp-server-invalid-url" tone="warning">
-              地址必须是有效的 HTTP 或 HTTPS 地址，且不能包含用户名或密码。
+              {t("mcp.dialog.notice.invalidUrl")}
             </Notice>
           ) : null}
           {invalidEnvironmentLines.length > 0 ? (
             <Notice id="mcp-server-invalid-environment" tone="warning">
-              环境变量第 {invalidEnvironmentLines.join("、")} 行格式错误，请使用 KEY=value。
+              {tf("mcp.dialog.notice.invalidEnvironment", { lines: invalidEnvironmentLines.join(separator) })}
             </Notice>
           ) : null}
           {invalidHeaderLines.length > 0 ? (
             <Notice id="mcp-server-invalid-headers" tone="warning">
-              请求头第 {invalidHeaderLines.join("、")} 行格式错误，请使用 KEY=value。
+              {tf("mcp.dialog.notice.invalidHeaders", { lines: invalidHeaderLines.join(separator) })}
             </Notice>
           ) : null}
-          <Checkbox label="启用" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          <Checkbox
+            label={t("mcp.action.enable")}
+            checked={enabled}
+            onChange={(event) => setEnabled(event.target.checked)}
+          />
         </div>
         <footer className="mcp-server-dialog__actions">
           <Button variant="quiet" disabled={busy} onClick={onClose}>
-            取消
+            {t("mcp.action.cancel")}
           </Button>
           <Button variant="primary" type="submit" loading={busy} disabled={!canSave}>
-            {editor.mode === "install" ? "安装" : "保存"}
+            {editor.mode === "install" ? t("mcp.action.install") : t("mcp.action.save")}
           </Button>
         </footer>
       </form>

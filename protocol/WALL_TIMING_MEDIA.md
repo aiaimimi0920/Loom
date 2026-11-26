@@ -121,36 +121,21 @@ at its negotiated rate; it has no unbounded encode or network queue. A slow sock
 keeps the existing 250 ms write deadline. Wall viewers share the 65-media-worker
 budget and accept only bounded WebSocket liveness control messages in return.
 
-### 同规格 PNG 编码共享
+### Same-profile PNG encoding sharing
 
-每个不可变源帧最多保留四个输出规格的 PNG payload。帧对象自身限定 source、
-epoch、frame ID 及原始像素；规格键包含最大输出宽高。RGB8、Fast compression 和
-NoFilter 当前是固定编码设置；若未来允许配置，设置也必须进入键。maxFps 只影响
-各观看端发送调度，不影响 payload，因此不进入编码键。
+Each immutable source frame caches up to four output-profile PNG payloads. The frame object binds `source`, `epoch`, `frameId`, and source pixels; the profile key binds maximum output `width` and `height` (`RGB8`, `Fast` compression, and `NoFilter` are fixed encoder settings; `maxFps` governs per-viewer send cadence rather than payload bytes and is excluded from the cache key).
 
-同规格命中共享编码对象；不同规格拥有独立非等待编码锁。全局仍最多两个编码，
-缓存 payload 按 Vec 实际容量预算最多 32 MiB，不把 payload 长度当作分配量。
-超出帧规格数或缓存预算时仍可有界地即时编码发送，不建立额外排队或丢弃既有缓存。
-预算随 payload 最后一个在途引用释放，帧及其缓存随既有 2–3 帧 ring 和连接引用释放。
-这不是整个进程内存上限；缩放临时像素、发送副本及协议元数据仍有各自既有边界。
+- Viewers requesting the same profile share the cached `Arc` PNG payload, while distinct profiles use independent non-waiting encoder locks (still capped at **2** concurrent encoders across the daemon and **32 MiB** total cached `Vec` capacity).
+- Cache-slot or byte-budget exhaustion falls back to bounded immediate per-viewer encoding without unbounded queues or evicting in-flight cached payloads. Memory budget is released when the last in-flight reference drops alongside the 2–3 frame source ring.
+- Only pixel payloads are shared—never authorization state, leases, headers, or send cursors. Each terminal independently verifies device session, endpoint, layout revision, source freshness, and epoch both before and after encoding, then stamps its own `NLWM` send timestamp while preserving the common daemon receive timestamp and 80 ms selection timeline.
 
-只共享像素 payload，不共享授权、lease、header 或发送状态。每个终端独立检查
-device、endpoint、layout revision、源新鲜度及当前 epoch；编码完成后再次授权，
-然后生成自己的 NLWM sent timestamp。公共 receive timestamp、80ms 选帧时间轴、
-PNG 内容和 raw 路径保持不变。忙时不推进已发送游标，在协商帧率内重取最新帧，
-并继续处理取消、撤销及 WebSocket liveness；慢编码／慢 socket 不持有会话或授权锁。
-
-本地聚焦测试覆盖共享对象、规格／内存边界、释放、不同规格与 raw/JPEG 隔离、
-busy 后无新帧恢复、真实 loopback 混合连接及授权撤销。以下显式 probe 比较相同
-1280×720 合成输入、640×360 输出下的 1／2／4 观看端处理成本：
+Run the deterministic multi-viewer encoding cost probe locally with:
 
 ```powershell
 cargo test --locked -p loom-daemon wall_png_same_profile_encode_cost -- --ignored --nocapture --test-threads=1
 ```
 
-probe 是本地编码／封包测量，不是物理显示、两台设备、网络吞吐或 CPU 百分比验收；
-不会把合成耗时当作端到端帧龄，也不改变 [#67](https://github.com/aiaimimi0920/Loom/issues/67)
-真实负载及多终端采用门槛。
+This local benchmark measures synthetic 1280x720 -> 640x360 encoding/framing cost across 1, 2, and 4 viewers and does not substitute for physical multi-display or two-machine network acceptance.
 
 Missing, explicitly closed and disconnected/stalled sources are distinguished as
 `wall_live_source_missing` (404), `wall_live_source_closed` (410), and

@@ -45,7 +45,8 @@ pub(super) fn read_loom_persisted_general_settings() -> Option<LoomGeneralRuntim
     let path = desktop_control_plane_root()
         .join("settings")
         .join("settings.json");
-    let bytes = read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom 通用设置").ok()?;
+    let bytes =
+        read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom general settings").ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     // Daemon-owned disk settings use snake_case; camelCase belongs only to Tauri IPC.
     Some(LoomGeneralRuntimeSettings {
@@ -74,13 +75,15 @@ pub(super) fn validate_loom_cache_preferences(
     if settings.art_cache_max_bytes != 0
         && !(64 * 1024 * 1024..=64 * 1024 * 1024 * 1024).contains(&settings.art_cache_max_bytes)
     {
-        return Err("Art 运行缓存上限必须为无限制或介于 64 MB 到 64 GB 之间".to_owned());
+        return Err(
+            "Art runtime cache limit must be unlimited or between 64 MB and 64 GB".to_owned(),
+        );
     }
     if settings.art_cache_retention_days > 3650 {
-        return Err("Art 运行缓存自动清理周期不能超过 3650 天".to_owned());
+        return Err("Art runtime cache retention period cannot exceed 3650 days".to_owned());
     }
     if settings.framework_temp_retention_days > 3650 {
-        return Err("框架临时文件自动清理周期不能超过 3650 天".to_owned());
+        return Err("Framework temporary file retention period cannot exceed 3650 days".to_owned());
     }
     Ok(())
 }
@@ -89,7 +92,8 @@ pub(super) fn read_loom_persisted_cache_settings() -> Option<LoomCachePreference
     let path = desktop_control_plane_root()
         .join("settings")
         .join("settings.json");
-    let bytes = read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom 缓存设置").ok()?;
+    let bytes =
+        read_bounded_regular_file(&path, MAX_SETTINGS_FILE_BYTES, "Loom cache settings").ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     let settings = value.get("loom_cache")?;
     Some(LoomCachePreferences {
@@ -121,13 +125,17 @@ pub(super) fn collect_art_cache_dirs(root: &Path) -> Result<Vec<PathBuf>, String
     let mut cache_dirs = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("无法读取 Art 目录 `{}`：{error}", directory.display()))?
-        {
-            let entry = entry.map_err(|error| format!("无法检查 Art 目录：{error}"))?;
+        for entry in fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "Failed to read Art directory `{}`: {error}",
+                directory.display()
+            )
+        })? {
+            let entry =
+                entry.map_err(|error| format!("Failed to inspect Art directory: {error}"))?;
             let file_type = entry
                 .file_type()
-                .map_err(|error| format!("无法检查 Art 缓存类型：{error}"))?;
+                .map_err(|error| format!("Failed to inspect Art cache entry type: {error}"))?;
             if file_type.is_symlink() || !file_type.is_dir() {
                 continue;
             }
@@ -173,10 +181,15 @@ pub(super) fn loom_cache_snapshot() -> Result<LoomCacheSnapshot, String> {
     let art_cache_dirs = loom_art_cache_dirs()?;
     let framework_root = loom_framework_temporary_dir();
     Ok(LoomCacheSnapshot {
-        art_runtime: loom_cache_entry("artRuntime", "Art 运行缓存", art_root, &art_cache_dirs)?,
+        art_runtime: loom_cache_entry(
+            "artRuntime",
+            "Art Runtime Cache",
+            art_root,
+            &art_cache_dirs,
+        )?,
         framework_temporary: loom_cache_entry(
             "frameworkTemporary",
-            "框架临时文件",
+            "Framework Temporary Files",
             framework_root.clone(),
             &[framework_root],
         )?,
@@ -197,13 +210,17 @@ pub(super) fn collect_cache_files(roots: &[PathBuf]) -> Result<Vec<CacheFileInfo
         if !directory.exists() {
             continue;
         }
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("无法读取缓存目录 `{}`：{error}", directory.display()))?
-        {
-            let entry = entry.map_err(|error| format!("无法检查缓存目录：{error}"))?;
+        for entry in fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "Failed to read cache directory `{}`: {error}",
+                directory.display()
+            )
+        })? {
+            let entry =
+                entry.map_err(|error| format!("Failed to inspect cache directory: {error}"))?;
             let file_type = entry
                 .file_type()
-                .map_err(|error| format!("无法检查缓存文件类型：{error}"))?;
+                .map_err(|error| format!("Failed to inspect cache file type: {error}"))?;
             if file_type.is_symlink() {
                 continue;
             }
@@ -212,7 +229,7 @@ pub(super) fn collect_cache_files(roots: &[PathBuf]) -> Result<Vec<CacheFileInfo
             } else if file_type.is_file() {
                 let metadata = entry
                     .metadata()
-                    .map_err(|error| format!("无法读取缓存文件信息：{error}"))?;
+                    .map_err(|error| format!("Failed to read cache file metadata: {error}"))?;
                 files.push(CacheFileInfo {
                     path: entry.path(),
                     bytes: metadata.len(),
@@ -228,7 +245,10 @@ pub(super) fn remove_cache_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("无法删除缓存文件 `{}`：{error}", path.display())),
+        Err(error) => Err(format!(
+            "Failed to delete cache file `{}`: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -313,7 +333,7 @@ pub(super) fn clear_loom_cache_blocking(kind: &str) -> Result<LoomCacheClearResu
         "frameworkTemporary" => {
             clear_directory_contents(&loom_framework_temporary_dir())?;
         }
-        _ => return Err("不支持的 Loom 缓存清理目标。".to_owned()),
+        _ => return Err("Unsupported Loom cache cleanup target.".to_owned()),
     }
     let snapshot = loom_cache_snapshot()?;
     let freed_bytes = match kind {

@@ -1,4 +1,4 @@
-//! 专属真实Art夹具；独立记录实际class/value并发布声明值、权威值和正式结果。
+//! Dedicated live Art fixture; independently logs actual event class and value and publishes declarative, authoritative, and formal results.
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 fn invocation(v: &Value) -> Option<&Value> {

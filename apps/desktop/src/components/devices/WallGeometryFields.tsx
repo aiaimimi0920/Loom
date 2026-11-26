@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { Field, Input } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type { WallRect } from "../../services/loomApi/wallTypes.ts";
 
 export function WallNumber({
@@ -36,13 +37,14 @@ export function WallGeometryFields({
   rect: WallRect;
   onChange: (rect: WallRect) => void;
 }) {
+  const { t } = useUiText();
   return (
     <fieldset className="wall-geometry">
       <legend>{label}</legend>
       {(["x", "y", "width", "height"] as const).map((key) => (
         <WallNumber
           key={key}
-          label={{ x: "X", y: "Y", width: "宽度", height: "高度" }[key]}
+          label={{ x: "X", y: "Y", width: t("devices.wall.geometry.width"), height: t("devices.wall.geometry.height") }[key]}
           value={rect[key]}
           onChange={(value) => onChange({ ...rect, [key]: value })}
         />

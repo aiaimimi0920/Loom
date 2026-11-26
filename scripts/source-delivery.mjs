@@ -1,4 +1,4 @@
-// 导出明确白名单中的工作区原字节；不把 HEAD 或旧二进制冒充快照构建身份。
+// Export raw workspace bytes from an explicit allowlist without claiming HEAD or prebuilt binaries as snapshot build identity.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -61,7 +61,7 @@ export function verifySnapshot(root) {
     const bytes = fs.readFileSync(regularFile(root, record.path));
     if (bytes.length !== record.bytes || hash(bytes) !== record.sha256) throw new Error('SOURCE_DIGEST_MISMATCH');
   }
-  // 不允许在验证后默默加入未列入清单的源码或配置。
+  // Reject any unlisted source or configuration files injected into the snapshot directory.
   function walk(dir, prefix = '') {
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
       const name = prefix + item.name;

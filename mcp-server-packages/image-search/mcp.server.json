@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "neuro-image-search",
-  "name": "图片搜索",
-  "description": "通过 Brave Image Search 提供标准 MCP 图片搜索工具。",
+  "name": "Image Search",
+  "description": "Provides standard MCP image search tools powered by Brave Image Search.",
   "version": "0.1.0",
   "publisher": {
     "id": "neuro.official",

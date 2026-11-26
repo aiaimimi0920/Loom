@@ -22,8 +22,8 @@ test("identification is independent of layout revision and fails closed on inval
     { ...row, endpoint: { ...row.endpoint, display: { name: "bad\nname", canIdentify: true } } },
     { ...row, identification: { ...row.identification, remainingMs: 10001 } },
     { ...row, identification: { ...row.identification, extra: true } },
-  ]) assert.throws(() => parseWallState({ ...state, endpoints: [value, state.endpoints[1]] }), /无效的墙面数据/);
-  assert.throws(() => parseWallState({ ...state, presentations: [{ wallId: fixture.layout.wallId, revision: 7, mode: "black" }] }), /屏幕识别/);
+  ]) assert.throws(() => parseWallState({ ...state, endpoints: [value, state.endpoints[1]] }), /Invalid wall data/);
+  assert.throws(() => parseWallState({ ...state, presentations: [{ wallId: fixture.layout.wallId, revision: 7, mode: "black" }] }), /screen identification/);
 });
 
 test("identification uses a volatile endpoint command without catalog CAS or retries", async (context) => {
@@ -41,6 +41,6 @@ test("identification uses a volatile endpoint command without catalog CAS or ret
   globalThis.fetch = async () => { failures++; return Response.json({}, { status: 409 }); };
   await assert.rejects(identifyWallEndpoint("http://127.0.0.1:18765", "endpoint-left"), /HTTP 409/);
   assert.equal(failures, 1);
-  await assert.rejects(identifyWallEndpoint("http://127.0.0.1:18765", "invalid id"), /目标无效/);
+  await assert.rejects(identifyWallEndpoint("http://127.0.0.1:18765", "invalid id"), /Invalid screen identification target/);
   assert.equal(failures, 1);
 });

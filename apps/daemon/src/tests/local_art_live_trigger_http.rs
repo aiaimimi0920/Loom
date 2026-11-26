@@ -1,4 +1,4 @@
-// HTTP 接收独立常量 oracle；服务端登记/交付不伪装成 Otter 回调/正式结果已执行。
+// HTTP ingress with independent constant oracles; server registration and delivery never pretend an Otter callback or formal result was executed.
 #[test]
 fn local_art_trigger_http_claim_is_once_and_receipt_is_not_canonical_success() {
     let t = TriggerFixture::new();

@@ -109,7 +109,7 @@ fn host_compatibility_requires_extension_otter_and_declared_features() {
     let mut support = compatible_host(false);
     assert_eq!(
         capability_host_compatibility_error(&entry, &support).as_deref(),
-        Some("需要连接支持能力扩展的 Otter")
+        Some("Requires a connected Otter instance with capability extension support")
     );
     support.hook_connected = true;
     assert!(capability_host_compatibility_error(&entry, &support).is_none());

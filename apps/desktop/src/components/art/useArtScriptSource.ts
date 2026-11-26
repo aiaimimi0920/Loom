@@ -1,5 +1,6 @@
 // Owns script import state, ordered source discovery, and stale-read cleanup.
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import {
   checkPythonArtJsonNearby,
   inferPythonArtPorts,
@@ -9,6 +10,7 @@ import {
 import { inferPortsFromPythonCode, mapArtJsonPorts, type PythonArtPort } from "../../services/pythonArtSource";
 import { basenameWithoutExtension, normalizePythonPort, normalizeToolId, type StudioMessage } from "../app/appShell";
 import { createPortDraft, type ArtWizardPortDraft } from "./artWizardModel";
+
 export function useArtScriptSource({
   baseUrl,
   repositoryName,
@@ -30,16 +32,12 @@ export function useArtScriptSource({
   setOutputPorts: Dispatch<SetStateAction<ArtWizardPortDraft[]>>;
   setWizardMessage: Dispatch<SetStateAction<StudioMessage | null>>;
 }) {
+  const { t } = useUiText();
   const [scriptSourcePath, setScriptSourcePath] = useState("");
-
   const [scriptSourceCode, setScriptSourceCode] = useState("");
-
   const [scriptArtJsonPath, setScriptArtJsonPath] = useState("");
-
   const [scriptSourceDirectory, setScriptSourceDirectory] = useState("");
-
   const [sourceBusyAction, setSourceBusyAction] = useState<"read" | "art-json" | "infer" | null>(null);
-
   const sourceRequestVersionRef = useRef(0);
 
   const applyPythonPorts = (ports: { inputs: PythonArtPort[]; outputs: PythonArtPort[] }) => {
@@ -80,7 +78,7 @@ export function useArtScriptSource({
 
   const readScriptSource = async () => {
     if (!scriptSourcePath.trim()) {
-      setWizardMessage({ kind: "error", text: "请输入 Python 源码路径。" });
+      setWizardMessage({ kind: "error", text: t("art.wizard.script.error.enterPythonPath") });
       return;
     }
     const requestVersion = ++sourceRequestVersionRef.current;
@@ -113,10 +111,18 @@ export function useArtScriptSource({
           outputs: (inferred.outputs || []).map(normalizePythonPort),
         });
       }
-      setWizardMessage({ kind: "info", text: configured ? "已读取源码和 art.json。" : "已读取源码并推断端口。" });
+      setWizardMessage({
+        kind: "info",
+        text: configured
+          ? t("art.wizard.script.message.readSourceAndArtJson")
+          : t("art.wizard.script.message.readSourceAndInferred"),
+      });
     } catch (error) {
       if (requestVersion === sourceRequestVersionRef.current) {
-        setWizardMessage({ kind: "error", text: error instanceof Error ? error.message : "无法读取 Python 源码。" });
+        setWizardMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : t("art.wizard.script.error.readPythonFailed"),
+        });
       }
     } finally {
       if (requestVersion === sourceRequestVersionRef.current) setSourceBusyAction(null);
@@ -125,7 +131,7 @@ export function useArtScriptSource({
 
   const readScriptArtJson = async () => {
     if (!scriptArtJsonPath.trim()) {
-      setWizardMessage({ kind: "error", text: "请输入 art.json 路径或 Art 目录。" });
+      setWizardMessage({ kind: "error", text: t("art.wizard.script.error.enterArtJsonPath") });
       return;
     }
     const requestVersion = ++sourceRequestVersionRef.current;
@@ -135,10 +141,13 @@ export function useArtScriptSource({
       if (requestVersion !== sourceRequestVersionRef.current) return;
       setScriptArtJsonPath(response.artJsonPath || scriptArtJsonPath);
       applyArtJson(response.artJson, scriptSourcePath);
-      setWizardMessage({ kind: "info", text: "已读取 art.json。" });
+      setWizardMessage({ kind: "info", text: t("art.wizard.script.message.readArtJson") });
     } catch (error) {
       if (requestVersion === sourceRequestVersionRef.current) {
-        setWizardMessage({ kind: "error", text: error instanceof Error ? error.message : "无法读取 art.json。" });
+        setWizardMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : t("art.wizard.script.error.readArtJsonFailed"),
+        });
       }
     } finally {
       if (requestVersion === sourceRequestVersionRef.current) setSourceBusyAction(null);
@@ -147,7 +156,7 @@ export function useArtScriptSource({
 
   const inferScriptPorts = async () => {
     if (!scriptSourcePath.trim() && !scriptSourceCode.trim()) {
-      setWizardMessage({ kind: "error", text: "请输入源码路径或源码内容。" });
+      setWizardMessage({ kind: "error", text: t("art.wizard.script.error.enterSourceOrCode") });
       return;
     }
     const requestVersion = ++sourceRequestVersionRef.current;
@@ -162,15 +171,18 @@ export function useArtScriptSource({
         inputs: (response.inputs || []).map(normalizePythonPort),
         outputs: (response.outputs || []).map(normalizePythonPort),
       });
-      setWizardMessage({ kind: "info", text: "已更新端口。" });
+      setWizardMessage({ kind: "info", text: t("art.wizard.script.message.updatedPorts") });
     } catch (error) {
       if (requestVersion !== sourceRequestVersionRef.current) return;
       const fallback = inferPortsFromPythonCode(scriptSourceCode);
       if (fallback.inputs.length || fallback.outputs.length) {
         applyPythonPorts(fallback);
-        setWizardMessage({ kind: "info", text: "已从源码更新端口。" });
+        setWizardMessage({ kind: "info", text: t("art.wizard.script.message.updatedPortsFromCode") });
       } else {
-        setWizardMessage({ kind: "error", text: error instanceof Error ? error.message : "无法推断端口。" });
+        setWizardMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : t("art.wizard.script.error.inferPortsFailed"),
+        });
       }
     } finally {
       if (requestVersion === sourceRequestVersionRef.current) setSourceBusyAction(null);

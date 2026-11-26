@@ -1,4 +1,4 @@
-//! Tile联合的真实Art进程：快速结果101；慢调用若未被取消，晚结果102必须被封住。
+//! Live Art process for Tile joint tests: fast result is 101; if a slow call is not cancelled, late result 102 must be fenced out.
 use std::io::{Read, Write};
 fn main() {
     let mut request = String::new();
@@ -8,7 +8,7 @@ fn main() {
         .unwrap();
     assert!(request.len() <= 1024 * 1024 && request.contains("\"refresh_price\""));
     let slow = request.contains("\"slow\"");
-    // TEMP由独占联合夹具设为隔离root并沿现有白名单继承；绝不污染已锁定Art包目录。
+    // TEMP is set to an isolated root by the exclusive joint fixture and inherited via the managed allowlist, never polluting locked Art package directories.
     let root = std::env::temp_dir();
     let mut calls = std::fs::OpenOptions::new()
         .create(true)

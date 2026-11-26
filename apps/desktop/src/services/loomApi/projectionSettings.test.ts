@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setLanguage } from "../../i18n/index.ts";
 import { loadProjectionSettings, parseProjectionSettings, projectionDeviceKey, projectionGroupNameError, saveProjectionSettings } from "./projectionSettings.ts";
 
 const peerId = "loom-" + "a".repeat(64);
-test("group name limit counts UTF-8 bytes and rejects blank or control-only edits", () => {
-  assert.equal(projectionGroupNameError("测".repeat(42) + "ab"), "");
-  assert.notEqual(projectionGroupNameError("测".repeat(43)), "");
-  assert.notEqual(projectionGroupNameError("  "), "");
-  assert.notEqual(projectionGroupNameError("Team" + String.fromCharCode(127)), "");
+test("group name limit counts UTF-8 bytes and rejects blank or control-only edits", (context) => {
+  context.after(() => setLanguage("en"));
+  assert.equal(projectionGroupNameError("\u6d4b".repeat(42) + "ab"), "");
+  assert.match(projectionGroupNameError("\u6d4b".repeat(43)), /128 UTF-8 bytes/);
+  assert.match(projectionGroupNameError("  "), /cannot be empty/);
+  assert.match(projectionGroupNameError("Team" + String.fromCharCode(127)), /control characters/);
+  setLanguage("zh-Hans");
+  assert.match(projectionGroupNameError("  "), /\u8bbe\u5907\u7ec4\u540d\u79f0/);
 });
 const document = { storageVersion: 1, revision: 4,
   groups: [{ groupId: "team", name: "Team", members: [{ deviceId: "same" }, { peerId, deviceId: "same" }] }],

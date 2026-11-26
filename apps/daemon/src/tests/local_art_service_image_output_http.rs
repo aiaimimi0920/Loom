@@ -1,4 +1,4 @@
-// 真Device/签名插件进程/原任务表；独立PNG字节与RGBA oracle，不读宿主屏幕。
+// Real Device, signed plugin process, and task table; uses independent PNG byte and RGBA oracles without sampling the host screen.
 fn output_request(f: &Fixture, id: &str, input: Value) -> Value {
     json!({"protocolVersion":"loom.art.local.service.image-output.v1","call":f.service_submit(id,input,5000),"images":[]})
 }

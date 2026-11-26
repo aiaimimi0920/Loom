@@ -12,22 +12,25 @@ pub(super) fn read_bounded_regular_file(
     subject: &str,
 ) -> Result<Vec<u8>, String> {
     let file = open_regular_file(path, subject)?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("无法读取{subject}信息 `{}`：{error}", path.display()))?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "Failed to read {subject} metadata `{}`: {error}",
+            path.display()
+        )
+    })?;
     if metadata.len() > max_bytes {
         return Err(format!(
-            "{subject}超过 {max_bytes} 字节限制：{}",
+            "{subject} exceeds the {max_bytes}-byte limit: {}",
             path.display()
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("无法读取{subject} `{}`：{error}", path.display()))?;
+        .map_err(|error| format!("Failed to read {subject} `{}`: {error}", path.display()))?;
     if bytes.len() as u64 > max_bytes {
         return Err(format!(
-            "{subject}超过 {max_bytes} 字节限制：{}",
+            "{subject} exceeds the {max_bytes}-byte limit: {}",
             path.display()
         ));
     }
@@ -40,7 +43,7 @@ pub(super) fn read_bounded_utf8_file(
     subject: &str,
 ) -> Result<String, String> {
     String::from_utf8(read_bounded_regular_file(path, max_bytes, subject)?)
-        .map_err(|error| format!("{subject}不是 UTF-8 `{}`：{error}", path.display()))
+        .map_err(|error| format!("{subject} is not valid UTF-8 `{}`: {error}", path.display()))
 }
 
 pub(super) fn write_utf8_regular_file(
@@ -49,32 +52,42 @@ pub(super) fn write_utf8_regular_file(
     subject: &str,
 ) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建{subject}目录 `{}`：{error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create {subject} directory `{}`: {error}",
+                parent.display()
+            )
+        })?;
     }
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     configure_no_follow(&mut options);
     let mut file = options
         .open(path)
-        .map_err(|error| format!("无法打开{subject} `{}`：{error}", path.display()))?;
+        .map_err(|error| format!("Failed to open {subject} `{}`: {error}", path.display()))?;
     let metadata = file
         .metadata()
-        .map_err(|error| format!("无法检查{subject} `{}`：{error}", path.display()))?;
+        .map_err(|error| format!("Failed to inspect {subject} `{}`: {error}", path.display()))?;
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata_is_windows_reparse(&metadata)
     {
-        return Err(format!("{subject}不是普通文件：{}", path.display()));
+        return Err(format!(
+            "{subject} is not a regular file: {}",
+            path.display()
+        ));
     }
     file.write_all(contents.as_bytes())
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("无法写入{subject} `{}`：{error}", path.display()))
+        .map_err(|error| format!("Failed to write {subject} `{}`: {error}", path.display()))
 }
 
 pub(super) fn validate_destructive_cache_root(path: &Path) -> Result<(), String> {
     if !path.is_absolute() || path.file_name().is_none() {
-        return Err(format!("拒绝清理不安全的缓存路径 `{}`。", path.display()));
+        return Err(format!(
+            "Refusing to clean unsafe cache path `{}`.",
+            path.display()
+        ));
     }
     if path.components().any(|component| {
         matches!(
@@ -83,7 +96,7 @@ pub(super) fn validate_destructive_cache_root(path: &Path) -> Result<(), String>
         )
     }) {
         return Err(format!(
-            "拒绝清理包含相对跳转的缓存路径 `{}`。",
+            "Refusing to clean cache path containing relative traversal `{}`.",
             path.display()
         ));
     }
@@ -93,12 +106,18 @@ pub(super) fn validate_destructive_cache_root(path: &Path) -> Result<(), String>
                 || metadata.file_type().is_symlink()
                 || metadata_is_windows_reparse(&metadata) =>
         {
-            return Err(format!("拒绝清理链接或非目录缓存 `{}`。", path.display()));
+            return Err(format!(
+                "Refusing to clean symlink or non-directory cache `{}`.",
+                path.display()
+            ));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(format!("无法检查缓存目录 `{}`：{error}", path.display()));
+            return Err(format!(
+                "Failed to inspect cache directory `{}`: {error}",
+                path.display()
+            ));
         }
     }
 
@@ -107,7 +126,7 @@ pub(super) fn validate_destructive_cache_root(path: &Path) -> Result<(), String>
         let protected = canonical_or_absolute(&absolute_path(&protected)?)?;
         if protected.starts_with(&candidate) {
             return Err(format!(
-                "拒绝清理包含受保护目录 `{}` 的缓存路径 `{}`。",
+                "Refusing to clean cache path containing protected directory `{}`: `{}`.",
                 protected.display(),
                 candidate.display()
             ));
@@ -122,7 +141,12 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     }
     std::env::current_dir()
         .map(|current| current.join(path))
-        .map_err(|error| format!("无法解析相对路径 `{}`：{error}", path.display()))
+        .map_err(|error| {
+            format!(
+                "Failed to resolve relative path `{}`: {error}",
+                path.display()
+            )
+        })
 }
 
 fn open_regular_file(path: &Path, subject: &str) -> Result<File, String> {
@@ -131,22 +155,25 @@ fn open_regular_file(path: &Path, subject: &str) -> Result<File, String> {
     configure_no_follow(&mut options);
     let file = options
         .open(path)
-        .map_err(|error| format!("无法打开{subject} `{}`：{error}", path.display()))?;
+        .map_err(|error| format!("Failed to open {subject} `{}`: {error}", path.display()))?;
     let metadata = file
         .metadata()
-        .map_err(|error| format!("无法检查{subject} `{}`：{error}", path.display()))?;
+        .map_err(|error| format!("Failed to inspect {subject} `{}`: {error}", path.display()))?;
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata_is_windows_reparse(&metadata)
     {
-        return Err(format!("{subject}不是普通文件：{}", path.display()));
+        return Err(format!(
+            "{subject} is not a regular file: {}",
+            path.display()
+        ));
     }
     Ok(file)
 }
 
 fn canonical_or_absolute(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
-        return Err(format!("路径不是绝对路径：{}", path.display()));
+        return Err(format!("Path is not absolute: {}", path.display()));
     }
     let mut ancestor = path;
     let mut missing_parts = Vec::new();
@@ -159,16 +186,25 @@ fn canonical_or_absolute(path: &Path) -> Result<PathBuf, String> {
                 return Ok(canonical);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let part = ancestor
-                    .file_name()
-                    .ok_or_else(|| format!("无法找到路径 `{}` 的现有父目录。", path.display()))?;
+                let part = ancestor.file_name().ok_or_else(|| {
+                    format!(
+                        "Could not find an existing parent directory for path `{}`.",
+                        path.display()
+                    )
+                })?;
                 missing_parts.push(part.to_os_string());
-                ancestor = ancestor
-                    .parent()
-                    .ok_or_else(|| format!("无法找到路径 `{}` 的现有父目录。", path.display()))?;
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    format!(
+                        "Could not find an existing parent directory for path `{}`.",
+                        path.display()
+                    )
+                })?;
             }
             Err(error) => {
-                return Err(format!("无法规范化路径 `{}`：{error}", path.display()));
+                return Err(format!(
+                    "Failed to canonicalize path `{}`: {error}",
+                    path.display()
+                ));
             }
         }
     }

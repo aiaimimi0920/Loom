@@ -1,4 +1,4 @@
-// 真HTTPS签发→Otter进程退出→Loom停服→第二个Otter进程离线执行，无真实设备/配置。
+// Real HTTPS issuance -> Otter process exits -> Loom stops -> second Otter process executes offline without live device or configuration.
 mod resume_joint {
     use super::*;
     use ed25519_dalek::SigningKey;
@@ -40,7 +40,7 @@ mod resume_joint {
         let executable = PathBuf::from(std::env::var_os("OTTER_NATIVE_TEST_EXE").unwrap());
         assert!(executable.is_absolute() && executable.is_file());
         let mut f = Fixture::build_scoped("local.js", &sha256_bytes(SOURCE), true, SOURCE, true);
-        // manifest允许正式结果还不够：本次请求和设备审批也必须显式请求同一scope。
+        // Manifest support for formal results is necessary but not sufficient: both the prepare request and device approval must explicitly request the scope.
         f.request["permissions"]
             .as_array_mut()
             .unwrap()
@@ -79,7 +79,7 @@ mod resume_joint {
         assert_eq!(result["formalResult"], true);
         assert_eq!(result["deviceSession"], false);
         assert_eq!(result["offlineService"], true);
-        // 只保留安全回执/子日志；不复制包含合成设备私钥的输入或profile。
+        // Copy only safe receipts and child logs; never copy inputs or profiles containing synthetic device private keys.
         if let Some(output) = std::env::var_os("OTTER_ART_RESUME_EVIDENCE_DIR") {
             let output = PathBuf::from(output);
             assert!(output.is_absolute());

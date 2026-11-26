@@ -7,14 +7,14 @@ export const DEFAULT_LOOM_SETTINGS: LoomSettings = {
   appearance_version: 1,
   general: {
     theme: "dark",
-    language: "zh-Hans",
+    language: "en",
     auto_start: false,
     minimize_to_tray: true,
     enable_tray_icon: true,
   },
   hook_general: {
     theme: "dark",
-    language: "zh-Hans",
+    language: "en",
     close_to_tray: true,
   },
   system: {

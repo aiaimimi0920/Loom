@@ -1,4 +1,5 @@
 // Owns explicit Capability Plugin lifecycle operations outside settings autosave.
+import { uiFormat, uiText } from "../../../i18n/index.ts";
 import {
   approveCapabilityPermissions,
   type CapabilityCatalogItem,
@@ -54,10 +55,10 @@ const versionForDigest = (plugin: CapabilityPluginRecord, digest?: string) =>
 
 const capabilityFileDataUrl = async (file: File): Promise<string> => {
   if (!file.name.toLocaleLowerCase().endsWith(".zip")) {
-    throw new Error("本地能力扩展必须是 ZIP 包。");
+    throw new Error(uiText("settings.capabilities.error.zipExtensionRequired"));
   }
   if (file.size === 0 || file.size > MAX_LOCAL_CAPABILITY_BYTES) {
-    throw new Error("本地能力扩展 ZIP 必须大于 0 字节且不超过 8 MiB。");
+    throw new Error(uiText("settings.capabilities.error.zipSizeRange"));
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -97,7 +98,7 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       setLoadError(null);
     } catch (error) {
       if (generation === generationRef.current) {
-        setLoadError(error instanceof Error ? error.message : "无法读取能力扩展状态。");
+        setLoadError(error instanceof Error ? error.message : uiText("settings.capabilities.error.loadStateFailed"));
       }
     } finally {
       if (generation === generationRef.current) setLoading(false);
@@ -134,7 +135,7 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       if (mountedRef.current && baseUrlRef.current === baseUrl) {
         pushAppToast({
           level: "error",
-          text: error instanceof Error ? error.message : "能力扩展操作失败。",
+          text: error instanceof Error ? error.message : uiText("settings.capabilities.error.operationFailed"),
         });
       }
       return null;
@@ -153,7 +154,7 @@ export function useCapabilityExtensionsController(baseUrl: string) {
   ) => {
     setPermissionReview({
       qualifiedId: plugin?.qualifiedId ?? "",
-      name: plugin?.name || plugin?.qualifiedId || "能力扩展",
+      name: plugin?.name || plugin?.qualifiedId || uiText("settings.capabilities.fallbackName"),
       digest: version.digest,
       version: version.version,
       publisherId: plugin?.publisherId || "",
@@ -173,7 +174,7 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       const plugin = nextSnapshot.plugins.find((candidate) => candidate.qualifiedId === qualifiedId);
       const version = plugin && versionForDigest(plugin, digest);
       if (!plugin || !version) {
-        throw new Error("能力扩展已安装，但无法读取待启用版本。请刷新后重试。");
+        throw new Error(uiText("settings.capabilities.error.missingPendingVersion"));
       }
       queueReview(plugin, version, action);
       return plugin;
@@ -181,7 +182,7 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       if (mountedRef.current && baseUrlRef.current === baseUrl) {
         pushAppToast({
           level: "error",
-          text: error instanceof Error ? error.message : "无法读取已安装能力扩展。",
+          text: error instanceof Error ? error.message : uiText("settings.capabilities.error.loadInstalledFailed"),
         });
       }
       return null;
@@ -199,7 +200,10 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       existing?.activeDigest ? "upgrade" : "enable",
     );
     if (!plugin) return;
-    pushAppToast({ level: "info", text: `${item.entry.name} 已验证并安装，启用前请确认权限。` });
+    pushAppToast({
+      level: "info",
+      text: uiFormat("settings.capabilities.toast.catalogInstalled", { name: item.entry.name }),
+    });
   }, [baseUrl, queueInstalledReview, runMutation, snapshot.plugins]);
 
   const installFromFile = useCallback(async (file: File) => {
@@ -207,7 +211,10 @@ export function useCapabilityExtensionsController(baseUrl: string) {
     try {
       dataUrl = await capabilityFileDataUrl(file);
     } catch (error) {
-      pushAppToast({ level: "error", text: error instanceof Error ? error.message : "无法读取 ZIP 包。" });
+      pushAppToast({
+        level: "error",
+        text: error instanceof Error ? error.message : uiText("settings.capabilities.error.readZipFailed"),
+      });
       return;
     }
     const report = await runMutation(file.name, () => installLocalCapability(baseUrl, dataUrl));
@@ -220,7 +227,10 @@ export function useCapabilityExtensionsController(baseUrl: string) {
       )) ? "upgrade" : "enable",
     );
     if (!plugin) return;
-    pushAppToast({ level: "info", text: `${plugin.name} 已安装，启用前请确认权限。` });
+    pushAppToast({
+      level: "info",
+      text: uiFormat("settings.capabilities.toast.localInstalled", { name: plugin.name }),
+    });
   }, [baseUrl, queueInstalledReview, runMutation, snapshot.plugins]);
 
   const requestEnable = useCallback((plugin: CapabilityPluginRecord) => {
@@ -255,26 +265,38 @@ export function useCapabilityExtensionsController(baseUrl: string) {
     });
     if (!result) return;
     setPermissionReview(null);
-    const actionCompleted = review.action === "upgrade"
-      ? "已更新"
-      : review.action === "rollback" ? "已回滚" : "已启用";
-    pushAppToast({ level: "info", text: `${review.name} ${actionCompleted}。` });
+    const toastKey = review.action === "upgrade"
+      ? "settings.capabilities.toast.upgraded"
+      : review.action === "rollback"
+        ? "settings.capabilities.toast.rolledBack"
+        : "settings.capabilities.toast.enabled";
+    pushAppToast({ level: "info", text: uiFormat(toastKey, { name: review.name }) });
   }, [baseUrl, permissionReview, runMutation]);
 
   const disable = useCallback(async (plugin: CapabilityPluginRecord) => {
     const result = await runMutation(plugin.qualifiedId, () => disableCapability(baseUrl, plugin.qualifiedId));
-    if (result) pushAppToast({ level: "info", text: `${plugin.name} 已停用。` });
+    if (result) {
+      pushAppToast({
+        level: "info",
+        text: uiFormat("settings.capabilities.toast.disabled", { name: plugin.name }),
+      });
+    }
   }, [baseUrl, runMutation]);
 
   const uninstall = useCallback(async (plugin: CapabilityPluginRecord) => {
     const accepted = await requestAppConfirmation({
-      title: "卸载能力扩展",
-      message: `将删除 ${plugin.name} 的所有已安装版本、权限授权和配置。`,
-      confirmLabel: "卸载",
+      title: uiText("settings.capabilities.uninstallConfirmTitle"),
+      message: uiFormat("settings.capabilities.uninstallConfirmBody", { name: plugin.name }),
+      confirmLabel: uiText("settings.capabilities.uninstallAction"),
     });
     if (!accepted) return;
     const result = await runMutation(plugin.qualifiedId, () => uninstallCapability(baseUrl, plugin.qualifiedId));
-    if (result) pushAppToast({ level: "info", text: `${plugin.name} 已卸载。` });
+    if (result) {
+      pushAppToast({
+        level: "info",
+        text: uiFormat("settings.capabilities.toast.uninstalled", { name: plugin.name }),
+      });
+    }
   }, [baseUrl, runMutation]);
 
   return {

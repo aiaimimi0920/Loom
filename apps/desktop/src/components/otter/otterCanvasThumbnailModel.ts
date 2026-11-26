@@ -1,5 +1,6 @@
 // Pure view-model helpers shared by the Otter canvas orchestrator and panels.
 
+import { uiText } from "../../i18n/index.ts";
 import type {
   ExposableParam,
   OtterCanvasNode,
@@ -17,9 +18,15 @@ import {
 export const LIVE_WORKFLOW_ID = "__live__";
 
 export const NODE_KIND_LABELS: Record<string, string> = {
-  screenshot: "截图节点",
-  art: "Art 节点",
-  unknown: "未知节点",
+  get screenshot() {
+    return uiText("otter.node.kind.screenshot");
+  },
+  get art() {
+    return uiText("otter.node.kind.art");
+  },
+  get unknown() {
+    return uiText("otter.node.kind.unknown");
+  },
 };
 
 export interface StatusMessage {

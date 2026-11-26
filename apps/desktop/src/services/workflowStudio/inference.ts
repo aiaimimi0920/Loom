@@ -1,3 +1,4 @@
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import type { LoomToolDefinition } from "../loomApi.ts";
 import { isConfigured, safeName } from "./shared.ts";
 import {
@@ -72,7 +73,7 @@ export function inferWorkflowArtInterface(
   for (const node of workflow.nodes) {
     const tool = toolMap.get(node.uses);
     if (!tool) {
-      warnings.push(`未找到 ${node.uses} 的注册表定义，已使用结构化回退推断接口。`);
+      warnings.push(uiFormat("otter.workflowStudio.warning.missingToolDefinition", { toolId: node.uses }));
       continue;
     }
     const nodeName = toolLabel(tool, node.id);
@@ -83,13 +84,18 @@ export function inferWorkflowArtInterface(
       const type = input.type === "text" ? "string" : input.type || "string";
       const imageLike = type === "image" || normalizeInputExecutionType(input, type).startsWith("image_");
       if (imageLike && imageInputBound) {
-        warnings.push(`发现多个未绑定图像输入，已跳过 ${nodeName} / ${input.label || target}。`);
+        warnings.push(
+          uiFormat("otter.workflowStudio.warning.skippedExtraImageInput", {
+            nodeName,
+            portLabel: input.label || target,
+          }),
+        );
         continue;
       }
       const workflowParam = reserveName(imageLike ? "input" : `${node.id}_${target}`);
       inputs.push({
         name: workflowParam,
-        label: imageLike ? "输入图像" : `${nodeName} / ${input.label || target}`,
+        label: imageLike ? uiText("otter.port.inputImage") : `${nodeName} / ${input.label || target}`,
         type,
         executionType: normalizeInputExecutionType(input, type),
         default: input.default === undefined ? "" : String(input.default),
@@ -143,7 +149,7 @@ export function inferWorkflowArtInterface(
   const terminalNodeId = terminalNode?.id || workflow.nodes[workflow.nodes.length - 1]?.id || "result";
   const outputs: WorkflowInterfacePort[] = [{
     name: "result",
-    label: terminalOutput?.label || "Result",
+    label: terminalOutput?.label || uiText("otter.workflowStudio.resultLabel"),
     type: normalizedOutput.type,
     executionType: normalizedOutput.executionType,
     bindingNodeId: terminalNodeId,
@@ -156,7 +162,7 @@ export function inferWorkflowArtInterface(
     kind: "node_result",
   };
 
-  if (!workflow.nodes.length) warnings.push("工作流 YAML 没有节点。");
-  if (!imageInputBound) warnings.push("没有检测到未绑定图像输入；该工作流可能依赖常量或上游文件。");
+  if (!workflow.nodes.length) warnings.push(uiText("otter.workflowStudio.warning.emptyNodes"));
+  if (!imageInputBound) warnings.push(uiText("otter.workflowStudio.warning.noUnboundImageInput"));
   return { inputs, outputs, bindings, warnings };
 }

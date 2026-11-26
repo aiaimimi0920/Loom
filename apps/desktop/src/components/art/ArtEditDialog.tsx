@@ -1,6 +1,7 @@
 // Art-specific form composition; the standard dialog owns the modal lifecycle.
 import { Badge, Button, Dialog, Disclosure, Input, Notice, Panel, Select, Switch, Textarea } from "@neuro/ui";
 import { useRef } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { artDisplayIdentity } from "../../services/artHubUi";
 import { ArtPublisherIcon } from "../app/appShell";
 import { ArtEditParameter, ArtEditSecretParameter } from "./ArtEditParameter";
@@ -9,6 +10,7 @@ import { useArtEditDialogController } from "./useArtEditDialogController";
 
 export function ArtEditDialog(props: ArtEditDialogProps) {
   const { tool, management, loading, busyAction, onClose } = props;
+  const { t, tf, language } = useUiText();
   const controller = useArtEditDialogController(props);
   const {
     name,
@@ -29,16 +31,12 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
   } = controller;
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   if (!tool) return null;
-  const displayIdentity = artDisplayIdentity(
-    tool,
-    management?.artId,
-    typeof document === "undefined" ? "zh-CN" : document.documentElement.lang || window.navigator.language,
-  );
+  const displayIdentity = artDisplayIdentity(tool, management?.artId, language);
   return (
     <Dialog
       open
-      title="编辑"
-      closeLabel="关闭编辑"
+      title={t("art.action.edit")}
+      closeLabel={t("art.edit.closeAria")}
       busy={busy}
       className="art-edit-dialog"
       initialFocusRef={nameInputRef}
@@ -59,11 +57,14 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
               {visibleError}
             </Notice>
           ) : null}
-          {loading || !management ? <Notice role="status">加载中</Notice> : null}
+          {loading || !management ? <Notice role="status">{t("art.common.loading")}</Notice> : null}
           {management ? (
             <>
               <div className="art-edit-dialog__overview">
-                <Panel className="art-edit-dialog__section art-edit-dialog__identity" aria-label="Art 信息">
+                <Panel
+                  className="art-edit-dialog__section art-edit-dialog__identity"
+                  aria-label={t("art.edit.section.identity")}
+                >
                   <div className="art-edit-dialog__identity-meta">
                     <span className="art-edit-dialog__publisher" title={displayIdentity.publisher.id}>
                       <ArtPublisherIcon publisher={displayIdentity.publisher} />
@@ -75,7 +76,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                     {displayIdentity.globalId ? (
                       <code
                         className="art-edit-dialog__id"
-                        aria-label={`Art 编号 ${displayIdentity.globalId}`}
+                        aria-label={tf("art.edit.globalIdAria", { id: displayIdentity.globalId })}
                         title={displayIdentity.globalId}
                       >
                         {displayIdentity.globalId}
@@ -86,8 +87,8 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                     className="art-edit-dialog__name"
                     ref={nameInputRef}
                     autoFocus={management.canEditIdentity && !busy}
-                    aria-label="名称"
-                    placeholder="Art 名称"
+                    aria-label={t("art.edit.field.name")}
+                    placeholder={t("art.edit.placeholder.name")}
                     value={name}
                     onChange={(event) => setName(event.target.value)}
                     disabled={busy || !management.canEditIdentity}
@@ -95,31 +96,34 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                   />
                   <Textarea
                     className="art-edit-dialog__description"
-                    aria-label="描述"
-                    placeholder="描述"
+                    aria-label={t("art.edit.field.description")}
+                    placeholder={t("art.edit.field.description")}
                     value={description}
                     onChange={(event) => setDescription(event.target.value)}
                     disabled={busy || !management.canEditIdentity}
                   />
                 </Panel>
-                <Panel className="art-edit-dialog__section art-edit-dialog__version" aria-label="版本">
+                <Panel
+                  className="art-edit-dialog__section art-edit-dialog__version"
+                  aria-label={t("art.edit.section.version")}
+                >
                   <div className="art-edit-dialog__version-primary">
                     <div className="art-edit-dialog__version-state">
                       <code
                         className="art-edit-dialog__current-version"
-                        aria-label={`当前版本 ${management.currentVersion}`}
+                        aria-label={tf("art.edit.currentVersionAria", { version: management.currentVersion })}
                       >
                         {management.currentVersion}
                       </code>
                       {management.updateAvailable ? (
-                        <Badge tone="info" aria-label="有新版本">
-                          有更新
+                        <Badge tone="info" aria-label={t("art.edit.updateAvailableAria")}>
+                          {t("art.edit.updateAvailableBadge")}
                         </Badge>
                       ) : null}
                     </div>
                     <Switch
-                      aria-label="自动更新"
-                      label="自动更新"
+                      aria-label={t("art.edit.autoUpdate")}
+                      label={t("art.edit.autoUpdate")}
                       checked={autoUpdate}
                       onChange={(event) => setAutoUpdate(event.target.checked)}
                       disabled={busy}
@@ -127,7 +131,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                   </div>
                   <div className="art-edit-dialog__version-action">
                     <Select
-                      aria-label="目标版本"
+                      aria-label={t("art.edit.targetVersionAria")}
                       value={targetVersion}
                       onChange={(event) => setTargetVersion(event.target.value)}
                       disabled={busy || autoUpdate}
@@ -145,7 +149,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                       disabled={busy || autoUpdate || !targetVersion || targetVersion === management.currentVersion}
                       onClick={() => void submit("update")}
                     >
-                      更新
+                      {t("art.action.update")}
                     </Button>
                   </div>
                 </Panel>
@@ -154,7 +158,10 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                 className={`art-edit-dialog__workspace${hasSplitWorkspace ? "" : " art-edit-dialog__workspace--single"}`}
               >
                 {requiredParameters.length ? (
-                  <Panel className="art-edit-dialog__section art-edit-dialog__parameters" aria-label="参数">
+                  <Panel
+                    className="art-edit-dialog__section art-edit-dialog__parameters"
+                    aria-label={t("art.edit.section.parameters")}
+                  >
                     <div className="art-edit-dialog__fields">
                       {requiredParameters.map((parameter) => (
                         <ArtEditParameter key={parameter.id} parameter={parameter} controller={controller} />
@@ -163,7 +170,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                   </Panel>
                 ) : null}
                 {secretParameters.length ? (
-                  <section className="art-edit-dialog__secrets" aria-label="机密参数">
+                  <section className="art-edit-dialog__secrets" aria-label={t("art.edit.section.secrets")}>
                     <div className="art-edit-dialog__secret-list">
                       {secretParameters.map((parameter) => (
                         <ArtEditSecretParameter key={parameter.id} parameter={parameter} controller={controller} />
@@ -172,7 +179,10 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
                   </section>
                 ) : null}
                 {optionalParameters.length ? (
-                  <Disclosure className="art-edit-dialog__optional" title={<span aria-label="可选参数">更多</span>}>
+                  <Disclosure
+                    className="art-edit-dialog__optional"
+                    title={<span aria-label={t("art.edit.section.optionalAria")}>{t("art.edit.more")}</span>}
+                  >
                     <div className="art-edit-dialog__fields art-edit-dialog__fields--optional">
                       {optionalParameters.map((parameter) => (
                         <ArtEditParameter key={parameter.id} parameter={parameter} controller={controller} />
@@ -186,7 +196,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
         </div>
         <div className="art-edit-dialog__actions">
           <Button variant="secondary" type="button" onClick={onClose} disabled={busy}>
-            取消
+            {t("art.action.cancel")}
           </Button>
           <Button
             variant="primary"
@@ -194,7 +204,7 @@ export function ArtEditDialog(props: ArtEditDialogProps) {
             loading={busyAction === "save"}
             disabled={loading || !management || busy || (management.canEditIdentity && !name.trim())}
           >
-            保存
+            {t("art.action.save")}
           </Button>
         </div>
       </form>

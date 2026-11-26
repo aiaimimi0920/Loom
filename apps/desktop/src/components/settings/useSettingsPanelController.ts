@@ -19,6 +19,7 @@ import {
   setPluginTrustPolicy,
 } from "../../services/loomApi";
 import { applyLoomGeneralSettings } from "../../services/loomGeneralSettings";
+import { uiFormat, uiText } from "../../i18n/index.ts";
 import { pushAppToast } from "../feedback/AppFeedback";
 import { useApplicationLinks } from "./useApplicationLinks";
 import {
@@ -145,7 +146,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
           }
           pushAppToast({
             level: "error",
-            text: error instanceof Error ? error.message : "设置自动保存失败",
+            text: error instanceof Error ? error.message : uiText("settings.toast.autosaveFailed"),
           });
         }
         break;
@@ -230,7 +231,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         settingsHydratedRef.current = true;
         pushAppToast({
           level: "error",
-          text: error instanceof Error ? `使用 Loom 默认设置：${error.message}` : "使用 Loom 默认设置。",
+          text: error instanceof Error ? uiFormat("settings.toast.usingDefaultsWithError", { error: error.message }) : uiText("settings.toast.usingDefaults"),
         });
       }
     };
@@ -413,7 +414,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
     try {
       const trustStore = await setPluginTrustPolicy(snapshot.baseUrl, policy);
       setArtStoreTrustPolicy(trustStore.policy);
-      pushAppToast({ level: "info", text: "Art 安装策略已更新" });
+      pushAppToast({ level: "info", text: uiText("settings.artStore.trustPolicyUpdated") });
     } catch (error) {
       setArtStoreTrustPolicy(previous);
       pushAppToast({

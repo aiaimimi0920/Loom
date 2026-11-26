@@ -33,7 +33,7 @@ fn cloud_actions_have_bounded_network_budget_without_extending_local_routes() {
 
 #[test]
 fn refresh_response_after_local_budget_succeeds_only_with_cloud_budget() {
-    // 模拟真实刷新超过本机三秒预算；不连接账号服务或使用真实刷新令牌。
+    // Simulate a refresh exceeding the three-second local budget without connecting to the account service or using a real refresh token.
     for old_budget in [true, false] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind refresh fixture");
         let address = listener.local_addr().unwrap();
@@ -50,7 +50,7 @@ fn refresh_response_after_local_budget_succeeds_only_with_cloud_budget() {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
-            // 旧预算会先断开，写失败是预期结果；线程始终收尾。
+            // The legacy budget disconnects first, so a write failure is expected; the thread always finishes cleanly.
             let _ = stream.write_all(response.as_bytes());
         });
         let url = format!("http://{address}");
@@ -68,9 +68,15 @@ fn refresh_response_after_local_budget_succeeds_only_with_cloud_budget() {
         };
         server.join().expect("join refresh fixture");
         if old_budget {
-            assert!(result.is_err(), "旧三秒预算必须复现失败");
+            assert!(
+                result.is_err(),
+                "legacy three-second budget must reproduce failure"
+            );
         } else {
-            assert_eq!(result.expect("云操作应等待实际响应")["status"], "signed_in");
+            assert_eq!(
+                result.expect("cloud action should wait for actual response")["status"],
+                "signed_in"
+            );
         }
     }
 }

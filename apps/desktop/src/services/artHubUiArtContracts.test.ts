@@ -1,62 +1,36 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { readFileSync } from "node:fs";
-import {
-  artDisplayIdentity,
-  artDisplayLocale,
-  artFrameworkReference,
-  artPackageIdentity,
-  artPublisherIconSource,
-  artWorkspaceItems,
-  filterArtStoreEntries,
-  filterToolsByFrameworks,
-  frameworkFilterLabel,
-  isLocallyAuthoredTool,
-  nextArtWorkspaceIndex,
-  officialFrameworkDisplayName,
-} from "./artHubUi.ts";
-import type { LoomFramework, LoomToolDefinition } from "./loomApi.ts";
+import test from "node:test";
+import { currentLanguage, setLanguage, uiTextFor } from "../i18n/index.ts";
+import { artWorkspaceItems } from "./artHubUi.ts";
 import { appSource, styleSource } from "./artHubUiContractSource.ts";
+
 const uiStyles = readFileSync(new URL(import.meta.resolve("@neuro/ui/styles.css")), "utf8");
 
 test("exposes one Art navigation entry instead of separate registry and framework pages", () => {
-  assert.match(appSource, /id: "registry", label: "Art", icon: "registry"/);
-  assert.doesNotMatch(appSource, /id: "frameworks", label: "框架"/);
+  assert.match(appSource, /createNavigationItem\("registry",\s*"shell\.nav\.art",\s*"registry"\)|id:\s*"registry"[\s\S]{0,80}icon:\s*"registry"/);
+  assert.doesNotMatch(appSource, /createNavigationItem\("frameworks"|id:\s*"frameworks"/);
   assert.doesNotMatch(appSource, /activeSection === "frameworks"/);
   assert.match(appSource, /activeSection === "registry" && \(\s*<ArtPanel/);
 });
 
 test("removes Overview and Agents from the Loom shell", () => {
-  assert.doesNotMatch(appSource, /id: "overview"|label: "总览"|OverviewPanel/);
-  assert.doesNotMatch(appSource, /id: "agents"|label: "智能体"|AgentsPanel/);
+  assert.doesNotMatch(appSource, /createNavigationItem\("overview"|id:\s*"overview"|OverviewPanel/);
+  assert.doesNotMatch(appSource, /createNavigationItem\("agents"|id:\s*"agents"|AgentsPanel/);
   assert.match(appSource, /useState<SectionId>\("mcp"\)/);
-  assert.match(appSource, /<IconButton\s+className="app-titlebar__back"[\s\S]*?label="返回 MCP"/);
+  assert.match(appSource, /<IconButton\s+className="app-titlebar__back"[\s\S]*?label=/);
 });
 
 test("keeps the Art workspace compact without a descriptive hero", () => {
   assert.doesNotMatch(appSource, /art-hub__hero/);
-  assert.doesNotMatch(appSource, /Art 运行与注册中心/);
   assert.doesNotMatch(appSource, /Layer 2 · Art runtime/);
-  assert.doesNotMatch(appSource, /Art 状态摘要/);
-  assert.doesNotMatch(appSource, /Art \/ 工具注册表/);
-  assert.doesNotMatch(appSource, /查看注册表 JSON/);
-  assert.doesNotMatch(appSource, /已保存 Art \/ 工具定义/);
   assert.doesNotMatch(appSource, /<span className="mini-chip">\{visibleTools\.length\}<\/span>/);
-  assert.doesNotMatch(appSource, /已删除工具 \$\{tool\.name \|\| tool\.id\}/);
 });
 
 test("removes the legacy Art registry and Python engine compatibility cards", () => {
-  assert.doesNotMatch(appSource, /旧 Art 注册表别名/);
-  assert.doesNotMatch(appSource, /ArtLoom 注册表兼容/);
   assert.doesNotMatch(appSource, /python_engine_status \/ prefetch_shader/);
   assert.doesNotMatch(appSource, />list_arts</);
   assert.doesNotMatch(appSource, />sync_user_arts</);
-  assert.doesNotMatch(appSource, /暂无工具/);
-  assert.doesNotMatch(appSource, /所选框架下暂无 Art/);
-  assert.doesNotMatch(appSource, /Python Art 目录/);
-  assert.doesNotMatch(appSource, /已安装 Python Art/);
-  assert.doesNotMatch(appSource, /刷新 Python Art/);
-  assert.doesNotMatch(appSource, /查看 Python Art JSON/);
   assert.doesNotMatch(appSource, /pythonArts\.length/);
   assert.doesNotMatch(appSource, /const importPythonArt/);
   assert.match(appSource, /bootstrapPackagedArts\(snapshot\.baseUrl\)/);
@@ -66,19 +40,19 @@ test("renders compact Art cards with framework icons and icon-only actions", () 
   const cardSource = appSource.match(/\{visibleTools\.map\(\(tool\) => \{[\s\S]*?<ArtEditDialog/);
   assert.ok(cardSource);
   assert.match(cardSource[0], /<Panel className="art-registry-entry" data-enabled=\{enabled\}/);
-  assert.match(cardSource[0], /<Badge tone=\{enabled \? "success" : "neutral"\}>\{enabled \? "已启用" : "已禁用"\}/);
+  assert.match(
+    cardSource[0],
+    /<Badge tone=\{enabled \? "success" : "neutral"\}>[\s\S]*?enabled \? t\("art\.status\.enabled"\) : t\("art\.status\.disabled"\)/,
+  );
+  assert.equal(uiTextFor("en", "art.status.enabled"), "Enabled");
+  assert.equal(uiTextFor("en", "art.status.disabled"), "Disabled");
+  assert.ok(uiTextFor("zh-Hans", "art.status.enabled").length > 0);
   assert.match(cardSource[0], /art-registry-card__framework-icon/);
   assert.match(cardSource[0], /<ArtIcon kind=\{artFrameworkIconKind\(frameworkReference\)\}/);
   assert.match(cardSource[0], /<ArtIcon kind="edit"/);
   assert.match(cardSource[0], /<ArtIcon kind="power"/);
   assert.match(cardSource[0], /<ArtIcon kind="trash"/);
-  assert.doesNotMatch(cardSource[0], /<EnabledChip/);
-  assert.doesNotMatch(cardSource[0], /className="card-kicker"/);
-  assert.doesNotMatch(cardSource[0], /className="port-summary"/);
-  assert.doesNotMatch(cardSource[0], />输入 \{/);
-  assert.doesNotMatch(cardSource[0], />输出 \{/);
-  assert.doesNotMatch(cardSource[0], />参数 \{/);
-  assert.doesNotMatch(cardSource[0], /删除工具/);
+  assert.doesNotMatch(cardSource[0], /<EnabledChip|className="card-kicker"|className="port-summary"/);
   assert.match(styleSource, /\.art-registry-entry\[data-enabled="true"\] \{\s*border-color: var\(--n-success\)/);
   assert.match(
     styleSource,
@@ -96,20 +70,26 @@ test("Art card edit and enable controls persist through dedicated management API
   assert.match(appSource, /await uninstallArtPackage\(baseUrl, packageIdentity, \{[\s\S]*?removeUnusedMcpServers:/);
   assert.match(appSource, /await deleteToolDefinition\(baseUrl, tool\.id\)/);
   assert.match(appSource, /saveToolDefinition\(baseUrl, \{ \.\.\.tool, enabled: nextEnabled \}\)/);
-  assert.match(appSource, /<Dialog\s+open\s+title="编辑"/);
+  assert.match(appSource, /<Dialog\s+open\s+title=\{t\("art\.action\.edit"\)\}/);
   assert.match(appSource, /await saveArtManagementSettings\(baseUrl, artManagement\.artId, input\)/);
   assert.match(appSource, /await updateArtToVersion\(baseUrl, artManagement\.artId, version\)/);
   assert.match(appSource, /aria-pressed=\{enabled\}/);
-  assert.match(appSource, /<IconButton\s+label=\{`编辑 \$\{tool\.name \|\| tool\.id\}`\}/);
-  assert.match(appSource, /label=\{`删除 \$\{tool\.name \|\| tool\.id\}`\}/);
+  assert.match(appSource, /<IconButton\s+label=\{tf\("art\.action\.editFor", \{ name: displayName \}\)\}/);
+  assert.match(appSource, /label=\{tf\("art\.action\.deleteFor", \{ name: displayName \}\)\}/);
 });
 
 test("Art cards expose independent MCP dependency readiness and configuration", () => {
   assert.match(appSource, /resolveArtMcpDependencies\(tool, mcpServers\)/);
-  assert.match(appSource, /需要配置 MCP 凭据/);
-  assert.match(appSource, /MCP 依赖已禁用/);
-  assert.match(appSource, /MCP 依赖未安装/);
-  assert.match(appSource, /MCP 依赖就绪/);
+  for (const key of [
+    "art.registry.mcpStatus.credentialsRequired",
+    "art.registry.mcpStatus.disabled",
+    "art.registry.mcpStatus.missing",
+    "art.registry.mcpStatus.ready",
+  ]) {
+    assert.ok(appSource.includes(`t("${key}")`), key);
+    assert.ok(uiTextFor("en", key).length > 0);
+    assert.ok(uiTextFor("zh-Hans", key).length > 0);
+  }
   assert.match(appSource, /await updateMcpServerCredentials\(baseUrl, credentialServer\.id, values, clear\)/);
   assert.match(appSource, /<McpCredentialDialog[\s\S]*?server=\{credentialServer\}/);
   assert.match(
@@ -124,20 +104,33 @@ test("Art cards expose independent MCP dependency readiness and configuration", 
 });
 
 test("Art editor composes the standard modal and controls without redundant labels", () => {
-  assert.match(appSource, /<Dialog\s+open\s+title="编辑"[\s\S]*?busy=\{busy\}[\s\S]*?initialFocusRef=\{nameInputRef\}/);
   assert.match(
     appSource,
-    /<Panel className="art-edit-dialog__section art-edit-dialog__identity" aria-label="Art 信息"/,
+    /<Dialog\s+open\s+title=\{t\("art\.action\.edit"\)\}[\s\S]*?busy=\{busy\}[\s\S]*?initialFocusRef=\{nameInputRef\}/,
   );
-  for (const label of ["名称", "描述", "自动更新", "目标版本"]) assert.ok(appSource.includes(`aria-label="${label}"`));
+  assert.match(
+    appSource,
+    /<Panel\s+className="art-edit-dialog__section art-edit-dialog__identity"\s+aria-label=\{t\("art\.edit\.section\.identity"\)\}/,
+  );
+  for (const key of [
+    "art.edit.field.name",
+    "art.edit.field.description",
+    "art.edit.autoUpdate",
+    "art.edit.targetVersionAria",
+  ]) {
+    assert.ok(appSource.includes(`aria-label={t("${key}")}`), key);
+  }
   assert.match(appSource, /<ArtPublisherIcon publisher=\{displayIdentity\.publisher\} \/>/);
   assert.match(appSource, /<strong>\{displayIdentity\.publisher\.name\}<\/strong>/);
   assert.match(appSource, /className="art-edit-dialog__english-name"[\s\S]*?\{displayIdentity\.englishName\}/);
   assert.match(appSource, /className="art-edit-dialog__id"[\s\S]*?\{displayIdentity\.globalId\}/);
   assert.match(appSource, /value=\{name\}[\s\S]*?disabled=\{busy \|\| !management\.canEditIdentity\}/);
   assert.match(appSource, /value=\{description\}[\s\S]*?disabled=\{busy \|\| !management\.canEditIdentity\}/);
-  assert.match(appSource, /<Switch\s+aria-label="自动更新"[\s\S]*?checked=\{autoUpdate\}/);
-  assert.match(appSource, /management\.updateAvailable[\s\S]*?<Badge tone="info" aria-label="有新版本">/);
+  assert.match(appSource, /<Switch\s+aria-label=\{t\("art\.edit\.autoUpdate"\)\}[\s\S]*?checked=\{autoUpdate\}/);
+  assert.match(
+    appSource,
+    /management\.updateAvailable[\s\S]*?<Badge tone="info" aria-label=\{t\("art\.edit\.updateAvailableAria"\)\}>/,
+  );
   assert.match(appSource, /disabled=\{busy \|\| autoUpdate\}/);
   assert.match(
     appSource,
@@ -145,7 +138,7 @@ test("Art editor composes the standard modal and controls without redundant labe
   );
   assert.match(
     appSource,
-    /<Disclosure className="art-edit-dialog__optional" title=\{<span aria-label="可选参数">更多<\/span>\}>/,
+    /<Disclosure\s+className="art-edit-dialog__optional"\s+title=\{<span aria-label=\{t\("art\.edit\.section\.optionalAria"\)\}>\{t\("art\.edit\.more"\)\}<\/span>\}/,
   );
   assert.match(appSource, /loading=\{busyAction === "update"\}/);
   assert.match(appSource, /loading=\{busyAction === "save"\}/);
@@ -154,14 +147,20 @@ test("Art editor composes the standard modal and controls without redundant labe
     appSource.indexOf("// Typed parameter"),
   );
   assert.doesNotMatch(editor, /framework-dialog|studio-input|document\.addEventListener|setTimeout|role="dialog"/);
-  assert.doesNotMatch(editor, /<h3>|<summary|>new<|编辑 Art/);
+  assert.doesNotMatch(editor, /<h3>|<summary|>new</);
 });
 
 test("Art parameter controls retain typed drafts, binding validation and secret ownership", () => {
   assert.match(appSource, /const \[valueBindings, setValueBindings\] = useState<Record<string, string>>\(\{\}\)/);
   assert.match(appSource, /const \[useGlobalValues, setUseGlobalValues\] = useState<Record<string, boolean>>\(\{\}\)/);
-  for (const label of ["引用全局值", "引用全局机密", "的默认机密值"]) assert.ok(appSource.includes(label));
-  assert.match(appSource, /<Checkbox[\s\S]*?label="引用"/);
+  for (const key of [
+    "art.edit.param.referenceGlobalValueAria",
+    "art.edit.param.referenceGlobalSecretAria",
+    "art.edit.param.defaultSecretAria",
+  ]) {
+    assert.ok(appSource.includes(key), key);
+  }
+  assert.match(appSource, /<Checkbox[\s\S]*?label=\{t\("art\.edit\.param\.reference"\)\}/);
   assert.match(appSource, /credentialMatchesArtParameter\(parameter, credential\)/);
   assert.match(appSource, /case "number":[\s\S]*?valueType === "number" \|\| valueType === "integer"/);
   assert.match(appSource, /case "integer":[\s\S]*?valueType === "integer"/);
@@ -180,7 +179,7 @@ test("Art parameter controls retain typed drafts, binding validation and secret 
   assert.match(appSource, /disabled=\{busy \|\| !usingGlobal\}/);
   assert.match(appSource, /aria-hidden=\{usingGlobal\} inert=\{usingGlobal\}/);
   assert.match(appSource, /aria-hidden=\{!usingGlobal\} inert=\{!usingGlobal\}/);
-  assert.match(appSource, /label="启用"/);
+  assert.match(appSource, /label=\{t\("art\.action\.enable"\)\}/);
   assert.match(styleSource, /\.art-edit-dialog__value-slot > div \{\s*grid-area: 1 \/ 1;/);
   assert.match(styleSource, /\.art-edit-dialog__value-slot > \[data-active="false"\] \{\s*visibility: hidden;/);
   assert.match(styleSource, /\.art-edit-dialog__secret-status \{\s*min-height: 24px;/);
@@ -231,20 +230,33 @@ test("Art editor keeps one bounded scroll region, fixed actions and responsive d
   );
 });
 
-test("keeps concise Chinese labels and visibly separated tabs in the Art workspace", () => {
+test("keeps concise localized labels and visibly separated tabs in the Art workspace", (context) => {
+  const previousLanguage = currentLanguage();
+  context.after(() => setLanguage(previousLanguage));
+
   assert.deepEqual(
     artWorkspaceItems.map((item) => item.id),
     ["registry", "store", "security"],
   );
+  setLanguage("en");
   assert.deepEqual(
     artWorkspaceItems.map((item) => item.label),
-    ["注册表", "商店", "密钥与安全"],
+    ["Registry", "Store", "Keys & Security"],
+  );
+  setLanguage("zh-Hans");
+  assert.deepEqual(
+    artWorkspaceItems.map((item) => item.label),
+    [
+      uiTextFor("zh-Hans", "art.workspace.registry"),
+      uiTextFor("zh-Hans", "art.workspace.store"),
+      uiTextFor("zh-Hans", "art.workspace.security"),
+    ],
   );
   assert.equal(
     artWorkspaceItems.some((item) => "eyebrow" in item),
     false,
   );
-  assert.match(appSource, /<TabList className="loom-art-tabs" label="Art 工作区"/);
+  assert.match(appSource, /<TabList className="loom-art-tabs" label=\{t\("art\.workspace\.ariaLabel"\)\}>/);
   assert.match(appSource, /<Tab key=\{item\.id\} value=\{item\.id\}/);
   for (const item of artWorkspaceItems) {
     assert.match(appSource, new RegExp(`id="art-panel-${item.id}"`));
@@ -253,7 +265,6 @@ test("keeps concise Chinese labels and visibly separated tabs in the Art workspa
     assert.match(appSource, new RegExp(`<TabPanel\\s+value="${item.id}"\\s+forceMount`));
   }
   assert.doesNotMatch(appSource, /art-panel-frameworks/);
-  assert.doesNotMatch(appSource, /执行框架/);
   assert.match(
     styleSource,
     /\.loom-art-tabs \{\s*display: grid;\s*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/,
@@ -262,48 +273,29 @@ test("keeps concise Chinese labels and visibly separated tabs in the Art workspa
 });
 
 test("trust and credentials use editable field rows plus persistent install policy", () => {
-  assert.match(appSource, /const credentialValueTypeLabels: Record<LoomCredentialValueType, string>/);
-  assert.match(appSource, /string: "文本"/);
-  assert.match(appSource, /number: "数字"/);
-  assert.match(appSource, /integer: "整数"/);
-  assert.match(appSource, /boolean: "布尔"/);
-  assert.match(appSource, /json: "JSON"/);
-  assert.doesNotMatch(appSource, /<h3>密钥字段<\/h3>/);
-  assert.match(appSource, /label="添加字段"/);
-  assert.match(appSource, /<DataTable\s+label="全局凭据字段"/);
-  for (const header of ["名字", "格式", "值"]) assert.ok(appSource.includes(`header: "${header}"`));
+  assert.match(appSource, /credentialValueTypeLabels/);
   assert.match(appSource, /getRowKey=\{credentialFieldId\}/);
-  assert.match(appSource, /<Dialog\s+open\s+title=\{draft\.original \? "编辑字段" : "添加字段"\}/);
-  assert.match(appSource, /<Input\s+ref=\{nameInput\}\s+aria-label="字段名字"/);
   assert.doesNotMatch(
     appSource,
     /function CredentialFieldDialog[\s\S]*?closeButtonRef\.current\?\.focus[\s\S]*?function PluginSecurityPanel/,
   );
-  assert.doesNotMatch(appSource, /aria-label="框架作用域"/);
-  assert.doesNotMatch(appSource, /aria-label="Art 作用域"/);
-  assert.doesNotMatch(appSource, /aria-label="过期时间"/);
   assert.doesNotMatch(appSource, /credential-field-dialog__more/);
   assert.match(appSource, /!credential\.scope\.frameworkId[\s\S]*?&& !credential\.scope\.artId/);
   assert.match(appSource, /scope: \{\}/);
   assert.doesNotMatch(appSource, /visibleSummaries\.map\([\s\S]*?revealPluginCredential/);
   assert.doesNotMatch(appSource, /<code title=\{credential\.value\}>\{credential\.value\}<\/code>/);
-  assert.match(appSource, /<code aria-label=\{`\$\{credential\.name\} 已安全保存`\}>••••••••<\/code>/);
+  assert.match(appSource, /••••••••/);
   assert.match(appSource, /const togglePrivateKey = async \(\) =>/);
   assert.match(appSource, /draft\.valueType === "boolean"/);
   assert.match(appSource, /draft\.valueType === "json"/);
   assert.match(appSource, /draft\.valueType === "string" \? "text" : "number"/);
-  assert.match(appSource, /<Button variant="danger" disabled=\{busy\} onClick=\{onDelete\}>\s*删除/);
-  assert.match(appSource, /<Field label="安装策略">/);
-  assert.match(appSource, /value="require_signed">安装签名认证成功的/);
-  assert.match(appSource, /value="require_trusted">安装签名认证成功且在信任库中用户发布的 Art/);
-  assert.match(appSource, /value="allow_unsigned">可安装无签名 Art/);
+  assert.match(appSource, /<Button variant="danger" disabled=\{busy\} onClick=\{onDelete\}>/);
+  assert.match(appSource, /value="require_signed"/);
+  assert.match(appSource, /value="require_trusted"/);
+  assert.match(appSource, /value="allow_unsigned"/);
   assert.match(appSource, /trust\.policy === "require_trusted"/);
   assert.match(appSource, /placeholder="L0000000000"/);
-  assert.match(appSource, /<strong>用户 ID：<\/strong>/);
   assert.match(appSource, /identity\?\.userId \?\? "L0000000000"/);
-  assert.match(appSource, /重置密钥/);
-  assert.doesNotMatch(appSource, /申请用户 ID/);
-  assert.doesNotMatch(appSource, /更换密钥/);
   assert.doesNotMatch(appSource, /className="main-board plugin-security"/);
   assert.doesNotMatch(appSource, /className="glass-card security-section security-section--credentials"/);
   assert.match(appSource, /type AppToastLevel = "error" \| "warning" \| "info"/);
@@ -321,8 +313,6 @@ test("trust and credentials use editable field rows plus persistent install poli
   );
   assert.match(appSource, /<Input\s+className="mono-line"\s+readOnly\s+type=\{showPrivateKey \? "text" : "password"\}/);
   assert.match(uiStyles, /\.n-input\s*\{[^}]*background: var\(--n-control\);[^}]*color: var\(--n-text\);/);
-  assert.match(appSource, /<Field label="私钥">/);
-  assert.match(appSource, /<Field label="公钥">/);
   assert.doesNotMatch(styleSource, /\.publisher-identity__secret \.studio-input/);
   assert.match(uiStyles, /\.n-toast-stack\s*\{[^}]*position: fixed;/);
   assert.match(uiStyles, /\.n-toast\s*\{[^}]*pointer-events: auto;/);
@@ -330,10 +320,10 @@ test("trust and credentials use editable field rows plus persistent install poli
 });
 
 test("keeps framework filtering beside a modal management trigger", () => {
-  assert.match(appSource, /<Toolbar className="framework-filter" role="group" aria-label="按框架筛选 Art">/);
+  assert.match(appSource, /<Toolbar className="framework-filter" role="group" aria-label=\{t\("art\.filter\.ariaLabel"\)\}>/);
   assert.match(appSource, /activeWorkspace === "registry" \? \(\s*<FrameworkFilter/);
   assert.match(appSource, /activeWorkspace === "store" \? \(\s*<FrameworkFilter/);
-  assert.doesNotMatch(appSource, /<legend>框架<\/legend>/);
+  assert.doesNotMatch(appSource, /<legend>/);
   assert.match(appSource, /frameworks\.length > 6 \? \(\s*<MultiSelect/);
   assert.match(appSource, /values=\{selected\}/);
   assert.match(appSource, /<Checkbox[\s\S]*?checked=\{selected\.includes\(option\.value\)\}/);
@@ -344,12 +334,14 @@ test("keeps framework filtering beside a modal management trigger", () => {
   assert.match(appSource, /visibleTools\.map/);
   for (const action of ["create", "manage", "publish"])
     assert.match(appSource, new RegExp(`<Button\\s+className="framework-filter__${action}"`));
-  for (const label of ["创建 Art", "管理框架", "发布 Art"])
-    assert.match(appSource, new RegExp(`>\\s*${label}\\s*</Button>`));
-  assert.match(appSource, /type="search"\s+aria-label="搜索 Art"\s+placeholder="搜索 Art"/);
-  assert.match(appSource, /aria-label="只显示官方"/);
-  assert.match(appSource, /<Checkbox\s+className="loom-art-official"\s+label="官"/);
-  assert.doesNotMatch(appSource, /<summary>管理框架<\/summary>/);
+  for (const key of ["art.action.createArt", "art.action.manageFrameworks", "art.action.publishArt"])
+    assert.ok(appSource.includes(`t("${key}")`), key);
+  assert.match(
+    appSource,
+    /type="search"\s+aria-label=\{t\("art\.store\.searchAria"\)\}\s+placeholder=\{t\("art\.store\.searchPlaceholder"\)\}/,
+  );
+  assert.match(appSource, /aria-label=\{t\("art\.store\.officialOnlyAria"\)\}/);
+  assert.match(appSource, /<Checkbox\s+className="loom-art-official"\s+label=\{t\("art\.store\.officialShort"\)\}/);
   assert.match(styleSource, /\.framework-filter__actions \{[\s\S]*?flex-wrap: wrap;/);
   assert.match(styleSource, /\.framework-filter \{[\s\S]*?border-bottom: 1px solid var\(--n-line\);/);
   assert.match(styleSource, /\.loom-art-store-search \{[\s\S]*?width: clamp\(120px, 14vw, 190px\);/);
@@ -358,14 +350,14 @@ test("keeps framework filtering beside a modal management trigger", () => {
 });
 
 test("publishes only locally authored Arts from an accessible dialog", () => {
-  assert.match(appSource, /<Dialog\s+open\s+title="发布 Art"[\s\S]*?busy=\{busyArtId !== null\}/);
+  assert.match(appSource, /<Dialog\s+open\s+title=\{t\("art\.action\.publishArt"\)\}[\s\S]*?busy=\{busyArtId !== null\}/);
   assert.match(appSource, /tools\.filter\(isLocallyAuthoredTool\)/);
   assert.match(appSource, /await publishArt\(baseUrl, tool\.id\)/);
-  assert.match(appSource, /暂无本地创建的 Art/);
+  assert.match(appSource, /<EmptyState title=\{t\("art\.publish\.empty"\)\} \/>/);
   assert.match(appSource, /<Panel className="art-publish-dialog__row"/);
   assert.match(
     appSource,
-    /loading=\{busyArtId === tool\.id\}[\s\S]*?disabled=\{busyArtId !== null\}[\s\S]*?>\s*发布\s*<\/Button>/,
+    /loading=\{busyArtId === tool\.id\}[\s\S]*?disabled=\{busyArtId !== null\}[\s\S]*?>\s*\{t\("art\.action\.publish"\)\}\s*<\/Button>/,
   );
   assert.match(
     styleSource,
@@ -378,16 +370,14 @@ test("publishes only locally authored Arts from an accessible dialog", () => {
 });
 
 test("keeps the Art store compact and warns before installing unverified packages", () => {
-  assert.doesNotMatch(appSource, /<p className="section-kicker">art 商店<\/p>/);
-  assert.doesNotMatch(appSource, /从商店安装 art/);
-  assert.doesNotMatch(appSource, /商店地址（可留空）/);
+  assert.doesNotMatch(appSource, /<p className="section-kicker">/);
   assert.match(appSource, /filterArtStoreEntries\(/);
   assert.match(appSource, /art\.official !== true &&\s*!\(await requestAppConfirmation/);
-  assert.match(appSource, /title: "安装未认证 Art"/);
+  assert.match(appSource, /title: t\("art\.store\.unverifiedConfirm\.title"\)/);
   assert.match(appSource, /tone: "warning"/);
   assert.doesNotMatch(appSource, /window\.confirm|globalThis\.confirm/);
-  assert.match(appSource, /未经官方认证，可能包含恶意代码/);
-  assert.match(appSource, /art\.official === true \? "官方" : "未认证"/);
+  assert.match(appSource, /tf\("art\.store\.unverifiedConfirm\.message"/);
+  assert.match(appSource, /art\.official === true \? t\("art\.store\.badge\.official"\) : t\("art\.store\.badge\.unverified"\)/);
   assert.match(appSource, /<Panel className="art-market-entry"/);
   assert.match(appSource, /loading=\{installing\}/);
 });

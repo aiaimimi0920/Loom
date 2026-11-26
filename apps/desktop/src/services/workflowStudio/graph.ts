@@ -1,3 +1,4 @@
+import { uiText } from "../../i18n/index.ts";
 import {
   MAX_WORKFLOW_EDGES,
   MAX_WORKFLOW_NODES,
@@ -12,7 +13,11 @@ import {
 import type { WorkflowGraphLite, WorkflowGraphNodePatch, WorkflowStudioNode } from "./types.ts";
 import { assertWorkflowGraphLimits, assertWorkflowNodeLimits, boundedWithEntries } from "./validation.ts";
 
-const newGraph = (): WorkflowGraphLite => ({ name: "未命名工作流", description: "", nodes: [] });
+const newGraph = (): WorkflowGraphLite => ({
+  name: uiText("otter.workflowStudio.untitledWorkflow"),
+  description: "",
+  nodes: [],
+});
 
 const yamlLines = function* (yaml: string): Generator<string> {
   let start = 0;
@@ -35,7 +40,7 @@ const parseNeeds = (value: string): string[] => {
     start = index + 1;
     if (!item) continue;
     if (needs.length >= MAX_WORKFLOW_NODE_FIELDS) {
-      throw new RangeError("Workflow node has too many dependencies.");
+      throw new RangeError(uiText("otter.workflowStudio.error.tooManyDependencies"));
     }
     needs.push(item);
   }
@@ -43,7 +48,9 @@ const parseNeeds = (value: string): string[] => {
 };
 
 export function parseWorkflowYamlLite(yaml: string): WorkflowGraphLite {
-  if (yaml.length > MAX_WORKFLOW_YAML_CHARS) throw new RangeError("Workflow YAML is too large.");
+  if (yaml.length > MAX_WORKFLOW_YAML_CHARS) {
+    throw new RangeError(uiText("otter.workflowStudio.error.yamlTooLarge"));
+  }
   const graph = newGraph();
   let current: WorkflowStudioNode | null = null;
   let currentWithFields = 0;
@@ -66,7 +73,9 @@ export function parseWorkflowYamlLite(yaml: string): WorkflowGraphLite {
 
     const nodeStart = /^-\s*id:\s*(.+)$/.exec(trimmed);
     if (nodeStart) {
-      if (graph.nodes.length >= MAX_WORKFLOW_NODES) throw new RangeError("Workflow has too many nodes.");
+      if (graph.nodes.length >= MAX_WORKFLOW_NODES) {
+        throw new RangeError(uiText("otter.workflowStudio.error.tooManyNodes"));
+      }
       current = { id: stripQuotes(nodeStart[1]), uses: "", needs: [], with: {} };
       graph.nodes.push(current);
       currentWithFields = 0;
@@ -84,16 +93,22 @@ export function parseWorkflowYamlLite(yaml: string): WorkflowGraphLite {
     } else if (key === "needs") {
       const needs = parseNeeds(value);
       dependencyEdges += needs.length;
-      if (dependencyEdges > MAX_WORKFLOW_EDGES) throw new RangeError("Workflow has too many dependency edges.");
+      if (dependencyEdges > MAX_WORKFLOW_EDGES) {
+        throw new RangeError(uiText("otter.workflowStudio.error.tooManyEdges"));
+      }
       current.needs = needs;
       inWith = false;
     } else if (key === "with") {
       inWith = true;
     } else if (inWith) {
       currentWithFields += 1;
-      if (currentWithFields > MAX_WORKFLOW_NODE_FIELDS) throw new RangeError("Workflow node has too many parameters.");
+      if (currentWithFields > MAX_WORKFLOW_NODE_FIELDS) {
+        throw new RangeError(uiText("otter.workflowStudio.error.tooManyNodeParameters"));
+      }
       parameterFields += 1;
-      if (parameterFields > MAX_WORKFLOW_PARAMETERS) throw new RangeError("Workflow has too many parameters.");
+      if (parameterFields > MAX_WORKFLOW_PARAMETERS) {
+        throw new RangeError(uiText("otter.workflowStudio.error.tooManyParameters"));
+      }
       defineOwnValue(current.with, key, stripQuotes(value));
     }
   }
@@ -102,7 +117,9 @@ export function parseWorkflowYamlLite(yaml: string): WorkflowGraphLite {
 }
 
 const yamlScalar = (value: string) => {
-  if (value.length > MAX_WORKFLOW_YAML_CHARS) throw new RangeError("Workflow YAML field is too large.");
+  if (value.length > MAX_WORKFLOW_YAML_CHARS) {
+    throw new RangeError(uiText("otter.workflowStudio.error.yamlFieldTooLarge"));
+  }
   const trimmed = value.trim();
   if (!trimmed) return '""';
   if (/^[a-zA-Z0-9_./:@${}\-]+$/.test(trimmed)) return trimmed;
@@ -124,7 +141,9 @@ const serializeNeeds = (needs: string[]): string => {
   for (const neededId of needs) {
     const scalar = yamlScalar(neededId);
     length += scalar.length + (encoded.length ? 2 : 0);
-    if (length > MAX_WORKFLOW_YAML_CHARS) throw new RangeError("Workflow YAML is too large.");
+    if (length > MAX_WORKFLOW_YAML_CHARS) {
+      throw new RangeError(uiText("otter.workflowStudio.error.yamlTooLarge"));
+    }
     encoded.push(scalar);
   }
   return encoded.join(", ");
@@ -136,11 +155,13 @@ export function serializeWorkflowGraphLite(graph: WorkflowGraphLite): string {
   let outputLength = 0;
   const pushLine = (line: string) => {
     outputLength += line.length + 1;
-    if (outputLength > MAX_WORKFLOW_YAML_CHARS) throw new RangeError("Workflow YAML is too large.");
+    if (outputLength > MAX_WORKFLOW_YAML_CHARS) {
+      throw new RangeError(uiText("otter.workflowStudio.error.yamlTooLarge"));
+    }
     lines.push(line);
   };
 
-  pushLine(`name: ${yamlScalar(graph.name || "未命名工作流")}`);
+  pushLine(`name: ${yamlScalar(graph.name || uiText("otter.workflowStudio.untitledWorkflow"))}`);
   pushLine(`description: ${yamlScalar(graph.description || "")}`);
   if (!graph.nodes.length) {
     pushLine("nodes: []");
@@ -209,7 +230,9 @@ export function addWorkflowGraphNode(
   node: Partial<WorkflowStudioNode> = {},
 ): WorkflowGraphLite {
   assertWorkflowGraphLimits(graph);
-  if (graph.nodes.length >= MAX_WORKFLOW_NODES) throw new RangeError("Workflow has too many nodes.");
+  if (graph.nodes.length >= MAX_WORKFLOW_NODES) {
+    throw new RangeError(uiText("otter.workflowStudio.error.tooManyNodes"));
+  }
   const nextId = uniqueNodeId(graph.nodes, node.id || `step-${graph.nodes.length + 1}`);
   const rawNeeds = node.needs || [];
   const rawWith = node.with || {};

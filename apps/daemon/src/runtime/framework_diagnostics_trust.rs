@@ -401,21 +401,21 @@ fn trust_plugin_user(body: &str, framework_registry: &FrameworkRegistry) -> Resu
     };
     let user_id = request.user_id.trim();
     if !is_platform_publisher_id(user_id) {
-        return invalid_request("用户 ID 格式无效");
+        return invalid_request("invalid user ID format");
     }
     if custom_art_store_requested(request.store.as_deref()) {
         return structured_error(
             400,
             json!({
                 "code": "custom_art_store_not_supported",
-                "message": "Loom 不支持选择第三方 Art 商店"
+                "message": "Loom does not support third-party Art stores"
             }),
         );
     }
     let Some(store) = resolve_art_store_url() else {
         return structured_error(
             400,
-            json!({ "code": "art_store_not_configured", "message": "Loom 官方 Art 服务暂不可用" }),
+            json!({ "code": "art_store_not_configured", "message": "Official Loom Art service is temporarily unavailable" }),
         );
     };
     if let Err(error) = sync_trusted_publisher_from_store(&store, user_id, framework_registry) {

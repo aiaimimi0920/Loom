@@ -157,13 +157,13 @@ fn main() {
             );
         }
         let fallback_html = concat!(
-            "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">",
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
             "<title>Loom Web Management Console</title></head>",
             "<body style=\"font-family:system-ui,sans-serif;padding:2rem;background:#f5f7fa;color:#1f2937\">",
             "<h1>Loom Web Management Console</h1>",
-            "<p>Loom 服务端已启用 Web 管理挂载点（<code>/ui/</code>）。当前开发构建尚未打包前端静态资源；",
-            "请在 <code>apps/desktop</code> 运行 <code>npm run build:web</code> 后重新构建 <code>loom-daemon</code>。</p>",
+            "<p>Loom Server has enabled the Web management mount point (<code>/ui/</code>). Static frontend assets have not been bundled in this development build; ",
+            "run <code>npm run build:web</code> in <code>apps/desktop</code> and rebuild <code>loom-daemon</code>.</p>",
             "</body></html>"
         );
         writeln!(file, "pub const PREBUILT_BUNDLE: bool = false;").expect("write const");

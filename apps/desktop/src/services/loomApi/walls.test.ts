@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { Catalogs, setLanguage } from "../../i18n/index.ts";
+import { enDevices } from "../../locales/en/devices.ts";
+import { zhHansDevices } from "../../locales/zh-Hans/devices.ts";
 import { saveWallLayout } from "./walls.ts";
 import { parseWallLayout, parseWallState } from "./wallValidation.ts";
 import { layoutImageSources, liveWallSources, surfaceWallSources } from "./wallSources.ts";
@@ -10,6 +13,10 @@ import { WALL_PROTOCOL_VERSION, type WallLayout, type WallState } from "./wallTy
 const fixture = JSON.parse(readFileSync(new URL("../../../../../protocol/fixtures/wall-geometry.v1.json", import.meta.url), "utf8"));
 const layout: WallLayout = parseWallLayout(fixture.layout);
 
+test("devices and wall locale shards have complete English and Simplified Chinese parity", () => {
+  new Catalogs([enDevices], [zhHansDevices]).validateCompleteness();
+});
+
 test("saved wall image references remain selectable after the Art owner and local upload state disappear", () => {
   const image = { ...layout.placements[0], source: { kind: "image" as const, id: `sha256:${"a".repeat(64)}` }, interactive: false };
   const saved = { ...layout, placements: [image, image, layout.placements[0]] };
@@ -18,20 +25,24 @@ test("saved wall image references remain selectable after the Art owner and loca
   assert.deepEqual(sources[0].source, image.source);
 });
 
-test("desktop accepts the public geometry fixture and rejects overlap / invalid crop / non-finite edits", () => {
+test("desktop accepts the public geometry fixture and rejects overlap / invalid crop / non-finite edits", (context) => {
+  context.after(() => setLanguage("en"));
   assert.equal(layout.tiles.length, 2);
-  assert.throws(() => parseWallLayout({ ...layout, futureField: true }), /未知/);
-  assert.throws(() => parseWallLayout({ ...layout, bounds: { ...layout.bounds, futureField: true } }), /未知/);
-  assert.throws(() => parseWallLayout({ ...layout, tiles: [{ ...layout.tiles[0], rotation: ["deg0"] }] }), /朝向/);
+  assert.throws(() => parseWallLayout({ ...layout, futureField: true }), /unknown or missing field/);
+  assert.throws(() => parseWallLayout({ ...layout, bounds: { ...layout.bounds, futureField: true } }), /unknown or missing field/);
+  assert.throws(() => parseWallLayout({ ...layout, tiles: [{ ...layout.tiles[0], rotation: ["deg0"] }] }), /tile orientation/);
   const candidate = structuredClone(layout);
   candidate.tiles[1].rect = { ...candidate.tiles[0].rect };
-  assert.throws(() => parseWallLayout(candidate), /重叠/);
+  assert.throws(() => parseWallLayout(candidate), /overlapping tiles/);
+  setLanguage("zh-Hans");
+  assert.throws(() => parseWallLayout(candidate), /\u74f7\u7816\u91cd\u53e0/);
+  setLanguage("en");
   candidate.tiles = [];
   candidate.placements[0].sourceCrop.width = 2;
-  assert.throws(() => parseWallLayout(candidate), /裁剪/);
+  assert.throws(() => parseWallLayout(candidate), /source crop bounds/);
   candidate.placements = [];
   candidate.bounds.x = NaN;
-  assert.throws(() => parseWallLayout(candidate), /矩形/);
+  assert.throws(() => parseWallLayout(candidate), /rectangle bounds/);
 });
 
 test("adding a second tile preserves source identity and appends outside the existing footprint", () => {
@@ -70,11 +81,11 @@ test("offline output cannot acknowledge presentation and missing outputs invalid
     layouts: [layout], endpoints: fixture.endpoints.map((endpoint: unknown) => ({ endpoint, online: false, appliedRevision: null })) };
   assert.equal(parseWallState(state).layouts.length, 1);
   assert.throws(() => parseWallState({ ...state, endpoints: [{ ...state.endpoints[0],
-    endpoint: { ...state.endpoints[0].endpoint, futureCapability: true } }] }), /未知/);
+    endpoint: { ...state.endpoints[0].endpoint, futureCapability: true } }] }), /unknown or missing field/);
   state.endpoints[0].appliedRevision = layout.revision;
-  assert.throws(() => parseWallState(state), /应用确认/);
+  assert.throws(() => parseWallState(state), /applied revision acknowledgment/);
   state.endpoints = [];
-  assert.throws(() => parseWallState(state), /未知输出/);
+  assert.throws(() => parseWallState(state), /unknown output/);
 });
 
 test("source inventory excludes closed Live and preview-only images; only formal resource outputs are images", () => {

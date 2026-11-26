@@ -9,7 +9,7 @@ pub fn install_server_package(
     install_server_package_with_commit(control_plane_root, package_bytes, |_| Ok(()))
 }
 
-/// 提交失败时恢复原激活事实，保留所有不可变版本；回调不得再次进入包生命周期锁。
+/// Restores the previous active state on commit failure while retaining all immutable versions; the callback must not re-enter the package lifecycle lock.
 pub fn install_server_package_with_commit(
     control_plane_root: &Path,
     package_bytes: &[u8],

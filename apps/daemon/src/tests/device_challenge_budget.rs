@@ -1,4 +1,4 @@
-// 公开挑战的容量拒绝不得驱逐、刷新或破坏已有合法签发。
+// Public challenge capacity rejections must never evict, refresh, or corrupt existing valid sessions.
 fn request_budget_challenge(port: u16, id: &str) -> (u16, Value) {
     wall_http::public(
         port,

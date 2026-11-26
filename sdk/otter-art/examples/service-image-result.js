@@ -1,6 +1,6 @@
 // @ts-check
 /// <reference path="../native-art.d.ts" />
-// 显式单PNG服务结果经不可伪造image绘制，正式提交仍需workspace_result许可。
+// Explicit single-PNG service results draw through unforgeable ArtImage handles; formal commits still require workspace_result permission.
 NeuroSurface.define({
     mount({ root, snapshot }) {
         const asset = snapshot.state.package?.picture;
@@ -11,7 +11,7 @@ NeuroSurface.define({
         canvas.width = input.width;
         canvas.height = input.height;
         const button = document.createElement("button");
-        button.textContent = "运行";
+        button.textContent = "Run";
         root.replaceChildren(button, canvas);
         const run = async () => {
             const result = await NeuroSurface.serviceImage(

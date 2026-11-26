@@ -14,6 +14,7 @@ import {
   type OtterCanvasLayout,
   type OtterCanvasSnapshot,
 } from "../../services/otterCanvas.ts";
+import { useUiText } from "../../i18n/index.ts";
 import { OtterCanvasNode } from "./OtterCanvasNode.tsx";
 import {
   MINIMAP_HEIGHT,
@@ -60,6 +61,7 @@ export function OtterCanvasSurface({
   onKeyDown,
   onSelect,
 }: OtterCanvasSurfaceProps) {
+  const { t } = useUiText();
   return (
     <div
       ref={surfaceRef}
@@ -69,7 +71,7 @@ export function OtterCanvasSurface({
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
       role="region"
-      aria-label="Otter 工作流画布"
+      aria-label={t("otter.surface.ariaLabel")}
       aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home + -"
       tabIndex={hasNodes ? 0 : undefined}
     >

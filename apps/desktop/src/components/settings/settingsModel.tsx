@@ -1,7 +1,8 @@
 // Defines settings navigation, shortcut metadata, and shared controls.
 import desktopPackage from "../../../package.json";
-import { type KeyboardEvent, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Disclosure } from "@neuro/ui";
+import { uiText, useUiText } from "../../i18n/index.ts";
 
 export type SettingsAppId = "loom" | "hook";
 export type SettingsSectionId = "general" | "shortcuts" | "mcp" | "art-store" | "capabilities" | "network" | "cache" | "about";
@@ -52,14 +53,14 @@ export interface LoomCacheClearResult {
 export type OtterShortcutGroupIconKind = "capture" | "tools" | "sticker" | "transform";
 
 export type OtterShortcutContext = "capture-selecting" | "sticker-editing" | "unit-selected" | "canvas";
-export type OtterShortcutGestureAction = "点击" | "拖动" | "滚轮";
+export type OtterShortcutGestureAction = "click" | "drag" | "wheel";
 export type ShortcutSlot = 0 | 1 | 2;
 export type ShortcutSlots = [string, string, string];
 
 export interface OtterShortcutDisplayItem {
   id: string;
-  label: string;
-  description: string;
+  readonly label: string;
+  readonly description: string;
   keys: string[];
   sourceId?: string;
   contexts: OtterShortcutContext[];
@@ -69,7 +70,7 @@ export interface OtterShortcutDisplayItem {
 
 export interface OtterShortcutDisplayGroup {
   id: string;
-  label: string;
+  readonly label: string;
   icon: OtterShortcutGroupIconKind;
   items: OtterShortcutDisplayItem[];
 }
@@ -96,68 +97,95 @@ export const ALL_OTTER_SHORTCUT_CONTEXTS: OtterShortcutContext[] = [
   "canvas",
 ];
 
+const shortcutGroup = (
+  id: string,
+  icon: OtterShortcutGroupIconKind,
+  items: OtterShortcutDisplayItem[],
+): OtterShortcutDisplayGroup => ({
+  id,
+  get label() {
+    return uiText(`settings.shortcuts.group.${id}`);
+  },
+  icon,
+  items,
+});
+
+const shortcutItem = (
+  id: string,
+  keys: string[],
+  contexts: OtterShortcutContext[],
+  options: {
+    sourceId?: string;
+    gestureAction?: OtterShortcutGestureAction;
+    conflictFamily?: string;
+  } = {},
+): OtterShortcutDisplayItem => ({
+  id,
+  get label() {
+    return uiText(`settings.shortcuts.item.${id}.label`);
+  },
+  get description() {
+    return uiText(`settings.shortcuts.item.${id}.description`);
+  },
+  keys,
+  contexts,
+  ...options,
+});
+
 export const HOOK_SHORTCUT_GROUPS: OtterShortcutDisplayGroup[] = [
-  {
-    id: "capture-file",
-    label: "捕获与操作",
-    icon: "capture",
-    items: [
-      { id: "capture", sourceId: "capture", label: "截图", description: "截取屏幕区域", keys: ["Ctrl+1"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "live-capture", sourceId: "live_capture", label: "实时截图", description: "截取持续更新的窗口或屏幕区域", keys: ["Ctrl+2"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "long-capture", sourceId: "long_capture", label: "长截图", description: "开始或结束长截图", keys: ["Ctrl+3"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "open-image", sourceId: "open_image", label: "打开图片", description: "导入图片并创建贴图", keys: ["Ctrl+O"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "save", sourceId: "save_image", label: "保存图片", description: "保存当前贴图的正式输出", keys: ["Ctrl+S"], contexts: ["unit-selected"] },
-      { id: "toggle-clean-view", sourceId: "toggle_clean_view", label: "清爽视图", description: "显示或隐藏界面辅助控件", keys: ["Ctrl+Shift+4"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "cancel", sourceId: "cancel", label: "取消 / 退出", description: "根据当前状态取消、删除或退出", keys: ["Escape", "Delete", "Backspace"], contexts: ["capture-selecting", "sticker-editing", "unit-selected"], conflictFamily: "contextual-cancel-delete" },
-      { id: "force-close", label: "强行关闭", description: "连续按下 3 次 Esc 强行退出 Otter", keys: ["Esc × 3"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-    ],
-  },
-  {
-    id: "panels-tools",
-    label: "高级工具",
-    icon: "tools",
-    items: [
-      { id: "toggle-actions", sourceId: "toggle_actions", label: "Art 菜单", description: "显示或隐藏添加 Art 面板", keys: ["Shift+1"], contexts: ["unit-selected"] },
-      { id: "toggle-params", sourceId: "toggle_params", label: "参数面板", description: "显示或隐藏当前节点参数", keys: ["Tab"], contexts: ["unit-selected"] },
-    ],
-  },
-  {
-    id: "sticker-operation",
-    label: "贴图操作",
-    icon: "sticker",
-    items: [
-      { id: "copy", sourceId: "copy_unit", label: "复制贴图", description: "复制当前选中的完整贴图", keys: ["Ctrl+C"], contexts: ["unit-selected"] },
-      { id: "paste", sourceId: "paste_unit", label: "粘贴贴图", description: "在鼠标位置粘贴完整贴图", keys: ["Ctrl+V"], contexts: ["unit-selected", "canvas"] },
-      { id: "delete", sourceId: "delete_unit", label: "删除贴图", description: "删除当前选中的完整贴图", keys: ["Escape", "Delete", "Backspace"], contexts: ["unit-selected"], conflictFamily: "contextual-cancel-delete" },
-      { id: "sticker-resize", sourceId: "sticker_resize", label: "调整尺寸", description: "缩放当前贴图的整体尺寸", keys: ["Ctrl+滚轮"], contexts: ["unit-selected"], gestureAction: "滚轮" },
-      { id: "sticker-opacity", sourceId: "sticker_opacity", label: "调整透明度", description: "调整当前贴图的整体透明度", keys: ["Alt+滚轮"], contexts: ["unit-selected"], gestureAction: "滚轮" },
-      { id: "drag-align", sourceId: "drag_alignment", label: "吸附对齐", description: "拖动贴图时启用吸附与对齐", keys: ["Alt+拖动"], contexts: ["unit-selected"], gestureAction: "拖动" },
-      { id: "drag-out", sourceId: "drag_out", label: "拖出文件", description: "将贴图拖出为本地文件", keys: ["Shift+拖动"], contexts: ["unit-selected"], gestureAction: "拖动" },
-      { id: "drag-cascade", sourceId: "drag_cascade", label: "层叠放置", description: "拖动贴图时采用层叠放置", keys: ["Ctrl+拖动"], contexts: ["unit-selected"], gestureAction: "拖动" },
-    ],
-  },
-  {
-    id: "sticker-edit",
-    label: "贴图编辑",
-    icon: "transform",
-    items: [
-      { id: "toggle-sticker-toolbar", sourceId: "toggle_sticker_toolbar", label: "贴图工具栏", description: "显示或隐藏贴图编辑工具栏", keys: ["Ctrl+E"], contexts: ALL_OTTER_SHORTCUT_CONTEXTS },
-      { id: "control-copy", sourceId: "copy_unit", label: "复制控件", description: "复制贴图内当前选中的控件", keys: ["Ctrl+C"], contexts: ["sticker-editing"] },
-      { id: "control-paste", sourceId: "paste_unit", label: "粘贴控件", description: "粘贴已复制的贴图控件", keys: ["Ctrl+V"], contexts: ["sticker-editing"] },
-      { id: "control-delete", sourceId: "delete_unit", label: "删除控件", description: "删除贴图内当前选中的控件", keys: ["Escape", "Delete", "Backspace"], contexts: ["sticker-editing"], conflictFamily: "contextual-cancel-delete" },
-      { id: "undo-edit", sourceId: "undo_edit", label: "撤销编辑", description: "撤销上一次控件编辑", keys: ["Ctrl+Z"], contexts: ["sticker-editing"] },
-      { id: "redo-edit", sourceId: "redo_edit", label: "重做编辑", description: "恢复上一次撤销的控件编辑", keys: ["Ctrl+Y"], contexts: ["sticker-editing"] },
-      { id: "transform-select", sourceId: "transform_select", label: "选择模式", description: "切换到控件选择模式", keys: ["Q"], contexts: ["unit-selected", "sticker-editing"] },
-      { id: "transform-move", sourceId: "transform_move", label: "移动模式", description: "切换到控件移动模式", keys: ["W"], contexts: ["unit-selected", "sticker-editing"] },
-      { id: "transform-rotate", sourceId: "transform_rotate", label: "旋转模式", description: "切换到控件旋转模式", keys: ["E"], contexts: ["unit-selected", "sticker-editing"] },
-      { id: "transform-scale", sourceId: "transform_scale", label: "缩放模式", description: "切换到控件缩放模式", keys: ["R"], contexts: ["unit-selected", "sticker-editing"] },
-      { id: "control-multi-select", sourceId: "control_multi_select", label: "多选控件", description: "添加或移除当前控件选择", keys: ["Shift+点击"], contexts: ["sticker-editing"], gestureAction: "点击" },
-      { id: "control-quick-move", sourceId: "control_quick_move", label: "快速移动控件", description: "在选择模式下直接移动控件", keys: ["Alt+拖动"], contexts: ["sticker-editing"], gestureAction: "拖动" },
-      { id: "control-quick-rotate", sourceId: "control_quick_rotate", label: "快速旋转控件", description: "在选择模式下直接旋转控件", keys: ["Ctrl+拖动"], contexts: ["sticker-editing"], gestureAction: "拖动" },
-      { id: "control-scale", sourceId: "control_scale", label: "缩放选中控件", description: "以选中控件组的中心进行缩放", keys: ["Ctrl+Alt+滚轮"], contexts: ["sticker-editing"], gestureAction: "滚轮" },
-      { id: "control-scale-own-center", sourceId: "control_scale_own_center", label: "独立中心缩放", description: "分别以每个控件自身中心缩放", keys: ["Ctrl+Alt+Shift+滚轮"], contexts: ["sticker-editing"], gestureAction: "滚轮" },
-    ],
-  },
+  shortcutGroup("capture-file", "capture", [
+    shortcutItem("capture", ["Ctrl+1"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "capture" }),
+    shortcutItem("live-capture", ["Ctrl+2"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "live_capture" }),
+    shortcutItem("long-capture", ["Ctrl+3"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "long_capture" }),
+    shortcutItem("open-image", ["Ctrl+O"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "open_image" }),
+    shortcutItem("save", ["Ctrl+S"], ["unit-selected"], { sourceId: "save_image" }),
+    shortcutItem("toggle-clean-view", ["Ctrl+Shift+4"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "toggle_clean_view" }),
+    shortcutItem("cancel", ["Escape", "Delete", "Backspace"], ["capture-selecting", "sticker-editing", "unit-selected"], {
+      sourceId: "cancel",
+      conflictFamily: "contextual-cancel-delete",
+    }),
+    shortcutItem("force-close", ["Esc × 3"], ALL_OTTER_SHORTCUT_CONTEXTS),
+  ]),
+  shortcutGroup("panels-tools", "tools", [
+    shortcutItem("toggle-actions", ["Shift+1"], ["unit-selected"], { sourceId: "toggle_actions" }),
+    shortcutItem("toggle-params", ["Tab"], ["unit-selected"], { sourceId: "toggle_params" }),
+  ]),
+  shortcutGroup("sticker-operation", "sticker", [
+    shortcutItem("copy", ["Ctrl+C"], ["unit-selected"], { sourceId: "copy_unit" }),
+    shortcutItem("paste", ["Ctrl+V"], ["unit-selected", "canvas"], { sourceId: "paste_unit" }),
+    shortcutItem("delete", ["Escape", "Delete", "Backspace"], ["unit-selected"], {
+      sourceId: "delete_unit",
+      conflictFamily: "contextual-cancel-delete",
+    }),
+    shortcutItem("sticker-resize", ["Ctrl+Wheel"], ["unit-selected"], { sourceId: "sticker_resize", gestureAction: "wheel" }),
+    shortcutItem("sticker-opacity", ["Alt+Wheel"], ["unit-selected"], { sourceId: "sticker_opacity", gestureAction: "wheel" }),
+    shortcutItem("drag-align", ["Alt+Drag"], ["unit-selected"], { sourceId: "drag_alignment", gestureAction: "drag" }),
+    shortcutItem("drag-out", ["Shift+Drag"], ["unit-selected"], { sourceId: "drag_out", gestureAction: "drag" }),
+    shortcutItem("drag-cascade", ["Ctrl+Drag"], ["unit-selected"], { sourceId: "drag_cascade", gestureAction: "drag" }),
+  ]),
+  shortcutGroup("sticker-edit", "transform", [
+    shortcutItem("toggle-sticker-toolbar", ["Ctrl+E"], ALL_OTTER_SHORTCUT_CONTEXTS, { sourceId: "toggle_sticker_toolbar" }),
+    shortcutItem("control-copy", ["Ctrl+C"], ["sticker-editing"], { sourceId: "copy_unit" }),
+    shortcutItem("control-paste", ["Ctrl+V"], ["sticker-editing"], { sourceId: "paste_unit" }),
+    shortcutItem("control-delete", ["Escape", "Delete", "Backspace"], ["sticker-editing"], {
+      sourceId: "delete_unit",
+      conflictFamily: "contextual-cancel-delete",
+    }),
+    shortcutItem("undo-edit", ["Ctrl+Z"], ["sticker-editing"], { sourceId: "undo_edit" }),
+    shortcutItem("redo-edit", ["Ctrl+Y"], ["sticker-editing"], { sourceId: "redo_edit" }),
+    shortcutItem("transform-select", ["Q"], ["unit-selected", "sticker-editing"], { sourceId: "transform_select" }),
+    shortcutItem("transform-move", ["W"], ["unit-selected", "sticker-editing"], { sourceId: "transform_move" }),
+    shortcutItem("transform-rotate", ["E"], ["unit-selected", "sticker-editing"], { sourceId: "transform_rotate" }),
+    shortcutItem("transform-scale", ["R"], ["unit-selected", "sticker-editing"], { sourceId: "transform_scale" }),
+    shortcutItem("control-multi-select", ["Shift+Click"], ["sticker-editing"], { sourceId: "control_multi_select", gestureAction: "click" }),
+    shortcutItem("control-quick-move", ["Alt+Drag"], ["sticker-editing"], { sourceId: "control_quick_move", gestureAction: "drag" }),
+    shortcutItem("control-quick-rotate", ["Ctrl+Drag"], ["sticker-editing"], { sourceId: "control_quick_rotate", gestureAction: "drag" }),
+    shortcutItem("control-scale", ["Ctrl+Alt+Wheel"], ["sticker-editing"], { sourceId: "control_scale", gestureAction: "wheel" }),
+    shortcutItem("control-scale-own-center", ["Ctrl+Alt+Shift+Wheel"], ["sticker-editing"], {
+      sourceId: "control_scale_own_center",
+      gestureAction: "wheel",
+    }),
+  ]),
 ];
 
 export function OtterShortcutGroupIcon({ kind }: { kind: OtterShortcutGroupIconKind }) {
@@ -194,14 +222,39 @@ export const shortcutKeyParts = (shortcut: string) => shortcut
   .map((key) => key.trim())
   .filter(Boolean);
 
-export const shortcutKeyDisplayLabel = (key: string) => key === "Escape" ? "Esc" : key;
+const GESTURE_CANONICAL_TOKEN: Record<OtterShortcutGestureAction, string> = {
+  click: "Click",
+  drag: "Drag",
+  wheel: "Wheel",
+};
+
+export const gestureActionLabel = (action: OtterShortcutGestureAction): string =>
+  uiText(`settings.shortcuts.gesture.${action}`);
+
+export const shortcutKeyDisplayLabel = (key: string) => {
+  if (key === "Escape") return "Esc";
+  if (key === "Click" || key === "click" || key === "\u70b9\u51fb") return gestureActionLabel("click");
+  if (key === "Drag" || key === "drag" || key === "\u62d6\u52a8") return gestureActionLabel("drag");
+  if (key === "Wheel" || key === "wheel" || key === "\u6eda\u8f6e") return gestureActionLabel("wheel");
+  return key;
+};
+
+export const normalizeShortcutComparisonKey = (shortcut: string): string =>
+  shortcutKeyParts(shortcut)
+    .map((part) => {
+      if (part === "\u70b9\u51fb") return "click";
+      if (part === "\u62d6\u52a8") return "drag";
+      if (part === "\u6eda\u8f6e") return "wheel";
+      return part.toLocaleLowerCase();
+    })
+    .join("+");
 
 export const SHORTCUT_GESTURE_MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"] as const;
 export type ShortcutGestureModifier = typeof SHORTCUT_GESTURE_MODIFIERS[number];
 
-export const gestureShortcutModifiers = (shortcut: string, action: OtterShortcutGestureAction) => new Set(
+export const gestureShortcutModifiers = (shortcut: string, _action: OtterShortcutGestureAction) => new Set(
   shortcutKeyParts(shortcut).filter((part): part is ShortcutGestureModifier => (
-    part !== action && SHORTCUT_GESTURE_MODIFIERS.includes(part as ShortcutGestureModifier)
+    SHORTCUT_GESTURE_MODIFIERS.includes(part as ShortcutGestureModifier)
   )),
 );
 
@@ -215,7 +268,7 @@ export const toggleGestureShortcutModifier = (
   else selected.add(modifier);
   return [
     ...SHORTCUT_GESTURE_MODIFIERS.filter((candidate) => selected.has(candidate)),
-    action,
+    GESTURE_CANONICAL_TOKEN[action],
   ].join("+");
 };
 
@@ -235,6 +288,7 @@ export const removeShortcutSlot = (keys: ShortcutSlots, slot: ShortcutSlot): Sho
 };
 
 export function ShortcutKeySequence({ shortcuts }: { shortcuts: string[] }) {
+  const { t } = useUiText();
   return (
     <span className="otter-shortcut-key-sequences">
       {shortcuts.map((shortcut, shortcutIndex) => (
@@ -245,7 +299,7 @@ export function ShortcutKeySequence({ shortcuts }: { shortcuts: string[] }) {
               <kbd>{shortcutKeyDisplayLabel(key)}</kbd>
             </span>
           ))}
-          {shortcutIndex < shortcuts.length - 1 ? <span className="otter-shortcut-key-or">或</span> : null}
+          {shortcutIndex < shortcuts.length - 1 ? <span className="otter-shortcut-key-or">{t("settings.shortcuts.or")}</span> : null}
         </span>
       ))}
     </span>

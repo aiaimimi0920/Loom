@@ -1,5 +1,6 @@
 // Presentational settings sections and cache conversion helpers.
 import { Button, Input, Select, Switch } from "@neuro/ui";
+import { DISPLAY_LANGUAGES, displayLanguageName, parsePersistedDisplayLanguage, useUiText } from "../../i18n/index.ts";
 import {
   DEFAULT_LOOM_SETTINGS,
   OtterCacheSettings,
@@ -31,50 +32,52 @@ export function GeneralSettingsPanel({
   value: GeneralSettingsValue;
   onChange: (patch: Partial<GeneralSettingsValue>) => void;
 }) {
+  const { t, tf } = useUiText();
   const applicationName = appName === "loom" ? "Loom" : "Otter";
   return (
-    <section className="settings-general-panel" aria-label={`${applicationName} 常规设置`}>
+    <section className="settings-general-panel" aria-label={tf("settings.general.panelAria", { appName: applicationName })}>
       <header className="settings-general-panel__header">
         <SettingsSectionIcon kind="general" />
-        <strong>应用设置</strong>
+        <strong>{t("settings.general.header")}</strong>
       </header>
       {appName === "loom" && <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>语言</strong>
-          <span>界面显示语言</span>
+          <strong>{t("settings.general.languageTitle")}</strong>
+          <span>{t("settings.general.languageDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label={`${applicationName} 语言`}
-          value={value.language}
-          onChange={(event) => onChange({ language: event.target.value })}
+          aria-label={tf("settings.general.languageAria", { appName: applicationName })}
+          value={parsePersistedDisplayLanguage(value.language)}
+          onChange={(event) => onChange({ language: parsePersistedDisplayLanguage(event.target.value) })}
         >
-          <option value="zh-Hans">简体中文</option>
-          <option value="en">English</option>
+          {DISPLAY_LANGUAGES.map((lang) => (
+            <option key={lang} value={lang}>{displayLanguageName(lang)}</option>
+          ))}
         </Select>
       </div>}
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>主题</strong>
-          <span>界面明暗模式</span>
+          <strong>{t("settings.general.themeTitle")}</strong>
+          <span>{t("settings.general.themeDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label={`${applicationName} 主题`}
+          aria-label={tf("settings.general.themeAria", { appName: applicationName })}
           value={value.theme}
           onChange={(event) => onChange({ theme: event.target.value })}
         >
-          <option value="system">跟随系统</option>
-          <option value="dark">深色</option>
-          <option value="light">浅色</option>
+          <option value="system">{t("settings.general.themeSystem")}</option>
+          <option value="dark">{t("settings.general.themeDark")}</option>
+          <option value="light">{t("settings.general.themeLight")}</option>
         </Select>
       </div>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>关闭到系统托盘</strong>
-          <span>关闭窗口后继续在后台运行</span>
+          <strong>{t("settings.general.closeToTrayTitle")}</strong>
+          <span>{t("settings.general.closeToTrayDescription")}</span>
         </div>
-        <Switch className="settings-general-toggle" aria-label={`${applicationName} 关闭到系统托盘`}
+        <Switch className="settings-general-toggle" aria-label={tf("settings.general.closeToTrayAria", { appName: applicationName })}
           checked={value.closeToTray} onChange={(event) => onChange({ closeToTray: event.target.checked })} />
       </div>
     </section>
@@ -88,36 +91,39 @@ export function McpSettingsPanel({
   value: LoomMcpSettings;
   onChange: (patch: Partial<LoomMcpSettings>) => void;
 }) {
+  const { t, tf } = useUiText();
   return (
-    <section className="settings-mcp-panel" aria-label="MCP 设置">
+    <section className="settings-mcp-panel" aria-label={t("settings.mcp.panelAria")}>
       <header className="settings-mcp-panel__header">
         <SettingsSectionIcon kind="mcp" />
-        <strong>运行限制</strong>
+        <strong>{t("settings.mcp.header")}</strong>
       </header>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>请求超时</strong>
-          <span>单次 MCP 初始化、工具列表或调用的最长等待时间</span>
+          <strong>{t("settings.mcp.timeoutTitle")}</strong>
+          <span>{t("settings.mcp.timeoutDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label="MCP 请求超时"
+          aria-label={t("settings.mcp.timeoutAria")}
           value={value.request_timeout_seconds}
           onChange={(event) => onChange({ request_timeout_seconds: Number(event.target.value) })}
         >
           {[15, 30, 60, 120, 300].map((seconds) => (
-            <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} 秒` : `${seconds / 60} 分钟`}</option>
+            <option key={seconds} value={seconds}>
+              {seconds < 60 ? tf("settings.mcp.timeoutSeconds", { seconds }) : tf("settings.mcp.timeoutMinutes", { minutes: seconds / 60 })}
+            </option>
           ))}
         </Select>
       </div>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>子进程内存上限</strong>
-          <span>限制每个由 Loom 启动的 MCP 服务进程</span>
+          <strong>{t("settings.mcp.memoryLimitTitle")}</strong>
+          <span>{t("settings.mcp.memoryLimitDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label="MCP 子进程内存上限"
+          aria-label={t("settings.mcp.memoryLimitAria")}
           value={value.memory_limit_bytes}
           onChange={(event) => onChange({ memory_limit_bytes: Number(event.target.value) })}
         >
@@ -146,43 +152,44 @@ export function ArtStoreSettingsPanel({
   onChange: (patch: Partial<LoomArtStoreSettings>) => void;
   onTrustPolicyChange: (policy: LoomPluginTrustPolicy) => void;
 }) {
+  const { t } = useUiText();
   return (
-    <section className="settings-art-store-panel" aria-label="Art 设置">
+    <section className="settings-art-store-panel" aria-label={t("settings.artStore.panelAria")}>
       <header className="settings-art-store-panel__header">
         <SettingsSectionIcon kind="art-store" />
-        <strong>更新与安装</strong>
+        <strong>{t("settings.artStore.header")}</strong>
       </header>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>自动更新</strong>
-          <span>启动 Art 页面时更新已启用自动更新的 Art</span>
+          <strong>{t("settings.artStore.autoUpdateTitle")}</strong>
+          <span>{t("settings.artStore.autoUpdateDescription")}</span>
         </div>
-        <Switch className="settings-general-toggle" aria-label="Art 自动更新" checked={value.auto_update}
+        <Switch className="settings-general-toggle" aria-label={t("settings.artStore.autoUpdateAria")} checked={value.auto_update}
           onChange={(event) => onChange({ auto_update: event.target.checked })} />
       </div>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>默认只显示官方</strong>
-          <span>进入商店时优先隐藏未经官方认证的 Art</span>
+          <strong>{t("settings.artStore.officialOnlyTitle")}</strong>
+          <span>{t("settings.artStore.officialOnlyDescription")}</span>
         </div>
-        <Switch className="settings-general-toggle" aria-label="Art 默认只显示官方" checked={value.official_only}
+        <Switch className="settings-general-toggle" aria-label={t("settings.artStore.officialOnlyAria")} checked={value.official_only}
           onChange={(event) => onChange({ official_only: event.target.checked })} />
       </div>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>安装策略</strong>
-          <span>决定 Loom 可以安装何种签名状态的 Art</span>
+          <strong>{t("settings.artStore.trustPolicyTitle")}</strong>
+          <span>{t("settings.artStore.trustPolicyDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label="Art 安装策略"
+          aria-label={t("settings.artStore.trustPolicyAria")}
           value={trustPolicy}
           disabled={trustPolicyBusy}
           onChange={(event) => onTrustPolicyChange(event.target.value as LoomPluginTrustPolicy)}
         >
-          <option value="require_trusted">仅可信发布者</option>
-          <option value="require_signed">需要有效签名</option>
-          <option value="allow_unsigned">允许未签名</option>
+          <option value="require_trusted">{t("settings.artStore.trustRequireTrusted")}</option>
+          <option value="require_signed">{t("settings.artStore.trustRequireSigned")}</option>
+          <option value="allow_unsigned">{t("settings.artStore.trustAllowUnsigned")}</option>
         </Select>
       </div>
     </section>
@@ -198,37 +205,38 @@ export function NetworkSettingsPanel({
   value: LoomProxySettings;
   onChange: (patch: Partial<LoomProxySettings>) => void;
 }) {
+  const { t, tf } = useUiText();
   return (
-    <section className="settings-network-panel" aria-label={`${appName} 网络设置`}>
+    <section className="settings-network-panel" aria-label={tf("settings.network.panelAria", { appName })}>
       <header className="settings-network-panel__header">
         <SettingsSectionIcon kind="network" />
-        <strong>代理设置</strong>
+        <strong>{t("settings.network.header")}</strong>
       </header>
       <div className="settings-network-row">
         <div className="settings-network-row__label">
-          <strong>代理模式</strong>
-          <span>选择网络请求使用的代理方式</span>
+          <strong>{t("settings.network.proxyModeTitle")}</strong>
+          <span>{t("settings.network.proxyModeDescription")}</span>
         </div>
         <Select
           className="settings-network-row__control"
-          aria-label={`${appName} 代理模式`}
+          aria-label={tf("settings.network.proxyModeAria", { appName })}
           value={value.mode}
           onChange={(event) => onChange({ mode: event.target.value as LoomProxySettings["mode"] })}
         >
-          <option value="system">跟随系统</option>
-          <option value="custom">自定义</option>
-          <option value="disabled">不使用代理</option>
+          <option value="system">{t("settings.network.proxySystem")}</option>
+          <option value="custom">{t("settings.network.proxyCustom")}</option>
+          <option value="disabled">{t("settings.network.proxyDisabled")}</option>
         </Select>
       </div>
       {value.mode === "custom" ? (
         <div className="settings-network-row">
           <div className="settings-network-row__label">
-            <strong>代理地址</strong>
-            <span>填写 host:port，例如 127.0.0.1:7890</span>
+            <strong>{t("settings.network.proxyAddressTitle")}</strong>
+            <span>{t("settings.network.proxyAddressDescription")}</span>
           </div>
           <div className="settings-network-address">
             <Select
-              aria-label={`${appName} 代理协议`}
+              aria-label={tf("settings.network.proxyProtocolAria", { appName })}
               value={value.protocol}
               onChange={(event) => onChange({ protocol: event.target.value as LoomProxySettings["protocol"] })}
             >
@@ -237,7 +245,7 @@ export function NetworkSettingsPanel({
               <option value="socks5">socks5://</option>
             </Select>
             <Input
-              aria-label={`${appName} 代理地址`}
+              aria-label={tf("settings.network.proxyAddressAria", { appName })}
               value={value.address}
               placeholder="127.0.0.1:7890"
               spellCheck={false}
@@ -298,34 +306,35 @@ export function LoomCacheSettingsPanel({
   onSettingsChange: (patch: Partial<LoomCacheSettings>) => void;
   onClear: (kind: "artRuntime" | "frameworkTemporary") => void;
 }) {
-  const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
+  const { t, tf } = useUiText();
+  const retentionLabel = (days: number) => days === 0 ? t("settings.cache.retentionUnlimited") : tf("settings.cache.retentionDays", { days });
   return (
     <div className="otter-cache-settings loom-cache-settings" aria-busy={loading || Boolean(busyKind)}>
       <section className="otter-cache-group" aria-labelledby="loom-cache-policy-title">
         <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7" /><path d="M12 9v4l2.5 1.5M9 3h6M12 3v3" /></svg>
-          <strong id="loom-cache-policy-title">缓存规则</strong>
+          <strong id="loom-cache-policy-title">{t("settings.cache.policyHeader")}</strong>
         </header>
         <div className="otter-cache-row">
-          <span><strong>Art 运行缓存上限</strong><small>限制已安装 Art 在运行时生成的可重建缓存</small></span>
-          <Select className="otter-cache-row__control" aria-label="Art 运行缓存上限" value={settings.art_cache_max_bytes} onChange={(event) => onSettingsChange({ art_cache_max_bytes: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.artMaxBytesTitle")}</strong><small>{t("settings.cache.artMaxBytesDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.artMaxBytesTitle")} value={settings.art_cache_max_bytes} onChange={(event) => onSettingsChange({ art_cache_max_bytes: Number(event.target.value) })}>
             {[
               { value: 256 * 1024 * 1024, label: "256 MB" },
               { value: 1024 * 1024 * 1024, label: "1 GB" },
               { value: 4 * 1024 * 1024 * 1024, label: "4 GB" },
-              { value: 0, label: "无限制" },
+              { value: 0, label: t("settings.cache.unlimited") },
             ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </Select>
         </div>
         <div className="otter-cache-row">
-          <span><strong>Art 运行缓存自动清理周期</strong><small>按最后修改时间移除可重新生成的缓存文件</small></span>
-          <Select className="otter-cache-row__control" aria-label="Art 运行缓存自动清理周期" value={settings.art_cache_retention_days} onChange={(event) => onSettingsChange({ art_cache_retention_days: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.artRetentionTitle")}</strong><small>{t("settings.cache.artRetentionDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.artRetentionTitle")} value={settings.art_cache_retention_days} onChange={(event) => onSettingsChange({ art_cache_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </Select>
         </div>
         <div className="otter-cache-row">
-          <span><strong>框架临时文件自动清理周期</strong><small>清理已经结束的框架执行残留，不影响已安装框架</small></span>
-          <Select className="otter-cache-row__control" aria-label="框架临时文件自动清理周期" value={settings.framework_temp_retention_days} onChange={(event) => onSettingsChange({ framework_temp_retention_days: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.frameworkTempRetentionTitle")}</strong><small>{t("settings.cache.frameworkTempRetentionDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.frameworkTempRetentionTitle")} value={settings.framework_temp_retention_days} onChange={(event) => onSettingsChange({ framework_temp_retention_days: Number(event.target.value) })}>
             {[1, 3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </Select>
         </div>
@@ -334,17 +343,17 @@ export function LoomCacheSettingsPanel({
       <section className="otter-cache-group" aria-labelledby="loom-cache-clean-title">
         <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 18 8-8 4 4-8 8H4v-4ZM13.5 8.5l2-2 2 2-2 2M15.5 6.5l2-2 2 2-2 2" /></svg>
-          <strong id="loom-cache-clean-title">手动清理</strong>
+          <strong id="loom-cache-clean-title">{t("settings.cache.manualCleanHeader")}</strong>
         </header>
         <div className="otter-cache-row otter-cache-row--action" title={snapshot?.artRuntime.path}>
-          <span><strong>Art 运行缓存</strong><small>{snapshot ? `${snapshot.artRuntime.fileCount} 个文件` : "正在统计缓存"}</small></span>
-          <b>{snapshot ? formatCacheBytes(snapshot.artRuntime.bytes) : "统计中..."}</b>
-          <Button compact loading={busyKind === "artRuntime"} disabled={Boolean(busyKind)} onClick={() => onClear("artRuntime")}>清空</Button>
+          <span><strong>{t("settings.cache.artRuntimeLabel")}</strong><small>{snapshot ? tf("settings.cache.fileCount", { count: snapshot.artRuntime.fileCount }) : t("settings.cache.countingDetails")}</small></span>
+          <b>{snapshot ? formatCacheBytes(snapshot.artRuntime.bytes) : t("settings.cache.countingShort")}</b>
+          <Button compact loading={busyKind === "artRuntime"} disabled={Boolean(busyKind)} onClick={() => onClear("artRuntime")}>{t("settings.cache.clearAction")}</Button>
         </div>
         <div className="otter-cache-row otter-cache-row--action" title={snapshot?.frameworkTemporary.path}>
-          <span><strong>框架临时文件</strong><small>{snapshot ? `${snapshot.frameworkTemporary.fileCount} 个文件` : "正在统计缓存"}</small></span>
-          <b>{snapshot ? formatCacheBytes(snapshot.frameworkTemporary.bytes) : "统计中..."}</b>
-          <Button compact loading={busyKind === "frameworkTemporary"} disabled={Boolean(busyKind)} onClick={() => onClear("frameworkTemporary")}>清空</Button>
+          <span><strong>{t("settings.cache.frameworkTempLabel")}</strong><small>{snapshot ? tf("settings.cache.fileCount", { count: snapshot.frameworkTemporary.fileCount }) : t("settings.cache.countingDetails")}</small></span>
+          <b>{snapshot ? formatCacheBytes(snapshot.frameworkTemporary.bytes) : t("settings.cache.countingShort")}</b>
+          <Button compact loading={busyKind === "frameworkTemporary"} disabled={Boolean(busyKind)} onClick={() => onClear("frameworkTemporary")}>{t("settings.cache.clearAction")}</Button>
         </div>
       </section>
     </div>
@@ -394,40 +403,41 @@ export function OtterCacheSettingsPanel({
   onSettingsChange: (patch: Partial<OtterCacheSettings>) => void;
   onClear: (kind: "recycleBin" | "temporary" | "referenceLibrary") => void;
 }) {
-  const retentionLabel = (days: number) => days === 0 ? "无限" : `${days} 天`;
+  const { t, tf } = useUiText();
+  const retentionLabel = (days: number) => days === 0 ? t("settings.cache.retentionUnlimited") : tf("settings.cache.retentionDays", { days });
   return (
     <div className="otter-cache-settings" aria-busy={loading || Boolean(busyKind)}>
       <section className="otter-cache-group" aria-labelledby="otter-cache-policy-title">
         <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7" /><path d="M12 9v4l2.5 1.5M9 3h6M12 3v3" /></svg>
-          <strong id="otter-cache-policy-title">缓存规则</strong>
+          <strong id="otter-cache-policy-title">{t("settings.cache.policyHeader")}</strong>
         </header>
         <div className="otter-cache-row">
-          <span><strong>回收站上限</strong><small>超过上限时优先移除最早删除的贴图</small></span>
-          <Select className="otter-cache-row__control" aria-label="回收站上限" value={settings.recycle_bin_max_entries} onChange={(event) => onSettingsChange({ recycle_bin_max_entries: Number(event.target.value) })}>
-            {[15, 50, 0].map((value) => <option key={value} value={value}>{value === 0 ? "无限" : `${value} 项`}</option>)}
+          <span><strong>{t("settings.cache.recycleBinMaxTitle")}</strong><small>{t("settings.cache.recycleBinMaxDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.recycleBinMaxTitle")} value={settings.recycle_bin_max_entries} onChange={(event) => onSettingsChange({ recycle_bin_max_entries: Number(event.target.value) })}>
+            {[15, 50, 0].map((value) => <option key={value} value={value}>{value === 0 ? t("settings.cache.retentionUnlimited") : tf("settings.cache.entryCount", { count: value })}</option>)}
           </Select>
         </div>
         <div className="otter-cache-row">
-          <span><strong>回收站自动清理周期</strong><small>按删除时间清理过期贴图</small></span>
-          <Select className="otter-cache-row__control" aria-label="回收站自动清理周期" value={settings.recycle_bin_retention_days} onChange={(event) => onSettingsChange({ recycle_bin_retention_days: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.recycleBinRetentionTitle")}</strong><small>{t("settings.cache.recycleBinRetentionDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.recycleBinRetentionTitle")} value={settings.recycle_bin_retention_days} onChange={(event) => onSettingsChange({ recycle_bin_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </Select>
         </div>
         <div className="otter-cache-row">
-          <span><strong>临时缓存上限</strong><small>用于截图、拖放和图像处理中转文件</small></span>
-          <Select className="otter-cache-row__control" aria-label="临时缓存上限" value={settings.temp_cache_max_bytes} onChange={(event) => onSettingsChange({ temp_cache_max_bytes: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.tempMaxTitle")}</strong><small>{t("settings.cache.tempMaxDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.tempMaxTitle")} value={settings.temp_cache_max_bytes} onChange={(event) => onSettingsChange({ temp_cache_max_bytes: Number(event.target.value) })}>
             {[
               { value: 128 * 1024 * 1024, label: "128 MB" },
               { value: 256 * 1024 * 1024, label: "256 MB" },
               { value: 1024 * 1024 * 1024, label: "1 GB" },
-              { value: 0, label: "无限制" },
+              { value: 0, label: t("settings.cache.unlimited") },
             ].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </Select>
         </div>
         <div className="otter-cache-row">
-          <span><strong>临时缓存自动清理周期</strong><small>移除超过保留时间的临时文件</small></span>
-          <Select className="otter-cache-row__control" aria-label="临时缓存自动清理周期" value={settings.temp_cache_retention_days} onChange={(event) => onSettingsChange({ temp_cache_retention_days: Number(event.target.value) })}>
+          <span><strong>{t("settings.cache.tempRetentionTitle")}</strong><small>{t("settings.cache.tempRetentionDescription")}</small></span>
+          <Select className="otter-cache-row__control" aria-label={t("settings.cache.tempRetentionTitle")} value={settings.temp_cache_retention_days} onChange={(event) => onSettingsChange({ temp_cache_retention_days: Number(event.target.value) })}>
             {[3, 7, 30, 0].map((value) => <option key={value} value={value}>{retentionLabel(value)}</option>)}
           </Select>
         </div>
@@ -436,22 +446,22 @@ export function OtterCacheSettingsPanel({
       <section className="otter-cache-group" aria-labelledby="otter-cache-clean-title">
         <header className="otter-cache-group__header">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 18 8-8 4 4-8 8H4v-4ZM13.5 8.5l2-2 2 2-2 2M15.5 6.5l2-2 2 2-2 2" /></svg>
-          <strong id="otter-cache-clean-title">手动清理</strong>
+          <strong id="otter-cache-clean-title">{t("settings.cache.manualCleanHeader")}</strong>
         </header>
         <div className="otter-cache-row otter-cache-row--action">
-          <span><strong>清空回收站</strong><small>永久移除回收站中的贴图记录</small></span>
-          <b>{snapshot ? `${snapshot.recycleBinEntries} 项` : "统计中..."}</b>
-          <Button compact loading={busyKind === "recycleBin"} disabled={Boolean(busyKind)} onClick={() => onClear("recycleBin")}>清空</Button>
+          <span><strong>{t("settings.cache.clearRecycleBinTitle")}</strong><small>{t("settings.cache.clearRecycleBinDescription")}</small></span>
+          <b>{snapshot ? tf("settings.cache.entryCount", { count: snapshot.recycleBinEntries }) : t("settings.cache.countingShort")}</b>
+          <Button compact loading={busyKind === "recycleBin"} disabled={Boolean(busyKind)} onClick={() => onClear("recycleBin")}>{t("settings.cache.clearAction")}</Button>
         </div>
         <div className="otter-cache-row otter-cache-row--action" title={snapshot?.temporary.path}>
-          <span><strong>清空临时缓存</strong><small>{snapshot ? `${snapshot.temporary.fileCount} 个文件` : "正在统计缓存"}</small></span>
-          <b>{snapshot ? formatCacheBytes(snapshot.temporary.bytes) : "统计中..."}</b>
-          <Button compact loading={busyKind === "temporary"} disabled={Boolean(busyKind)} onClick={() => onClear("temporary")}>清空</Button>
+          <span><strong>{t("settings.cache.clearTempTitle")}</strong><small>{snapshot ? tf("settings.cache.fileCount", { count: snapshot.temporary.fileCount }) : t("settings.cache.countingDetails")}</small></span>
+          <b>{snapshot ? formatCacheBytes(snapshot.temporary.bytes) : t("settings.cache.countingShort")}</b>
+          <Button compact loading={busyKind === "temporary"} disabled={Boolean(busyKind)} onClick={() => onClear("temporary")}>{t("settings.cache.clearAction")}</Button>
         </div>
         <div className="otter-cache-row otter-cache-row--action">
-          <span><strong>清空参考图</strong><small>移除参考列表，不删除桌面上的贴图</small></span>
-          <b>{snapshot ? `${snapshot.referenceEntries} 项` : "统计中..."}</b>
-          <Button compact loading={busyKind === "referenceLibrary"} disabled={Boolean(busyKind)} onClick={() => onClear("referenceLibrary")}>清空</Button>
+          <span><strong>{t("settings.cache.clearReferenceTitle")}</strong><small>{t("settings.cache.clearReferenceDescription")}</small></span>
+          <b>{snapshot ? tf("settings.cache.entryCount", { count: snapshot.referenceEntries }) : t("settings.cache.countingShort")}</b>
+          <Button compact loading={busyKind === "referenceLibrary"} disabled={Boolean(busyKind)} onClick={() => onClear("referenceLibrary")}>{t("settings.cache.clearAction")}</Button>
         </div>
       </section>
     </div>

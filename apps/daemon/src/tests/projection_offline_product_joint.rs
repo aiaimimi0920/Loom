@@ -55,7 +55,7 @@ fn audit_raster(
     let blue_columns = if stage == 1 { 12 } else { 16 };
     for (x, _, pixel) in image.enumerate_pixels() {
         if stage == 3 {
-            // 原恢复Editor将32列按10倍双线性采样，物化flip后以此为当前源，而非旧retained。
+            // The restored Editor samples 32 columns with 10x bilinear upscaling; after materializing flip, that output becomes the active source rather than the prior retained buffer.
             let edge = [
                 [242, 0, 13, 255],
                 [217, 0, 38, 255],

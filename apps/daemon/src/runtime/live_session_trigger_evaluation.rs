@@ -1,4 +1,4 @@
-// Surface 与本地 Art 共用唯一条件状态转移；目标只决定交付方式，不重新解释观察证据。
+// Surface and local Art share a single condition state machine; the target governs only delivery, never reinterpreting observed evidence.
 fn evaluate_live_trigger_state(
     condition: &LiveTriggerCondition,
     state: &mut LiveTriggerConditionState,

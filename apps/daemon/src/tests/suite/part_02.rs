@@ -144,7 +144,7 @@ fn publisher_identity_replacement_always_leaves_a_readable_file() {
                 // this test exists to catch. A read failure is different: Windows can refuse to
                 // open the destination for the instant a replacement holds it, and that refusal
                 // says nothing about the file's contents, so it is not counted as a violation.
-                Err(error) if error.starts_with("用户签名身份无效") => {
+                Err(error) if error.starts_with("invalid publisher signing identity") => {
                     return Err(format!("a partial identity was observed: {error}"))
                 }
                 Err(_) => {}

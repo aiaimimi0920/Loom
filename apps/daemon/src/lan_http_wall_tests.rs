@@ -1,4 +1,4 @@
-//! 独立原始 HTTP 请求 oracle，不用路由实现生成允许列表。
+//! Independent raw HTTP request oracle; does not derive the allowlist from the route implementation.
 use super::*;
 const DEVICE: &str = "Authorization: Device fixture\r\nX-Loom-Device-Nonce: wall-unique\r\n";
 fn parse(method: &str, path: &str, headers: &str) -> Result<Request> {

@@ -1,4 +1,4 @@
-//! 原 runtime 保留 schema/敏感 gesture 门；这里只转交 JSON 结果，不执行工作区 effects。
+//! The underlying runtime enforces schema and sensitive-gesture gates; this layer forwards only JSON results without applying workspace effects.
 use super::*;
 use loom_capability_runtime::{CapabilityHostError, CapabilityInvocation};
 use loom_protocol::{local_art::service::Status, CapabilityRuntimeStatus};
@@ -25,7 +25,7 @@ pub(super) fn run(
                 if let Some(gate) = &task.gate {
                     gate.wait(task)?;
                 }
-                // 暂存也属于原监督期限；租约在runtime完全排空后析构，不挂在终态任务表中。
+                // Staging also counts against the supervisor deadline; leases drop once the runtime drains rather than lingering in the terminal task table.
                 let prepared = if images.is_empty() {
                     None
                 } else {

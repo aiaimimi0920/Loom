@@ -16,8 +16,9 @@ test("connection and projection controls use the standard package without parall
   for (const text of [lan, connection, peers, settings, groups, rules, checklist]) {
     assert.match(text, /from "@neuro\/ui"/);
     assert.doesNotMatch(text, /<(?:button|input|select|textarea|details)\b|studio-input|ghost-button|signal-button/);
+    assert.doesNotMatch(text, /[\u4e00-\u9fff]/);
   }
-  assert.doesNotMatch(management, /DeviceImageTransferPanel|发送图片/);
+  assert.doesNotMatch(management, /DeviceImageTransferPanel|\u53d1\u9001\u56fe\u7247|[\u4e00-\u9fff]/);
 });
 
 test("connection code keeps its DOM and reserved slot without participating in validation while disabled", () => {
@@ -29,7 +30,7 @@ test("connection code keeps its DOM and reserved slot without participating in v
     /\[hidden\][\s\S]*?display: block !important;\s+visibility: hidden/,
   );
   assert.match(connection, /!passwordEnabled \? \{ password: "" \} : password \? \{ password \} : \{\}/);
-  assert.match(connection, /setPassword\(""\);\s+setNotice\("已保存"\)/);
+  assert.match(connection, /setPassword\(""\);\s+setNotice\(t\("devices\.otterConnection\.savedNotice"\)\)/);
   assert.match(
     source("OtterConnectionSettings.css"),
     /\.otter-connection-settings \.otter-connection-secret-slot > \[hidden\]/,
@@ -37,7 +38,7 @@ test("connection code keeps its DOM and reserved slot without participating in v
 });
 
 test("long approval labels use a select while short receive policies use a uniquely named radio group", () => {
-  assert.match(connection, /<Field label="审批">\s*<Select/);
+  assert.match(connection, /<Field label=\{t\("devices\.otterConnection\.approvalLabel"\)\}>\s*<Select/);
   for (const value of ["manual", "lan", "authenticated"]) assert.ok(connection.includes(`value="${value}"`));
   assert.doesNotMatch(connection, /value="password"/);
   assert.match(rules, /useId\(\)/);
@@ -64,10 +65,10 @@ test("device choices retain exact identity, order and absent candidates during l
 
 test("projection settings preserve validation, CAS failure drafts and explicit refresh confirmation", () => {
   assert.match(settings, /view\.settings\.groups\.some\(\(group\) => !!projectionGroupNameError\(group\.name\)\)/);
-  assert.match(settings, /await requestAppConfirmation\(\{\s*title: "刷新投射规则"/);
+  assert.match(settings, /await requestAppConfirmation\(\{\s*title: t\("devices\.projectionSettings\.confirmRefresh\.title"\)/);
   assert.match(settings, /saveProjectionSettings\(baseUrl, view\.settings\)/);
   assert.match(settings, /groups: rule\.whitelist\.groups\.filter/);
-  assert.match(settings, /操作未获确认，草稿保留/);
+  assert.match(settings, /tf\("devices\.projectionSettings\.error\.unconfirmedDraftKept"/);
   assert.match(groups, /new TextEncoder|projectionGroupNameError\(group\.name\)/);
   assert.match(groups, /key=\{group\.groupId\}/);
   assert.match(peers, /message: trustWarning/);
@@ -76,17 +77,17 @@ test("projection settings preserve validation, CAS failure drafts and explicit r
 });
 
 test("loading labels remain fixed and application-owned requests retain cancellation and polling cleanup", () => {
-  assert.match(lan, /loading=\{busy\}>\s*应用/);
-  assert.match(connection, /loading=\{busy\}>\s*保存/);
+  assert.match(lan, /loading=\{busy\}>\s*\{t\("devices\.common\.apply"\)\}/);
+  assert.match(connection, /loading=\{busy\}>\s*\{t\("devices\.common\.save"\)\}/);
   assert.match(settings, /loading=\{operation === "save"\}/);
   assert.match(connection, /clearInterval\(timer\)/);
 });
 
 test("long identities remain contextual accessible names rather than expanding action labels", () => {
-  assert.match(peers, /aria-label=\{`编辑 \$\{peer\.name\}`\}/);
-  assert.match(peers, /aria-label=\{`验证 \$\{peer\.name\}`\}/);
-  assert.match(groups, /aria-label=\{`移除设备组 \$\{group\.name\}`\}/);
-  assert.doesNotMatch(peers, />\s*(?:编辑|验证) \{peer\.name\}/);
-  assert.doesNotMatch(groups, />\s*移除设备组 \{group\.name\}/);
+  assert.match(peers, /aria-label=\{tf\("devices\.projectionPeers\.editPeerAriaLabel", \{ name: peer\.name \}\)\}/);
+  assert.match(peers, /aria-label=\{tf\("devices\.projectionPeers\.verifyPeerAriaLabel", \{ name: peer\.name \}\)\}/);
+  assert.match(groups, /aria-label=\{tf\("devices\.projectionGroups\.removeAriaLabel", \{ name: group\.name \}\)\}/);
+  assert.doesNotMatch(peers, /\{peer\.name\}\s*<\/Button>/);
+  assert.doesNotMatch(groups, /\{group\.name\}\s*<\/Button>/);
   assert.match(source("ProjectionSettingsPanel.css"), /\.projection-group,[\s\S]*?min-width: 0/);
 });

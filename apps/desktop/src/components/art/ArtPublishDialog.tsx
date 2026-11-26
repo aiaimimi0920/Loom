@@ -1,6 +1,7 @@
 // Publishing policy stays in Loom; the standard dialog owns all modal behavior.
 import { Badge, Button, Dialog, EmptyState, Notice, Panel } from "@neuro/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { isLocallyAuthoredTool } from "../../services/artHubUi";
 import { publishArt, type LoomToolDefinition } from "../../services/loomApi";
 
@@ -33,6 +34,7 @@ export function ArtPublishDialog({
   onClose: () => void;
   onPublished: () => Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   const [busyArtId, setBusyArtId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const authoredTools = useMemo(() => tools.filter(isLocallyAuthoredTool), [tools]);
@@ -45,10 +47,13 @@ export function ArtPublishDialog({
       const result = await publishArt(baseUrl, tool.id);
       await onPublished();
       if (version === messageVersion.current)
-        setMessage({ ok: true, text: `已发布 ${tool.name || tool.id} · ${result.globalId}` });
+        setMessage({
+          ok: true,
+          text: tf("art.publish.publishedMessage", { name: tool.name || tool.id, globalId: result.globalId }),
+        });
     } catch (error) {
       if (version === messageVersion.current)
-        setMessage({ ok: false, text: error instanceof Error ? error.message : "发布失败。" });
+        setMessage({ ok: false, text: error instanceof Error ? error.message : t("art.publish.failed") });
     } finally {
       setBusyArtId(null);
     }
@@ -64,8 +69,8 @@ export function ArtPublishDialog({
   return (
     <Dialog
       open
-      title="发布 Art"
-      closeLabel="关闭发布 Art"
+      title={t("art.action.publishArt")}
+      closeLabel={t("art.publish.closeAria")}
       className="loom-art-publish-dialog"
       busy={busyArtId !== null}
       onOpenChange={(value) => {
@@ -96,11 +101,11 @@ export function ArtPublishDialog({
                 disabled={busyArtId !== null}
                 onClick={() => void publish(tool)}
               >
-                发布
+                {t("art.action.publish")}
               </Button>
             </Panel>
           ))}
-          {authoredTools.length === 0 ? <EmptyState title="暂无本地创建的 Art" /> : null}
+          {authoredTools.length === 0 ? <EmptyState title={t("art.publish.empty")} /> : null}
         </div>
       </div>
     </Dialog>

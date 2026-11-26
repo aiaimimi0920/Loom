@@ -1,6 +1,7 @@
 // Composes the global credential summary table; revealing and mutations belong to the security owner.
 import { DataTable, EmptyState, IconButton } from "@neuro/ui";
 import type { RefObject } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import type { LoomCredentialSummary } from "../../services/loomApi";
 import { ArtIcon } from "../app/appShell";
 import { credentialFieldId, credentialValueTypeLabels } from "../feedback/AppFeedback";
@@ -20,31 +21,34 @@ export function CredentialFieldList({
   onCreate: () => void;
   onEdit: (credential: LoomCredentialSummary) => void;
 }) {
+  const { t, tf } = useUiText();
   return (
     <div className="credential-field-list">
       <DataTable
-        label="全局凭据字段"
+        label={t("security.credential.tableLabel")}
         rows={credentials}
         getRowKey={credentialFieldId}
-        empty={<EmptyState title="暂无字段" />}
+        empty={<EmptyState title={t("security.credential.empty")} />}
         columns={[
           {
             key: "name",
-            header: "名字",
+            header: t("security.credential.columnName"),
             rowHeader: true,
             width: "35%",
             cell: (credential) => <strong title={credential.name}>{credential.name}</strong>,
           },
           {
             key: "format",
-            header: "格式",
+            header: t("security.credential.columnFormat"),
             width: "20%",
             cell: (credential) => credentialValueTypeLabels[credential.valueType ?? "string"],
           },
           {
             key: "value",
-            header: "值",
-            cell: (credential) => <code aria-label={`${credential.name} 已安全保存`}>••••••••</code>,
+            header: t("security.credential.columnValue"),
+            cell: (credential) => (
+              <code aria-label={tf("security.credential.savedAria", { name: credential.name })}>••••••••</code>
+            ),
           },
           {
             key: "action",
@@ -52,8 +56,8 @@ export function CredentialFieldList({
             header: (
               <IconButton
                 ref={createButton}
-                label="添加字段"
-                title="添加字段"
+                label={t("security.credential.addTitle")}
+                title={t("security.credential.addTitle")}
                 disabled={busy}
                 onClick={(event) => {
                   returnFocus.current = event.currentTarget;
@@ -65,8 +69,8 @@ export function CredentialFieldList({
             ),
             cell: (credential) => (
               <IconButton
-                label={`编辑 ${credential.name}`}
-                title="编辑"
+                label={tf("security.credential.editAria", { name: credential.name })}
+                title={t("common.edit")}
                 disabled={busy}
                 onClick={(event) => {
                   returnFocus.current = event.currentTarget;

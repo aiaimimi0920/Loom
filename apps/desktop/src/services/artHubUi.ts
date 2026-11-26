@@ -1,3 +1,4 @@
+import { currentLanguage, uiText, uiTextFor } from "../i18n/index.ts";
 import type { ArtStoreEntry, LoomFramework, LoomToolDefinition } from "./loomApi";
 
 export type ArtWorkspaceId = "registry" | "store" | "security";
@@ -26,18 +27,33 @@ export interface ArtDisplayIdentity {
 }
 
 export const artWorkspaceItems: ArtWorkspaceItem[] = [
-  { id: "registry", label: "注册表" },
-  { id: "store", label: "商店" },
-  { id: "security", label: "密钥与安全" },
+  {
+    id: "registry",
+    get label() {
+      return uiText("art.workspace.registry");
+    },
+  },
+  {
+    id: "store",
+    get label() {
+      return uiText("art.workspace.store");
+    },
+  },
+  {
+    id: "security",
+    get label() {
+      return uiText("art.workspace.security");
+    },
+  },
 ];
 
 const officialFrameworkExecutionTypes = new Set(["process", "cloud_api", "mcp", "workflow"]);
 
-const officialFrameworkDisplayNames: Readonly<Record<string, string>> = {
-  cloud_api: "云端",
-  mcp: "MCP",
-  process: "脚本",
-  workflow: "流程",
+const officialFrameworkMessageIds: Readonly<Record<string, string>> = {
+  cloud_api: "art.framework.official.cloudApi",
+  mcp: "art.framework.official.mcp",
+  process: "art.framework.official.process",
+  workflow: "art.framework.official.workflow",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -83,7 +99,8 @@ function localizedMetadataValue(
 }
 
 export function artDisplayLocale(language?: string | null): ArtDisplayLocale {
-  return language?.trim().toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  const effective = language?.trim() || currentLanguage();
+  return effective.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
 export function artPublisherIconSource(icon: string | null | undefined): string | null {
@@ -115,7 +132,7 @@ export function artDisplayIdentity(
   const publisherName =
     nonEmptyString(publisher?.name) ??
     nonEmptyString(authoring?.owner) ??
-    (locale === "zh-CN" ? "本地用户" : "Local user");
+    (locale === "zh-CN" ? uiTextFor("zh-Hans", "art.localUser") : uiTextFor("en", "art.localUser"));
   const publisherIcon = nonEmptyString(publisher?.icon) ?? nonEmptyString(metadata?.publisherIcon);
   const localizedName = localizedMetadataValue(localization, "names", "name", locale) ?? tool.name ?? tool.id;
   const localizedDescription =
@@ -170,14 +187,15 @@ export function officialFrameworkDisplayName(reference: string | null | undefine
     : normalized.includes("/")
       ? null
       : normalized;
-  return id ? (officialFrameworkDisplayNames[id] ?? null) : null;
+  const messageId = id ? officialFrameworkMessageIds[id] : undefined;
+  return messageId ? uiText(messageId) : null;
 }
 
 export function frameworkFilterLabel(framework: LoomFramework): string {
   const officialName = officialFrameworkDisplayName(frameworkIdentity(framework));
   const fallbackName = framework.name
     .trim()
-    .replace(/\s*框架\s*$/u, "")
+    .replace(/\s*(?:\u6846\u67b6|framework)\s*$/iu, "")
     .trim();
   return officialName ?? (fallbackName || framework.id);
 }

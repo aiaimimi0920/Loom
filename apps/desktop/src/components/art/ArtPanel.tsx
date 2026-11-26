@@ -1,5 +1,7 @@
 // Composes registry, marketplace, and plugin-security Art workspaces.
 import { Button, Checkbox, Input, Notice, Tab, TabList, TabPanel, TabsRoot } from "@neuro/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { uiFormat, uiText, useUiText } from "../../i18n/index.ts";
 import {
   type ArtWorkspaceId,
   artWorkspaceItems,
@@ -30,7 +32,6 @@ import {
 } from "./FrameworkManagementDialog";
 import { ArtCreationRequest } from "./artWizardModel";
 import { RegistryPanel } from "./RegistryPanel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function ArtPanel({
   tools,
@@ -49,6 +50,7 @@ export function ArtPanel({
   pendingCreationRequest: ArtCreationRequest | null;
   onCreationRequestHandled: () => void;
 }) {
+  const { t, tf } = useUiText();
   const [activeWorkspace, setActiveWorkspace] = useState<ArtWorkspaceId>("registry");
   const [frameworks, setFrameworks] = useState<LoomFramework[]>([]);
   const [frameworksLoading, setFrameworksLoading] = useState(true);
@@ -85,7 +87,7 @@ export function ArtPanel({
       setFrameworkError(null);
     } catch (error) {
       if (version === frameworkLoadVersion.current) {
-        setFrameworkError(error instanceof Error ? error.message : "无法读取框架列表。");
+        setFrameworkError(error instanceof Error ? error.message : uiText("art.framework.loadFailed"));
       }
     } finally {
       if (version === frameworkLoadVersion.current) setFrameworksLoading(false);
@@ -125,8 +127,11 @@ export function ArtPanel({
   const synchronizeArtState = useCallback(async () => {
     const [, snapshotResult] = await Promise.allSettled([loadFrameworks(), refresh()]);
     if (snapshotResult.status === "rejected") {
-      const detail = snapshotResult.reason instanceof Error ? snapshotResult.reason.message : "无法刷新 Loom 主快照。";
-      setSnapshotRefreshError(`Art 操作已完成，但主快照刷新失败：${detail}`);
+      const detail =
+        snapshotResult.reason instanceof Error
+          ? snapshotResult.reason.message
+          : uiText("art.snapshot.refreshFailedDetail");
+      setSnapshotRefreshError(uiFormat("art.snapshot.refreshFailedMessage", { detail }));
       return;
     }
     setSnapshotRefreshError(null);
@@ -134,21 +139,26 @@ export function ArtPanel({
 
   const toggleFramework = async (framework: LoomFramework) => {
     const identity = frameworkIdentity(framework);
-    const action = framework.installed ? "卸载" : "安装";
+    const wasInstalled = framework.installed;
     setFrameworkBusyId(identity);
     setFrameworkBusyAction("toggle");
     setFrameworkError(null);
     setFrameworkManagementMessage(null);
     try {
-      if (framework.installed) {
+      if (wasInstalled) {
         await uninstallFramework(baseUrl, identity);
       } else {
         await installFramework(baseUrl, identity);
       }
       await synchronizeArtState();
-      setFrameworkManagementMessage({ kind: "info", text: `已${action} ${frameworkFilterLabel(framework)}。` });
+      setFrameworkManagementMessage({
+        kind: "info",
+        text: tf(wasInstalled ? "art.framework.uninstalledMessage" : "art.framework.installedMessage", {
+          framework: frameworkFilterLabel(framework),
+        }),
+      });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "框架操作失败。";
+      const detail = error instanceof Error ? error.message : t("art.framework.actionFailed");
       setFrameworkError(detail);
     } finally {
       setFrameworkBusyId(null);
@@ -169,10 +179,10 @@ export function ArtPanel({
       await synchronizeArtState();
       setFrameworkManagementMessage({
         kind: "info",
-        text: `已更新 ${frameworkFilterLabel(framework)}。`,
+        text: tf("art.framework.upgradedMessage", { framework: frameworkFilterLabel(framework) }),
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "框架更新失败。";
+      const detail = error instanceof Error ? error.message : t("art.framework.upgradeFailed");
       setFrameworkError(detail);
     } finally {
       setFrameworkBusyId(null);
@@ -196,12 +206,12 @@ export function ArtPanel({
   return (
     <TabsRoot
       className="art-hub"
-      aria-label="Art"
+      aria-label={t("art.hub.ariaLabel")}
       value={activeWorkspace}
       onValueChange={(value) => setActiveWorkspace(value as ArtWorkspaceId)}
     >
       <div className="art-hub__navigation">
-        <TabList className="loom-art-tabs" label="Art 工作区">
+        <TabList className="loom-art-tabs" label={t("art.workspace.ariaLabel")}>
           {artWorkspaceItems.map((item) => (
             <Tab key={item.id} value={item.id} id={`art-tab-${item.id}`} aria-controls={`art-panel-${item.id}`}>
               {item.label}
@@ -225,7 +235,7 @@ export function ArtPanel({
                     setCreateDialogOpen(true);
                   }}
                 >
-                  创建 Art
+                  {t("art.action.createArt")}
                 </Button>
                 <Button
                   className="framework-filter__manage"
@@ -237,7 +247,7 @@ export function ArtPanel({
                     setFrameworkDialogOpen(true);
                   }}
                 >
-                  管理框架
+                  {t("art.action.manageFrameworks")}
                 </Button>
               </>
             }
@@ -258,21 +268,21 @@ export function ArtPanel({
                     setPublishDialogOpen(true);
                   }}
                 >
-                  发布 Art
+                  {t("art.action.publishArt")}
                 </Button>
                 <Input
                   className="loom-art-store-search"
                   type="search"
-                  aria-label="搜索 Art"
-                  placeholder="搜索 Art"
+                  aria-label={t("art.store.searchAria")}
+                  placeholder={t("art.store.searchPlaceholder")}
                   value={storeSearchText}
                   onChange={(event) => setStoreSearchText(event.target.value)}
                 />
                 <Checkbox
                   className="loom-art-official"
-                  label="官"
-                  title="只显示官方"
-                  aria-label="只显示官方"
+                  label={t("art.store.officialShort")}
+                  title={t("art.store.officialOnlyAria")}
+                  aria-label={t("art.store.officialOnlyAria")}
                   checked={storeOfficialOnly}
                   onChange={(event) => setStoreOfficialOnly(event.target.checked)}
                 />
@@ -285,14 +295,14 @@ export function ArtPanel({
       {frameworkError ? (
         <Notice tone="danger" className="loom-art-workspace-message" role="alert">
           <span>{frameworkError}</span>
-          <Button onClick={() => void loadFrameworks()}>重试框架状态</Button>
+          <Button onClick={() => void loadFrameworks()}>{t("art.framework.retryStatus")}</Button>
         </Notice>
       ) : null}
 
       {snapshotRefreshError ? (
         <Notice tone="warning" className="loom-art-workspace-message" role="alert">
           <span>{snapshotRefreshError}</span>
-          <Button onClick={() => void synchronizeArtState()}>重新同步 Art 状态</Button>
+          <Button onClick={() => void synchronizeArtState()}>{t("art.snapshot.resyncStatus")}</Button>
         </Notice>
       ) : null}
 

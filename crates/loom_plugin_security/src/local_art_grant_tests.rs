@@ -1,4 +1,4 @@
-//! 固定测试密钥不用于生产；跨仓库 fixture 由真实 Loom 签发器产生，Otter 独立验签。
+//! Deterministic test keys are never used in production; cross-repository fixtures are emitted by the real Loom signer and verified independently by Otter.
 use super::*;
 use ed25519_dalek::SigningKey;
 use loom_protocol::local_art::{Binding, Permission, Source, PROTOCOL, SDK};

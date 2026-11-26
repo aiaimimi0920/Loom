@@ -1,5 +1,6 @@
 // Normalizes external MCP Registry entries into Loom marketplace install choices.
 
+import { currentLanguage, type DisplayLanguage, uiFormatFor, uiTextFor } from "../../i18n/index.ts";
 import { dedupeMarketplaceServers, isValidMcpRemoteUrl } from "./helpers.ts";
 import type {
   McpMarketCategory,
@@ -17,9 +18,13 @@ import type {
   RegistryPackageType,
 } from "./types.ts";
 
+function resolveRegistryDisplayLanguage(locale: string): DisplayLanguage {
+  return locale.trim().toLowerCase().startsWith("zh") ? "zh-Hans" : "en";
+}
+
 export function mapRegistryResponseToMarketplace(
   response: McpRegistryResponse,
-  locale = "en",
+  locale: string = currentLanguage(),
 ): McpMarketServer[] {
   return dedupeMarketplaceServers(
     (response.servers || [])
@@ -36,13 +41,17 @@ function registryEntryToMarketplaceServer(entry: McpRegistryEntry, locale: strin
   const registryServer = entry.server;
   if (!registryServer?.name) return null;
 
-  const installOptions = buildRegistryInstallOptions(registryServer);
+  const catalogLanguage = resolveRegistryDisplayLanguage(locale);
+  const installOptions = buildRegistryInstallOptions(registryServer, catalogLanguage);
   const selected = installOptions[0];
   if (!selected) return null;
   const sourceUrl = registrySourceUrl(registryServer);
   const localized = findRegistryLocalization(registryServer.localizations, locale);
   const title = localized?.title?.trim() || registryServer.title?.trim() || readableNameFromRegistryId(registryServer.name);
-  const description = localized?.description?.trim() || registryServer.description?.trim() || "MCP Registry 服务。";
+  const description =
+    localized?.description?.trim() ||
+    registryServer.description?.trim() ||
+    uiTextFor(catalogLanguage, "mcp.registry.defaultDescription");
   const category = inferRegistryCategory(`${title} ${description} ${registryServer.name}`);
 
   return {
@@ -67,7 +76,7 @@ function registryEntryToMarketplaceServer(entry: McpRegistryEntry, locale: strin
     author: registryServer.repository?.source || registryServer.name.split("/")[0] || "registry",
     defaultEnabled: !(selected.requiredEnvKeys?.length || selected.requiredHeaderKeys?.length || selected.requiresManualConfiguration),
     requiresManualConfiguration: selected.requiresManualConfiguration,
-    notes: buildRegistryNotes(entry, selected),
+    notes: buildRegistryNotes(entry, selected, catalogLanguage),
     installOptions,
   };
 }
@@ -107,21 +116,27 @@ function findRegistryLocalization(
   return undefined;
 }
 
-function buildRegistryInstallOptions(server: McpRegistryServer): McpMarketInstallOption[] {
+function buildRegistryInstallOptions(
+  server: McpRegistryServer,
+  catalogLanguage: DisplayLanguage,
+): McpMarketInstallOption[] {
   const packages = (server.packages || [])
     .filter((item) => item.transport?.type === "stdio" && item.identifier && isSupportedRegistryType(item.registryType))
-    .map((pkg) => buildPackageInstallOption(pkg))
+    .map((pkg) => buildPackageInstallOption(pkg, catalogLanguage))
     .filter((option): option is McpMarketInstallOption => Boolean(option));
   const remotes = (server.remotes || [])
     .filter((remote) => remote.type === "streamable-http" && remote.url)
-    .map(buildRemoteInstallOption)
+    .map((remote) => buildRemoteInstallOption(remote, catalogLanguage))
     .filter((option): option is McpMarketInstallOption => Boolean(option));
   const orderedPackages = ["npm", "pypi", "oci"].flatMap((registry) =>
     packages.filter((option) => option.installSource.registry === registry));
   return dedupeInstallOptions([...orderedPackages, ...remotes]);
 }
 
-function buildPackageInstallOption(pkg: McpRegistryPackage): McpMarketInstallOption | null {
+function buildPackageInstallOption(
+  pkg: McpRegistryPackage,
+  catalogLanguage: DisplayLanguage,
+): McpMarketInstallOption | null {
   if (!pkg.identifier) return null;
   const installCommand = buildRegistryInstallCommand(pkg);
   if (!installCommand) return null;
@@ -133,7 +148,12 @@ function buildPackageInstallOption(pkg: McpRegistryPackage): McpMarketInstallOpt
   const version = normalizeVersion(pkg.version);
   return {
     id: `stdio:${registry}:${pkg.identifier}:${version || "latest"}`,
-    label: registry === "npm" ? "本地 · Node.js" : registry === "pypi" ? "本地 · Python" : "本地 · 容器",
+    label:
+      registry === "npm"
+        ? uiTextFor(catalogLanguage, "mcp.installOption.localNode")
+        : registry === "pypi"
+          ? uiTextFor(catalogLanguage, "mcp.installOption.localPython")
+          : uiTextFor(catalogLanguage, "mcp.installOption.localContainer"),
     transport: "stdio",
     command: installCommand.command,
     args: installCommand.args,
@@ -146,7 +166,10 @@ function buildPackageInstallOption(pkg: McpRegistryPackage): McpMarketInstallOpt
   };
 }
 
-function buildRemoteInstallOption(remote: McpRegistryRemote): McpMarketInstallOption | null {
+function buildRemoteInstallOption(
+  remote: McpRegistryRemote,
+  catalogLanguage: DisplayLanguage,
+): McpMarketInstallOption | null {
   if (!remote.url) return null;
   let url = remote.url;
   let unresolvedVariable = false;
@@ -170,7 +193,7 @@ function buildRemoteInstallOption(remote: McpRegistryRemote): McpMarketInstallOp
     .map((item) => item.name as string);
   return {
     id: `streamable-http:${remote.url}`,
-    label: "远程 · Streamable HTTP",
+    label: uiTextFor(catalogLanguage, "mcp.installOption.remoteHttp"),
     transport: "streamable-http",
     command: "",
     args: [],
@@ -259,11 +282,19 @@ function hasRequiredPackageArguments(pkg: McpRegistryPackage): boolean {
   return (pkg.packageArguments || []).some((item) => item.isRequired === true);
 }
 
-function buildRegistryNotes(entry: McpRegistryEntry, option: McpMarketInstallOption): string | undefined {
+function buildRegistryNotes(
+  entry: McpRegistryEntry,
+  option: McpMarketInstallOption,
+  catalogLanguage: DisplayLanguage,
+): string | undefined {
   const official = entry._meta?.["io.modelcontextprotocol.registry/official"];
   const notes: string[] = [];
-  if (official?.updatedAt) notes.push(`注册表更新时间 ${official.updatedAt}`);
-  if (option.requiresManualConfiguration) notes.push("启用前需要补充连接参数。");
+  if (official?.updatedAt) {
+    notes.push(uiFormatFor(catalogLanguage, "mcp.registry.updatedAt", { updatedAt: official.updatedAt }));
+  }
+  if (option.requiresManualConfiguration) {
+    notes.push(uiTextFor(catalogLanguage, "mcp.registry.manualConfigNote"));
+  }
   return notes.length > 0 ? notes.join(" | ") : undefined;
 }
 

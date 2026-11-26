@@ -32,8 +32,7 @@ const bindEvents = () => {
     refs.chartWrap.addEventListener("pointercancel", hideChartTip);
 };
 
-// ResizeObserver 在拖动窗口时每帧都回调，而 drawChart 是整图重绘。和悬浮走同一套 rAF
-// 合并：一帧内多次尺寸变化只重绘一次。
+// Coalesce ResizeObserver callbacks into one animation frame so window drags redraw at most once per frame.
 const scheduleChartRedraw = () => {
     if (disposed || suspended || resizeFrame !== null) return;
     resizeFrame = requestAnimationFrame(() => {
@@ -68,7 +67,7 @@ const cleanup = () => {
     chartGeometry = null;
     seriesCache = null;
     sampleCache = null;
-    // 下一次 mount 从空 DOM 开始，缓存的 paintKey 会让四个更新函数跳过第一帧。
+    // Reset paint keys so a subsequent mount starting from fresh DOM never skips its first frame.
     paintedKey = "";
     legendPaintedKey = "";
     chartPaintedKey = "";

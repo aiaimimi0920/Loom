@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Field, Input, Notice, Switch } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { getJson, putJson } from "../../services/loomApi/transport.ts";
 import { errorMessage } from "../../services/loomApi/transport.ts";
 import "./DeviceConnectionLayout.css";
@@ -15,6 +16,7 @@ interface LanView {
 
 /** LAN listener is separate from local management and requires explicit user opt-in. */
 export function LoomLanSettings({ baseUrl, online }: { baseUrl: string; online: boolean }) {
+  const { t, tf } = useUiText();
   const [view, setView] = useState<LanView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [host, setHost] = useState("");
@@ -53,9 +55,9 @@ export function LoomLanSettings({ baseUrl, online }: { baseUrl: string; online: 
     setError("");
     try {
       if (!/^\d{4,5}$/.test(port) || Number(port) < 1024 || Number(port) > 65535)
-        throw new Error("端口须为 1024–65535");
+        throw new Error(t("devices.lan.error.portRange"));
       if (enabled && !isPrivateIpv4(host.trim()))
-        throw new Error("请填写本机局域网 IPv4 地址，不能使用 127.0.0.1 或代理虚拟地址");
+        throw new Error(t("devices.lan.error.privateIpv4Required"));
       const next = await putJson<LanView>(baseUrl, "/v1/otter/connections/lan", {
         enabled,
         host: host.trim(),
@@ -75,19 +77,19 @@ export function LoomLanSettings({ baseUrl, online }: { baseUrl: string; online: 
         event.preventDefault();
         void save();
       }}
-      aria-label="Loom 局域网连接"
+      aria-label={t("devices.lan.ariaLabel")}
     >
       <fieldset className="loom-device-settings__fields" disabled={!online || busy || !view}>
         <Switch
           className="loom-device-settings__wide"
-          label="允许局域网连接"
+          label={t("devices.lan.allowSwitch")}
           checked={enabled}
           onChange={(event) => setEnabled(event.target.checked)}
         />
-        <Field label="本机局域网 IP">
+        <Field label={t("devices.lan.hostLabel")}>
           <Input value={host} maxLength={15} onChange={(event) => setHost(event.target.value)} required />
         </Field>
-        <Field label="端口">
+        <Field label={t("devices.lan.portLabel")}>
           <Input
             value={port}
             inputMode="numeric"
@@ -98,13 +100,15 @@ export function LoomLanSettings({ baseUrl, online }: { baseUrl: string; online: 
         </Field>
         <div className="loom-device-settings__actions loom-device-settings__wide">
           <Button type="submit" variant="primary" loading={busy}>
-            应用
+            {t("devices.common.apply")}
           </Button>
         </div>
       </fieldset>
       <div role="status">
         <Badge tone={view?.listening ? "success" : "neutral"}>
-          {view?.listening ? `已监听 ${view.endpoint}` : "局域网连接未开启"}
+          {view?.listening
+            ? tf("devices.lan.statusListening", { endpoint: view.endpoint ?? "" })
+            : t("devices.lan.statusDisabled")}
         </Badge>
       </div>
       {(error || view?.error) && <Notice tone="danger">{error || view?.error}</Notice>}

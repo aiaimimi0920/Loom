@@ -1,5 +1,6 @@
 // Owns small deterministic marketplace parsing, display and deduplication helpers.
 
+import { uiText } from "../../i18n/index.ts";
 import type { LoomMcpServer } from "../loomApi.ts";
 import type {
   McpMarketCategory,
@@ -56,15 +57,33 @@ export const MCP_MARKET_CATEGORIES: readonly McpMarketCategory[] = [
 ];
 
 export const MCP_MARKET_CATEGORY_LABELS: Record<McpMarketCategory, string> = {
-  Search: "搜索",
-  Web: "网页",
-  Local: "本地",
-  Memory: "记忆",
-  Browser: "浏览器",
-  Developer: "开发",
-  Utility: "工具",
-  Reasoning: "推理",
-  Legacy: "兼容",
+  get Search() {
+    return uiText("mcp.category.search");
+  },
+  get Web() {
+    return uiText("mcp.category.web");
+  },
+  get Local() {
+    return uiText("mcp.category.local");
+  },
+  get Memory() {
+    return uiText("mcp.category.memory");
+  },
+  get Browser() {
+    return uiText("mcp.category.browser");
+  },
+  get Developer() {
+    return uiText("mcp.category.developer");
+  },
+  get Utility() {
+    return uiText("mcp.category.utility");
+  },
+  get Reasoning() {
+    return uiText("mcp.category.reasoning");
+  },
+  get Legacy() {
+    return uiText("mcp.category.legacy");
+  },
 };
 
 export function mcpMarketCategoryLabel(category: McpMarketCategory): string {

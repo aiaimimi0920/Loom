@@ -1,5 +1,6 @@
 // Owns application publication and FIFO confirmation requests; @neuro/ui owns rendering.
 import { Checkbox, ConfirmDialog, ToastViewport, type ToastEntry } from "@neuro/ui";
+import { uiText, useUiText } from "../../i18n/index.ts";
 import {
   type LoomCredentialDetails,
   type LoomCredentialSummary,
@@ -14,11 +15,21 @@ import {
 } from "react";
 
 export const credentialValueTypeLabels: Record<LoomCredentialValueType, string> = {
-  string: "文本",
-  number: "数字",
-  integer: "整数",
-  boolean: "布尔",
-  json: "JSON",
+  get string() {
+    return uiText("security.credentialType.string");
+  },
+  get number() {
+    return uiText("security.credentialType.number");
+  },
+  get integer() {
+    return uiText("security.credentialType.integer");
+  },
+  get boolean() {
+    return uiText("security.credentialType.boolean");
+  },
+  get json() {
+    return uiText("security.credentialType.json");
+  },
 };
 
 export const defaultPluginTrustStore: LoomPluginTrustStore = {
@@ -55,6 +66,7 @@ export function pushAppToast(message: { level: AppToastLevel; text: string }) {
 }
 
 export function AppToastViewport() {
+  const { t } = useUiText();
   const [entries, setEntries] = useState<AppToastEntry[]>([]);
   const remove = useCallback((id: number) => setEntries(current => current.filter(entry => entry.id !== id)), []);
 
@@ -70,7 +82,7 @@ export function AppToastViewport() {
   const notifications: ToastEntry[] = entries.map(entry => ({
     id: entry.id, message: entry.text, tone: entry.level === "error" ? "danger" : entry.level,
   }));
-  return <ToastViewport entries={notifications} onRemove={remove} closeLabel="点击关闭" />;
+  return <ToastViewport entries={notifications} onRemove={remove} closeLabel={t("shell.feedback.dismissToast")} />;
 }
 
 export type AppConfirmTone = "danger" | "warning";
@@ -109,7 +121,7 @@ export function requestAppConfirmation(options: {
       id: nextAppConfirmId++,
       title: options.title,
       message: options.message,
-      confirmLabel: options.confirmLabel ?? "确认",
+      confirmLabel: options.confirmLabel ?? uiText("common.confirm"),
       tone: options.tone ?? "danger",
       optionDefault: false,
       resolve: (result) => resolve(result.accepted),
@@ -134,7 +146,7 @@ export function requestAppConfirmationWithOption(options: {
       id: nextAppConfirmId++,
       title: options.title,
       message: options.message,
-      confirmLabel: options.confirmLabel ?? "确认",
+      confirmLabel: options.confirmLabel ?? uiText("common.confirm"),
       tone: options.tone ?? "danger",
       optionLabel: options.optionLabel,
       optionDefault: options.optionDefault ?? false,

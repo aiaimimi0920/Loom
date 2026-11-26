@@ -1,6 +1,5 @@
 // Reusable DOM reconciliation for metrics, history and favorites.
-// 四个更新函数原来都以 replaceChildren() 开头，每帧丢掉并重建约 200 个节点。行数固定或
-// 有上界，所以改成"补齐节点数量、再原地写文本"，只有真正变化的文本才落到 DOM 上。
+// Reconcile bounded child counts in place and mutate textContent only when values change instead of rebuilding ~200 nodes per frame.
 const ensureChildren = (host, count, build) => {
     while (host.children.length > count) host.removeChild(host.lastChild);
     while (host.children.length < count) host.appendChild(build(host.children.length));
@@ -45,7 +44,7 @@ const writeHistoryRow = (row, cells, className) => {
     for (let index = 0; index < HISTORY_ROW_CELLS; index += 1) {
         const cell = row.children[index];
         writeText(cell, cells[index].text);
-        // style.color 读回来是 rgb() 形式，和写进去的 #rrggbb 永远不相等，所以这里不比较。
+        // Computed style.color reads back as rgb(...), which never equals #rrggbb, so assign directly.
         cell.style.color = cells[index].color || "";
     }
 };
@@ -75,8 +74,8 @@ const updateHistoryTable = (history, state, palette) => {
             { text: formatVolume(row.volume) }
         ], "");
     }
-    writeText(refs.historyTitle, periodLabelOf(state) + " · 最近 8 条");
-    writeText(refs.historyMeta, history.length + " 条数据");
+    writeText(refs.historyTitle, periodLabelOf(state) + " · Last 8 rows");
+    writeText(refs.historyMeta, history.length + " rows");
 };
 
 const buildFavoriteCard = () => {
@@ -102,12 +101,12 @@ const updateFavorites = (state) => {
         if (refs.favoritesGrid.children.length === 1 && existing.classList.contains("favorites-empty")) return;
         const empty = document.createElement("div");
         empty.className = "favorites-empty";
-        empty.textContent = "等待 stock-api 返回收藏股票报价";
+        empty.textContent = "Waiting for stock-api watchlist quotes";
         refs.favoritesGrid.replaceChildren(empty);
         return;
     }
     const first = refs.favoritesGrid.firstElementChild;
-    // 空态节点和卡片形状不同，切回有数据时先清掉它，否则 ensureChildren 会当成卡片写。
+    // Clear any empty-state placeholder before reconciling favorite cards.
     if (first && !first.classList.contains("favorite-card")) refs.favoritesGrid.replaceChildren();
     const cards = ensureChildren(refs.favoritesGrid, favorites.length, buildFavoriteCard);
     favorites.forEach((value, index) => {
@@ -117,7 +116,7 @@ const updateFavorites = (state) => {
         const color = movementColor(movement(quote), palette);
         const card = cards[index];
         const name = card.children[0];
-        writeText(name, text(quote.name, "未知股票"));
+        writeText(name, text(quote.name, "Unknown Stock"));
         name.title = name.textContent;
         writeText(card.children[1], text(quote.code, "--") + " · " + market);
         const price = card.children[2];

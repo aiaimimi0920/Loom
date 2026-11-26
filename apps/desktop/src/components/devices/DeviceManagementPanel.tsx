@@ -1,6 +1,7 @@
 // Composes device workspaces without transferring their lifetimes into the UI library.
 import { Tab, TabList, TabPanel, TabsRoot } from "@neuro/ui";
 import { useState } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { ManagedDevicesPanel } from "./ManagedDevicesPanel";
 import { WallManagementPanel } from "./WallManagementPanel";
 import { ProjectionPeersPanel } from "./ProjectionPeersPanel";
@@ -9,22 +10,23 @@ import { OtterConnectionSettings } from "./OtterConnectionSettings";
 export { deviceKindLabels } from "./useManagedDevicesController";
 export { CredentialFieldDialog } from "../security/CredentialFieldDialog";
 const workspaces = [
-  { value: "devices", label: "设备" },
-  { value: "walls", label: "屏幕墙" },
-  { value: "projection", label: "投射连接" },
-  { value: "projection-settings", label: "投射规则" },
+  { value: "devices", labelKey: "devices.tabs.devices" },
+  { value: "walls", labelKey: "devices.tabs.walls" },
+  { value: "projection", labelKey: "devices.tabs.projection" },
+  { value: "projection-settings", labelKey: "devices.tabs.projectionSettings" },
 ] as const;
 export function DeviceManagementPanel(props: { baseUrl: string; online: boolean }) {
+  const { t } = useUiText();
   const [page, setPage] = useState<"devices" | "walls" | "projection" | "projection-settings">(
     "devices",
   );
   return (
     <TabsRoot asChild value={page} onValueChange={(value) => setPage(value as typeof page)}>
       <section className="loom-device-workspaces">
-        <TabList label="设备管理页面">
+        <TabList label={t("devices.tabs.ariaLabel")}>
           {workspaces.map((item) => (
             <Tab key={item.value} value={item.value}>
-              {item.label}
+              {t(item.labelKey)}
             </Tab>
           ))}
         </TabList>

@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { Button, CheckboxGroup, EmptyState, Field, MultiSelect, Notice, SegmentedControl, Select } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import type {
   ProjectionDeviceChoice,
   ProjectionReceiveRule,
@@ -15,22 +16,24 @@ export function ProjectionRulesEditor(props: {
   disabled: boolean;
   onChange: (rules: ProjectionReceiveRule[]) => void;
 }) {
+  const { t, tf } = useUiText();
   const policyId = useId();
   const [selected, setSelected] = useState("");
   const targets = new Map(
     props.devices.filter((device) => !device.peerId).map((device) => [device.deviceId, device.name]),
   );
   for (const rule of props.rules)
-    if (!targets.has(rule.deviceId)) targets.set(rule.deviceId, rule.deviceId + "（不可用）");
+    if (!targets.has(rule.deviceId))
+      targets.set(rule.deviceId, tf("devices.projection.unavailableDevice", { id: rule.deviceId }));
   const rule = props.rules.find((rule) => rule.deviceId === selected);
   const change = (next: ProjectionReceiveRule) =>
     props.onChange(props.rules.map((item) => (item.deviceId === next.deviceId ? next : item)));
   return (
     <section className="loom-device-settings__section">
-      <h3>投射内容处理</h3>
-      <Field label="接收设备">
+      <h3>{t("devices.projectionRules.heading")}</h3>
+      <Field label={t("devices.projectionRules.receiverLabel")}>
         <Select disabled={props.disabled} value={selected} onChange={(event) => setSelected(event.target.value)}>
-          <option value="">选择本 Loom 的接收设备</option>
+          <option value="">{t("devices.projectionRules.receiverPlaceholder")}</option>
           {[...targets].map(([id, name]) => (
             <option key={id} value={id}>
               {name}
@@ -54,27 +57,27 @@ export function ProjectionRulesEditor(props: {
               ])
             }
           >
-            配置此设备
+            {t("devices.projectionRules.configureDeviceAction")}
           </Button>
         </div>
       )}
       {rule && (
         <>
           <SegmentedControl<ProjectionReceiveDecision>
-            label="通用规则"
+            label={t("devices.projectionRules.defaultPolicyLabel")}
             name={policyId}
             disabled={props.disabled}
             value={rule.policy}
             onValueChange={(policy) => change({ ...rule, policy })}
             options={[
-              { value: "auto", label: "接受" },
-              { value: "confirm", label: "询问" },
-              { value: "reject", label: "拒绝" },
+              { value: "auto", label: t("devices.projectionRules.policy.auto") },
+              { value: "confirm", label: t("devices.projectionRules.policy.confirm") },
+              { value: "reject", label: t("devices.projectionRules.policy.reject") },
             ]}
           />
           <ProjectionDeviceChecklist
             key={rule.deviceId + ":whitelist"}
-            label="白名单设备"
+            label={t("devices.projectionRules.whitelistDevicesLabel")}
             devices={props.devices}
             value={rule.whitelist.devices}
             disabled={props.disabled}
@@ -82,30 +85,35 @@ export function ProjectionRulesEditor(props: {
           />
           {props.groups.length > 6 ? (
             <MultiSelect
-              label="白名单设备组"
+              label={t("devices.projectionRules.whitelistGroupsLabel")}
               disabled={props.disabled}
               values={rule.whitelist.groups}
               options={props.groups.map((group) => ({ value: group.groupId, label: group.name }))}
-              search={{ label: "搜索白名单设备组", emptyMessage: "没有匹配设备组" }}
+              search={{
+                label: t("devices.projectionRules.searchWhitelistGroupsLabel"),
+                emptyMessage: t("devices.projectionRules.noMatchingGroups"),
+              }}
               onValuesChange={(groups) => change({ ...rule, whitelist: { ...rule.whitelist, groups } })}
             />
           ) : props.groups.length ? (
             <CheckboxGroup
-              label="白名单设备组"
+              label={t("devices.projectionRules.whitelistGroupsLabel")}
               disabled={props.disabled}
               values={rule.whitelist.groups}
               options={props.groups.map((group) => ({ value: group.groupId, label: group.name }))}
               onValuesChange={(groups) => change({ ...rule, whitelist: { ...rule.whitelist, groups } })}
             />
           ) : (
-            <EmptyState title="暂无设备组" />
+            <EmptyState title={t("devices.projectionRules.noGroups")} />
           )}
           {rule.whitelist.users.length > 0 && (
-            <Notice tone="warning">用户白名单：{rule.whitelist.users.length} 项，当前不可用。</Notice>
+            <Notice tone="warning">
+              {tf("devices.projectionRules.userWhitelistUnavailable", { count: rule.whitelist.users.length })}
+            </Notice>
           )}
           <ProjectionDeviceChecklist
             key={rule.deviceId + ":blacklist"}
-            label="黑名单设备"
+            label={t("devices.projectionRules.blacklistDevicesLabel")}
             devices={props.devices}
             value={rule.blacklist}
             disabled={props.disabled}
@@ -117,7 +125,7 @@ export function ProjectionRulesEditor(props: {
               disabled={props.disabled}
               onClick={() => props.onChange(props.rules.filter((item) => item.deviceId !== selected))}
             >
-              恢复此设备默认规则
+              {t("devices.projectionRules.resetDeviceAction")}
             </Button>
           </div>
         </>

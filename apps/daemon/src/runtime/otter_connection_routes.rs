@@ -70,7 +70,7 @@ fn route_otter_connections(
         ("PUT", "/v1/otter/connections/lan") => {
             let input: lan_listener::Update = match serde_json::from_str(&request.body) {
                 Ok(input) => input,
-                Err(_) => return Ok((400, json!({"error":{"code":"lan_input_invalid","message":"请填写有效的局域网 IPv4 地址和端口"}}).to_string())),
+                Err(_) => return Ok((400, json!({"error":{"code":"lan_input_invalid","message":"Enter a valid LAN IPv4 address and port"}}).to_string())),
             };
             let mut store = registry
                 .lock()

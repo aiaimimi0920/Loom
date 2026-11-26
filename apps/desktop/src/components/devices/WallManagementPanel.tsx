@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge, Button, EmptyState, Field, Notice, Select } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { parseWallLayout } from "../../services/loomApi/wallValidation.ts";
 import { requestAppConfirmation } from "../feedback/AppFeedback.tsx";
 import { useWallCatalog } from "./useWallCatalog.ts";
@@ -8,6 +9,7 @@ import { WallPresentationControls } from "./WallPresentationControls.tsx";
 import { WallEndpointList } from "./WallEndpointList.tsx";
 
 export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; online: boolean }) {
+  const { t, tf } = useUiText();
   const catalog = useWallCatalog(baseUrl, online);
   const [saving, setSaving] = useState(false);
   const generation = useRef(0);
@@ -43,7 +45,7 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
     try {
       parseWallLayout(draft.layout);
     } catch (error) {
-      invalid = error instanceof Error ? error.message : "布局无效";
+      invalid = error instanceof Error ? error.message : t("devices.wall.error.invalidLayout");
     }
   }
   async function abandon(action: () => void) {
@@ -51,9 +53,9 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
     if (
       draft?.dirty &&
       !(await requestAppConfirmation({
-        title: "放弃未保存的布局？",
-        message: "重新载入或切换墙面会丢弃当前草稿。已保存的墙面继续运行。",
-        confirmLabel: "放弃草稿",
+        title: t("devices.wall.confirmAbandon.title"),
+        message: t("devices.wall.confirmAbandon.message"),
+        confirmLabel: t("devices.wall.confirmAbandon.confirm"),
       }))
     )
       return;
@@ -64,9 +66,9 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
     const current = generation.current;
     if (
       !(await requestAppConfirmation({
-        title: "删除墙面",
-        message: "终端将不再呈现此墙面；注册的输出和原始内容仍然保留。",
-        confirmLabel: "删除墙面",
+        title: t("devices.wall.confirmDelete.title"),
+        message: t("devices.wall.confirmDelete.message"),
+        confirmLabel: t("devices.wall.confirmDelete.confirm"),
       })) ||
       current !== generation.current
     )
@@ -84,9 +86,13 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
     }
   }
   return (
-    <section className="wall-management" aria-label="屏幕墙管理" aria-busy={busy || loading || undefined}>
+    <section
+      className="wall-management"
+      aria-label={t("devices.wall.managementAriaLabel")}
+      aria-busy={busy || loading || undefined}
+    >
       <header className="wall-toolbar">
-        <h2>屏幕墙</h2>
+        <h2>{t("devices.wall.heading")}</h2>
         <div className="wall-toolbar">
           <Button
             variant="quiet"
@@ -94,10 +100,10 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
             disabled={!online || catalog.sourcesLoading}
             onClick={catalog.refreshSources}
           >
-            刷新内容来源
+            {t("devices.wall.refreshSourcesAction")}
           </Button>
           <Button variant="quiet" disabled={!online || busy} onClick={() => void abandon(catalog.refresh)}>
-            重新载入目录
+            {t("devices.wall.reloadCatalogAction")}
           </Button>
           <Button
             ref={createButton}
@@ -105,14 +111,14 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
             disabled={!state || busy || !online || state.layouts.length >= 64}
             onClick={() => void abandon(() => catalog.select())}
           >
-            创建墙面
+            {t("devices.wall.createWallAction")}
           </Button>
         </div>
       </header>
-      {!online && <Notice tone="warning">Loom 中控离线，无法读取或保存布局。</Notice>}
+      {!online && <Notice tone="warning">{t("devices.wall.offlineNotice")}</Notice>}
       {loading && (
         <div role="status">
-          <EmptyState title="正在读取屏幕墙" />
+          <EmptyState title={t("devices.wall.loading")} />
         </div>
       )}
       {error && <Notice tone="danger">{error}</Notice>}
@@ -124,11 +130,11 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
       {state && (
         <>
           <WallEndpointList state={state} disabled={busy || !online} identify={catalog.identify} />
-          <nav className="wall-list" aria-label="选择墙面">
+          <nav className="wall-list" aria-label={t("devices.wall.selectWallNavAriaLabel")}>
             {!state.layouts.length ? (
-              <EmptyState title="暂无墙面" />
+              <EmptyState title={t("devices.wall.empty")} />
             ) : state.layouts.length > 6 ? (
-              <Field label="墙面">
+              <Field label={t("devices.wall.wallSelectLabel")}>
                 <Select
                   value={draft?.persisted ? draft.layout.wallId : ""}
                   disabled={busy}
@@ -138,11 +144,11 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                   }}
                 >
                   <option value="" disabled>
-                    选择墙面
+                    {t("devices.wall.selectWallPlaceholder")}
                   </option>
                   {state.layouts.map((layout) => (
                     <option key={layout.wallId} value={layout.wallId}>
-                      {layout.wallId} · {layout.tiles.length} 块
+                      {tf("devices.wall.wallOptionSummary", { id: layout.wallId, count: layout.tiles.length })}
                     </option>
                   ))}
                 </Select>
@@ -152,7 +158,7 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                 <Button
                   className="wall-list-choice"
                   key={layout.wallId}
-                  aria-label={`编辑墙面 ${layout.wallId}`}
+                  aria-label={tf("devices.wall.editWallAriaLabel", { id: layout.wallId })}
                   aria-pressed={draft?.layout.wallId === layout.wallId}
                   disabled={busy}
                   onClick={() => void abandon(() => catalog.select(layout))}
@@ -160,27 +166,25 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                   <span className="wall-list-id" title={layout.wallId}>
                     {layout.wallId}
                   </span>
-                  <Badge>{layout.tiles.length} 块</Badge>
+                  <Badge>{tf("devices.wall.tileCountBadge", { count: layout.tiles.length })}</Badge>
                 </Button>
               ))
             )}
           </nav>
           {draft && (
-            <section className="wall-draft" aria-label="墙面草稿">
+            <section className="wall-draft" aria-label={t("devices.wall.draftSectionAriaLabel")}>
               <div className="wall-toolbar">
-                <h3>{draft.persisted ? "编辑墙面" : "新墙面"}</h3>
+                <h3>{draft.persisted ? t("devices.wall.editWallHeading") : t("devices.wall.newWallHeading")}</h3>
                 <div className="wall-draft-status">
                   <code>
-                    草稿 v{draft.baseRevision} / 目录 v{state.revision}
+                    {tf("devices.wall.revisionComparison", { draft: draft.baseRevision, catalog: state.revision })}
                   </code>
-                  <Badge tone={draft.dirty ? "warning" : "neutral"}>{draft.dirty ? "未保存" : "已保存"}</Badge>
+                  <Badge tone={draft.dirty ? "warning" : "neutral"}>
+                    {draft.dirty ? t("devices.common.unsaved") : t("devices.common.saved")}
+                  </Badge>
                 </div>
               </div>
-              {conflict && (
-                <Notice tone="warning">
-                  目录已被其他操作更新，草稿仍保留。请重新载入并核对后编辑，当前草稿不能覆盖新版本。
-                </Notice>
-              )}
+              {conflict && <Notice tone="warning">{t("devices.wall.conflictWarning")}</Notice>}
               {invalid && <Notice tone="danger">{invalid}</Notice>}
               {draft.persisted && (
                 <WallPresentationControls
@@ -201,28 +205,28 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                   onChange={catalog.edit}
                 />
               </fieldset>
-              <Field label="场景准备时间">
+              <Field label={t("devices.wall.activationDelayLabel")}>
                 <Select
                   value={activationDelayMs}
                   disabled={busy || !online}
                   onChange={(event) => setActivationDelayMs(Number(event.target.value))}
                 >
-                  <option value={0}>准备就绪后立即显示</option>
+                  <option value={0}>{t("devices.wall.activationDelay.immediate")}</option>
                   <option value={5000} disabled={!schedulable}>
-                    5 秒后生效
+                    {t("devices.wall.activationDelay.fiveSeconds")}
                   </option>
                   <option value={10000} disabled={!schedulable}>
-                    10 秒后生效
+                    {t("devices.wall.activationDelay.tenSeconds")}
                   </option>
                 </Select>
               </Field>
               {activationDelayMs > 0 && !schedulable && (
-                <Notice tone="warning">部分终端未声明场景调度能力，请升级终端或选择立即显示。</Notice>
+                <Notice tone="warning">{t("devices.wall.unschedulableWarning")}</Notice>
               )}
               <footer className="wall-toolbar">
                 {draft.persisted ? (
                   <Button variant="danger" disabled={busy || conflict || !online} onClick={() => void removeWall()}>
-                    删除墙面
+                    {t("devices.wall.confirmDelete.confirm")}
                   </Button>
                 ) : (
                   <span />
@@ -238,7 +242,7 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                       })
                     }
                   >
-                    关闭编辑
+                    {t("devices.wall.closeEditorAction")}
                   </Button>
                   <Button
                     variant="primary"
@@ -253,7 +257,7 @@ export function WallManagementPanel({ baseUrl, online }: { baseUrl: string; onli
                     }
                     onClick={() => void saveLayout()}
                   >
-                    保存布局
+                    {t("devices.wall.saveLayoutAction")}
                   </Button>
                 </div>
               </footer>

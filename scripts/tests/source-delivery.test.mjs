@@ -14,7 +14,8 @@ function fixture(t) {
   for (const name of required) {
     const file = path.join(repo, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, 'uncommitted 中文\r\n');
+    // Multi-byte UTF-8 and CRLF dirty bytes must round-trip without normalization.
+    fs.writeFileSync(file, 'uncommitted UTF-8 \u03BB\u20AC\r\n');
   }
   return { root, repo, output: path.join(root, 'snapshot') };
 }

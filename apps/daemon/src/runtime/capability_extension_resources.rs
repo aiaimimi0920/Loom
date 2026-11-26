@@ -69,7 +69,7 @@ fn stage_extension_resource_uploads(
     )
 }
 
-// 两个已认证入口共享同一权限/解码/注册/回收实现；Art不借此获得通用管理路由。
+// Both authenticated entrypoints share permission, decode, registration, and reclamation logic; Arts gain no general management routes.
 fn stage_image_uploads(
     uploads: Vec<ExtensionResourceUpload>,
     references: &mut Vec<ExtensionResourceRef>,

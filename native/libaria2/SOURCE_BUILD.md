@@ -1,13 +1,14 @@
-# 引擎源码材料使用说明
+# libaria2 Engine Source Bundle Build Instructions
 
-本目录材料仅对应 libaria2 下载引擎，不是完整 Loom 组合应用源码交付包。source-manifest.json 的 combinedApplicationSourceComplete 保持 false。
+The materials in this bundle correspond specifically to Loom's `libaria2` download-engine library (`loom_aria2.dll`), not to a complete combined Loom application distribution (`combinedApplicationSourceComplete` in `source-manifest.json` remains `false` unless accompanied by the full application source archive).
 
-在具有 bash、tar、make、pkg-config 和 x86_64-w64-mingw32 工具链的环境中，从材料目录执行：
+In an environment providing `bash`, `tar`, `make`, `pkg-config`, and the `x86_64-w64-mingw32` cross-compilation toolchain, run from the extracted bundle root:
 
 ```bash
 bash ./build.sh /absolute/path/to/new-build /absolute/path/to/aria2-1.37.0.tar.xz /absolute/path/to/bridge.cpp
 ```
 
-输出目录必须是专用新目录，不使用用户数据目录。构建脚本不会自动安装工具链。编译器版本见 compiler.txt；原始源码、桥接和脚本摘要见 source-manifest.json，DLL 身份见 build-receipt.json。原生构建需要静态 libstdc++/MinGW 链接输入，其源码和许可材料仍需补齐后才能宣称完整原生对应源码交付。
-
-当前材料中的源码归档不作修改；配置参数和最终 DLL 链接命令在 build.sh 中。构建不涉及上传内容扫描，也不执行 AssetLibrary 包载荷。
+- The output directory must be a dedicated empty/new path outside user data directories.
+- `build.sh` does not install system packages automatically; exact compiler versions are recorded in `compiler.txt`, input SHA-256 digests in `source-manifest.json`, and the resulting DLL digest and link map in `build-receipt.json`.
+- Native compilation links static `libstdc++` / MinGW runtime components whose upstream source and license materials are tracked via `toolchain-sources.json` (`scripts/Get-LoomNativeSourceMaterials.ps1`).
+- The upstream `aria2-1.37.0.tar.xz` archive is unmodified; configure flags and final shared-library link flags live in `build.sh`. This library performs bounded HTTP/HTTPS transfers only and never executes post-download scripts or package payloads.

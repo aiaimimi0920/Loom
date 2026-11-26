@@ -9,7 +9,7 @@ pub(super) fn install_packaged_framework_from_exe(
 ) -> Result<Value, String> {
     let id = id.trim();
     if id.is_empty() || id.len() > 256 {
-        return Err("框架 ID 无效。".to_string());
+        return Err("Invalid framework ID.".to_string());
     }
 
     let install_path = format!("/v1/frameworks/{}/install", percent_encode_path_segment(id));
@@ -38,7 +38,7 @@ pub(super) fn install_packaged_framework_from_exe(
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join("; ");
-            format!("{original_error}；当前 Loom 包内未找到框架安装包：{searched}")
+            format!("{original_error}; bundled framework package not found in this Loom distribution: {searched}")
         })?;
     let package = read_verified_framework_package(id, package_path)?;
     let response = http_post_json_with_timeout(
@@ -59,7 +59,9 @@ pub(super) fn upgrade_packaged_framework_from_exe(
     let package_path = packaged_framework_package_candidates(current_exe, id)
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| format!("当前 Loom 包内未找到框架升级包：{id}"))?;
+        .ok_or_else(|| {
+            format!("Bundled framework upgrade package not found in this Loom distribution: {id}")
+        })?;
     let package = read_verified_framework_package(id, &package_path)?;
     http_post_json_with_timeout(
         base_url,
@@ -86,8 +88,12 @@ pub(super) fn packaged_framework_version(current_exe: &Path, id: &str) -> Option
         );
     }
     candidates.into_iter().find_map(|path| {
-        let bytes =
-            read_bounded_regular_file(&path, MAX_PACKAGE_CATALOG_BYTES, "打包框架目录").ok()?;
+        let bytes = read_bounded_regular_file(
+            &path,
+            MAX_PACKAGE_CATALOG_BYTES,
+            "bundled framework catalog",
+        )
+        .ok()?;
         let catalog: PackagedFrameworkCatalog = serde_json::from_slice(&bytes).ok()?;
         catalog
             .frameworks
@@ -110,7 +116,7 @@ fn validate_packaged_framework_id(id: &str) -> Result<(), String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err("框架 ID 无效。".to_owned());
+        return Err("Invalid framework ID.".to_owned());
     }
     Ok(())
 }
@@ -143,7 +149,7 @@ pub(super) fn read_verified_framework_package(
     id: &str,
     package_path: &Path,
 ) -> Result<Vec<u8>, String> {
-    read_verified_package("框架", id, package_path, FRAMEWORK_PACKAGE_MAX_BYTES)
+    read_verified_package("Framework", id, package_path, FRAMEWORK_PACKAGE_MAX_BYTES)
 }
 
 pub(super) fn read_verified_art_package(id: &str, package_path: &Path) -> Result<Vec<u8>, String> {
@@ -154,7 +160,7 @@ pub(super) fn read_verified_mcp_server_package(
     id: &str,
     package_path: &Path,
 ) -> Result<Vec<u8>, String> {
-    read_verified_package("MCP 服务", id, package_path, MCP_SERVER_PACKAGE_MAX_BYTES)
+    read_verified_package("MCP server", id, package_path, MCP_SERVER_PACKAGE_MAX_BYTES)
 }
 
 pub(super) fn read_verified_package(
@@ -163,11 +169,14 @@ pub(super) fn read_verified_package(
     package_path: &Path,
     max_bytes: u64,
 ) -> Result<Vec<u8>, String> {
-    let subject = format!("{kind} `{id}` 安装包");
+    let subject = format!("{kind} `{id}` package");
     let package = read_bounded_regular_file(package_path, max_bytes, &subject)?;
     let checksum_path = package_path.with_extension("zip.sha256");
-    let checksum =
-        read_bounded_utf8_file(&checksum_path, 4096, &format!("{kind} `{id}` 校验文件"))?;
+    let checksum = read_bounded_utf8_file(
+        &checksum_path,
+        4096,
+        &format!("{kind} `{id}` checksum file"),
+    )?;
     let mut fields = checksum.split_whitespace();
     let expected_hash = fields
         .next()
@@ -176,14 +185,14 @@ pub(super) fn read_verified_package(
     let package_name = package_path.file_name().and_then(|name| name.to_str());
     if expected_hash.is_none() || expected_name != package_name || fields.next().is_some() {
         return Err(format!(
-            "{kind} `{id}` 校验文件格式无效：{}",
+            "{kind} `{id}` checksum file format is invalid: {}",
             checksum_path.display()
         ));
     }
     let actual_hash = format!("{:x}", Sha256::digest(&package));
     if !actual_hash.eq_ignore_ascii_case(expected_hash.expect("validated checksum hash")) {
         return Err(format!(
-            "{kind} `{id}` 安装包 SHA-256 不匹配：{}",
+            "{kind} `{id}` package SHA-256 mismatch: {}",
             package_path.display()
         ));
     }

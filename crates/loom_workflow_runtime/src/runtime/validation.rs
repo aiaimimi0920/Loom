@@ -198,7 +198,7 @@ fn validate_yaml_value(
             }
         }
         serde_yaml::Value::Mapping(values) => {
-            // 字符串键同样计入预算，不能因更换解析器而放宽大小限制。
+            // String keys count toward the budget too; switching parsers must not relax the size limit.
             *value_nodes += values.len();
             for value in values.values() {
                 validate_yaml_value(workflow_id, value, depth + 1, value_nodes)?;

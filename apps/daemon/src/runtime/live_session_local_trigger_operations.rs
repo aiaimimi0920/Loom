@@ -1,4 +1,4 @@
-// 已鉴权原生宿主意图的原子状态修改；Claim 的领取围栏在 HTTP 响应之前落位。
+// Atomic state transitions for authenticated native host intent; the Claim fence lands before the HTTP response.
 fn configure_local_art_trigger(
     record: &mut LiveSessionRecord,
     actor: &str,
@@ -43,7 +43,7 @@ fn configure_local_art_trigger(
     if now < grant.issued_at_ms || now >= grant.expires_at_ms || actor != grant.binding.device_id {
         return Err(local_trigger_error(403, "local_art_trigger_scope"));
     }
-    // 复用原 Live 控制序列，不为本地 Art 增加可并行重放的第二个配置游标。
+    // Reuse the existing Live control sequence rather than introducing a second configuration cursor that could replay in parallel for local Arts.
     accept_control_sequence(record, actor, scope.epoch, sequence)?;
     let reply = local_trigger::Reply {
         protocol_version: local_trigger::PROTOCOL.into(),

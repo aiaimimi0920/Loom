@@ -1,6 +1,7 @@
 // Dual-target runtime adapter (`tauri` desktop shell vs `/ui/` browser web console)
 // plus desktop connection profile IPC (`local` bundled core vs `remote` LAN server).
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { uiText } from "../i18n/index.ts";
 import { DEFAULT_LOOM_DAEMON_URL } from "./loomApi/defaults.ts";
 
 export type LoomConnectionMode = "local" | "remote";
@@ -45,7 +46,7 @@ export async function getLoomConnectionProfile(): Promise<LoomConnectionStatus> 
       mode: "remote",
       activeUrl,
       remoteUrl: activeUrl,
-      serverLabel: "Web 管理控制台",
+      serverLabel: uiText("shell.runtime.webConsoleLabel"),
       otterBridgeUrl: null,
       hasRemoteToken: true,
     };
@@ -57,7 +58,7 @@ export async function saveLoomConnectionProfile(
   update: LoomConnectionUpdate,
 ): Promise<LoomConnectionStatus> {
   if (!isDesktopTauriShell()) {
-    throw new Error("浏览器 Web 管理端直接连接当前服务端，无需切换桌面本地进程模式。");
+    throw new Error(uiText("shell.runtime.browserDirectConnectionOnly"));
   }
   return await invoke<LoomConnectionStatus>("save_loom_connection_profile", { update });
 }

@@ -164,7 +164,7 @@ impl DeviceRegistryStore {
             .ok()
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Loom 主机".to_owned());
+            .unwrap_or_else(|| "Loom Host".to_owned());
         devices.insert(
             local_id.clone(),
             ManagedDevice {
@@ -231,7 +231,7 @@ impl DeviceRegistryStore {
     ) -> std::result::Result<DeviceSessionChallengeResponse, DeviceAuthError> {
         self.cleanup_expired_device_auth();
         let device_id = self.authorized_keyed_device(device_id)?.id.clone();
-        // 与插入共用 registry 锁；拒绝不会驱逐或延长尚可签发的挑战。
+        // Shares the registry lock with insertion; rejection never evicts or extends valid outstanding challenges.
         if self.challenges.len() >= DEVICE_CHALLENGE_MAX_TOTAL {
             return Err(DeviceAuthError::new(
                 429,
@@ -405,7 +405,7 @@ impl DeviceRegistryStore {
             .devices
             .get(device_id)
             .ok_or_else(|| DeviceAuthError::new(404, "device_not_found", "device was not found"))?;
-        // 禁用优先于待批准，避免旧客户端把禁用设备放入批准轮询。
+        // Disabled takes precedence over pending approval so legacy clients do not place disabled devices into approval polling.
         if !device.enabled {
             return Err(DeviceAuthError::new(
                 403,

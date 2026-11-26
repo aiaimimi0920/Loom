@@ -1,4 +1,4 @@
-//! NAccount 原生 OAuth 会话；不替换 Platform 投屏设备身份。
+//! Native NAccount OAuth session; does not replace Platform projection device identity.
 mod store;
 mod transport;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -219,7 +219,7 @@ pub(crate) fn callback(root: &Path, path: &str) -> Result<Value> {
         .read()?
         .ok_or(error(400, "naccount_callback_invalid"))?;
     let code = callback_code(path, &a, now())?;
-    // 授权码消费结果未知时要求重新登录，不重复兑换。
+    // Require re-login when authorization code redemption outcome is unknown; never redeem twice.
     store.clear()?;
     let token = transport::token(&[
         ("grant_type", "authorization_code"),
@@ -229,7 +229,7 @@ pub(crate) fn callback(root: &Path, path: &str) -> Result<Value> {
     ])?;
     accept(&mut a, token)?;
     store.save(&a)?;
-    Ok(json!({"status":"signed_in", "message":"登录成功，请返回 Loom。"}))
+    Ok(json!({"status":"signed_in", "message":"Signed in successfully. You may return to Loom."}))
 }
 pub(crate) fn access_token(root: &Path) -> Result<String> {
     let a = Store::new(root)
@@ -241,7 +241,7 @@ pub(crate) fn access_token(root: &Path) -> Result<String> {
     Ok(a.access_token)
 }
 
-// 与退出/刷新使用同一把锁，使凭据读取和短时任务注册不可被账号切换穿插。
+// Shares the same lock with sign-out and refresh so credential reads and short-lived task registration cannot interleave with account switching.
 pub(crate) fn with_access_token<T>(
     root: &Path,
     action: impl FnOnce(String) -> Result<T>,

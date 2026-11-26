@@ -1,5 +1,6 @@
 // Renders product identity and application diagnostics.
 import { Button, Select } from "@neuro/ui";
+import { useUiText } from "../../i18n/index.ts";
 import { LoomMark } from "../app/appShell";
 import { ApplicationDiagnosticsInfo, SettingsAppId, SettingsSectionIcon } from "./settingsModel";
 
@@ -48,6 +49,7 @@ export function AboutPanel({
   onOpenLog: (target: "directory" | "file") => void;
   onOpenRepository: (url: string) => void;
 }) {
+  const { t, tf } = useUiText();
   const titleId = `about-product-name-${app}`;
   return (
     <section className="about-panel" aria-labelledby={titleId}>
@@ -60,24 +62,24 @@ export function AboutPanel({
         </div>
         <dl className="about-panel__rows">
           <div>
-            <dt>应用名称</dt>
+            <dt>{t("settings.about.appName")}</dt>
             <dd>{diagnostics.appName}</dd>
           </div>
           <div>
-            <dt>版本号</dt>
+            <dt>{t("settings.about.version")}</dt>
             <dd>{diagnostics.version}</dd>
           </div>
           <div>
-            <dt>检查更新</dt>
-            <dd><Button compact onClick={onCheckUpdate}>立即检查</Button></dd>
+            <dt>{t("settings.about.checkUpdates")}</dt>
+            <dd><Button compact onClick={onCheckUpdate}>{t("settings.about.checkNow")}</Button></dd>
           </div>
           {diagnostics.repositoryUrl ? (
             <div className="about-panel__repository-row">
-              <dt>仓库</dt>
+              <dt>{t("settings.about.repository")}</dt>
               <dd>
                 <Button compact variant="quiet"
                   className="about-panel__repository-link"
-                  title={`打开 ${diagnostics.repositoryUrl}`}
+                  title={tf("settings.about.openRepositoryTitle", { url: diagnostics.repositoryUrl })}
                   onClick={() => onOpenRepository(diagnostics.repositoryUrl!)}
                 >
                   <span>{diagnostics.repositoryUrl}</span>
@@ -85,7 +87,7 @@ export function AboutPanel({
                     <path d="M14 5h5v5M12 12l7-7M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
                   </svg>
                 </Button>
-                <span className="about-panel__commit" title="构建对应的 Git 提交">
+                <span className="about-panel__commit" title={t("settings.about.commitTitle")}>
                   {diagnostics.commitShort?.slice(0, 6) || "------"}
                 </span>
               </dd>
@@ -97,43 +99,43 @@ export function AboutPanel({
       <div className="about-panel__group about-panel__group--diagnostics">
         <div className="about-panel__group-title">
           <SettingsSectionIcon kind="system" />
-          <h3>诊断日志</h3>
+          <h3>{t("settings.about.diagnosticsHeader")}</h3>
         </div>
         <dl className="about-panel__rows">
           <div>
-            <dt>日志级别</dt>
+            <dt>{t("settings.about.logLevel")}</dt>
             <dd>
               <Select
                 className="about-panel__log-level"
-                aria-label={`${diagnostics.appName} 日志级别`}
+                aria-label={tf("settings.about.logLevelAria", { appName: diagnostics.appName })}
                 value={logLevel}
                 onChange={(event) => onLogLevelChange(event.target.value)}
               >
                 <option value="error">Error</option>
                 <option value="warn">Warn</option>
-                <option value="info">Info（默认）</option>
+                <option value="info">{t("settings.about.logLevelInfoDefault")}</option>
                 <option value="debug">Debug</option>
               </Select>
             </dd>
           </div>
           <div className="about-panel__path-row">
-            <dt>日志位置</dt>
+            <dt>{t("settings.about.logLocation")}</dt>
             <dd>
-              <code title={diagnostics.logDir || undefined}>{diagnostics.logDir || "未加载"}</code>
-              <Button compact onClick={() => onOpenLog("directory")}>打开文件夹</Button>
+              <code title={diagnostics.logDir || undefined}>{diagnostics.logDir || t("settings.about.logNotLoaded")}</code>
+              <Button compact onClick={() => onOpenLog("directory")}>{t("settings.about.openFolder")}</Button>
             </dd>
           </div>
           <div>
-            <dt>查看日志</dt>
+            <dt>{t("settings.about.viewLog")}</dt>
             <dd>
               <span className="about-panel__log-file">
-                {diagnostics.logFile ? diagnostics.logFile.split(/[\\/]/).pop() : "暂无日志"}
+                {diagnostics.logFile ? diagnostics.logFile.split(/[\\/]/).pop() : t("settings.about.noLogFile")}
               </span>
               <Button compact
                 disabled={!diagnostics.logFileExists}
                 onClick={() => onOpenLog("file")}
               >
-                查看
+                {t("settings.about.viewAction")}
               </Button>
             </dd>
           </div>

@@ -1,4 +1,4 @@
-// 合成逻辑时钟只验证原期限不可延长，不更改产品时间/网络超时或用户时钟。
+// Synthetic logical clock verifies only that original grant lifetimes cannot be extended, without altering product time, network timeouts, or user clocks.
 #[test]
 fn local_art_trigger_lifecycle_preserves_deadlines_and_reclaims_expired_payload() {
     for grant in [false, true] {

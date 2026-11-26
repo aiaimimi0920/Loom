@@ -1,5 +1,7 @@
 // Reusable framework and port editors for Art authoring.
 import { Button, Checkbox, Field, Input, Panel, Select, Textarea } from "@neuro/ui";
+import { type Dispatch, type SetStateAction, useMemo } from "react";
+import { uiTextFor, useUiText } from "../../i18n/index.ts";
 import { type LoomFrameworkAuthoringField } from "../../services/loomApi";
 import { type WorkflowParamBindingCandidate } from "../../services/workflowStudio";
 import {
@@ -10,7 +12,6 @@ import {
   defaultWidgetForParam,
   outputCaptureModes,
 } from "./artWizardModel";
-import { type Dispatch, type SetStateAction, useMemo } from "react";
 
 export function FrameworkAuthoringFieldInput({
   field,
@@ -23,6 +24,7 @@ export function FrameworkAuthoringFieldInput({
   credentialNames: string[];
   onChange: (value: unknown) => void;
 }) {
+  const { t } = useUiText();
   if (field.secret || field.type === "secret") {
     return (
       <Field label={`${field.label}${field.required ? " *" : ""}`}>
@@ -32,7 +34,7 @@ export function FrameworkAuthoringFieldInput({
           onChange={(event) => onChange(event.target.value)}
           required={field.required}
         >
-          <option value="">选择全局机密</option>
+          <option value="">{t("art.edit.param.selectGlobalSecret")}</option>
           {credentialNames.map((credential) => (
             <option key={credential} value={credential}>
               {credential}
@@ -55,7 +57,7 @@ export function FrameworkAuthoringFieldInput({
     return (
       <Field label={`${field.label}${field.required ? " *" : ""}`}>
         <Select compact value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
-          <option value="">请选择</option>
+          <option value="">{t("art.wizard.field.selectOption")}</option>
           {(field.options ?? []).map((option) => (
             <option key={`${field.id}-${String(option.value)}`} value={String(option.value)}>
               {option.label}
@@ -114,6 +116,7 @@ export function ArtPortEditor({
   setParamPorts: Dispatch<SetStateAction<ArtWizardPortDraft[]>>;
   setOutputPorts: Dispatch<SetStateAction<ArtWizardPortDraft[]>>;
 }) {
+  const { t, tf } = useUiText();
   const updateInputPort = (index: number, patch: Partial<ArtWizardPortDraft>) => {
     setInputPorts((ports) => ports.map((port, portIndex) => (portIndex === index ? { ...port, ...patch } : port)));
   };
@@ -147,8 +150,12 @@ export function ArtPortEditor({
       updateParamPort(index, { bindingNodeId: "", bindingTarget: "", bindingKind: "" });
       return;
     }
+    const trimmedLabel = port.label.trim();
     const defaultName = !port.name.trim() || port.name.trim() === "param";
-    const defaultLabel = !port.label.trim() || port.label.trim() === "参数";
+    const defaultLabel =
+      !trimmedLabel ||
+      trimmedLabel === uiTextFor("en", "art.wizard.ports.defaultParamLabel") ||
+      trimmedLabel === uiTextFor("zh-Hans", "art.wizard.ports.defaultParamLabel");
     updateParamPort(index, {
       bindingNodeId: candidate.nodeId,
       bindingTarget: candidate.target,
@@ -172,12 +179,12 @@ export function ArtPortEditor({
   };
   const portTypeOptions = (
     <>
-      <option value="image">图像 image</option>
-      <option value="file">文件 file</option>
-      <option value="string">文本 string</option>
-      <option value="int">整数 int</option>
-      <option value="float">小数 float</option>
-      <option value="boolean">布尔 boolean</option>
+      <option value="image">{t("art.wizard.portType.image")}</option>
+      <option value="file">{t("art.wizard.portType.file")}</option>
+      <option value="string">{t("art.wizard.portType.string")}</option>
+      <option value="int">{t("art.wizard.portType.int")}</option>
+      <option value="float">{t("art.wizard.portType.float")}</option>
+      <option value="boolean">{t("art.wizard.portType.boolean")}</option>
     </>
   );
 
@@ -185,34 +192,38 @@ export function ArtPortEditor({
     <div className="advanced-port-editor">
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
-          <h4>输入</h4>
+          <h4>{t("art.wizard.ports.inputs")}</h4>
           <Button
             variant="quiet"
             compact
             type="button"
             onClick={() => setInputPorts((ports) => [...ports, createPortDraft("input")])}
           >
-            添加
+            {t("art.wizard.ports.add")}
           </Button>
         </div>
         {inputPorts.map((port, index) => (
-          <Panel className="port-editor-row" key={`input-${index}`} aria-label={`输入端口 ${index + 1}`}>
+          <Panel
+            className="port-editor-row"
+            key={`input-${index}`}
+            aria-label={tf("art.wizard.ports.inputRowAria", { index: index + 1 })}
+          >
             <Input
-              aria-label={`输入端口 ${index + 1} 名称`}
+              aria-label={tf("art.wizard.ports.inputNameAria", { index: index + 1 })}
               compact
               value={port.name}
               onChange={(event) => updateInputPort(index, { name: event.target.value })}
-              placeholder="name"
+              placeholder={t("art.wizard.ports.placeholder.name")}
             />
             <Input
-              aria-label={`输入端口 ${index + 1} 标签`}
+              aria-label={tf("art.wizard.ports.inputLabelAria", { index: index + 1 })}
               compact
               value={port.label}
               onChange={(event) => updateInputPort(index, { label: event.target.value })}
-              placeholder="label"
+              placeholder={t("art.wizard.ports.placeholder.label")}
             />
             <Select
-              aria-label={`输入端口 ${index + 1} 类型`}
+              aria-label={tf("art.wizard.ports.inputTypeAria", { index: index + 1 })}
               compact
               value={port.type}
               onChange={(event) => {
@@ -226,40 +237,40 @@ export function ArtPortEditor({
               {portTypeOptions}
             </Select>
             <Input
-              aria-label={`输入端口 ${index + 1} 执行类型`}
+              aria-label={tf("art.wizard.ports.inputExecTypeAria", { index: index + 1 })}
               compact
               value={port.executionType}
               onChange={(event) => updateInputPort(index, { executionType: event.target.value })}
-              placeholder="execution type"
+              placeholder={t("art.wizard.ports.placeholder.execType")}
             />
             <Input
-              aria-label={`输入端口 ${index + 1} 默认值`}
+              aria-label={tf("art.wizard.ports.inputDefaultAria", { index: index + 1 })}
               compact
               value={port.defaultValue}
               onChange={(event) => updateInputPort(index, { defaultValue: event.target.value })}
-              placeholder="default"
+              placeholder={t("art.wizard.ports.placeholder.default")}
             />
             <Checkbox
-              aria-label={`禁用输入端口 ${index + 1}`}
+              aria-label={tf("art.wizard.ports.inputDisableAria", { index: index + 1 })}
               checked={port.disabled}
               onChange={(event) => updateInputPort(index, { disabled: event.target.checked })}
-              label="禁用"
+              label={t("art.action.disable")}
             />
             <Button
-              aria-label={`删除输入端口 ${index + 1}`}
+              aria-label={tf("art.wizard.ports.inputDeleteAria", { index: index + 1 })}
               variant="quiet"
               compact
               type="button"
               onClick={() => setInputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
             >
-              删除
+              {t("art.action.delete")}
             </Button>
           </Panel>
         ))}
       </div>
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
-          <h4>参数</h4>
+          <h4>{t("art.wizard.ports.params")}</h4>
           <Button
             variant="quiet"
             compact
@@ -267,31 +278,39 @@ export function ArtPortEditor({
             onClick={() =>
               setParamPorts((ports) => [
                 ...ports,
-                createPortDraft("input", { name: "param", label: "参数", type: "string" }),
+                createPortDraft("input", {
+                  name: "param",
+                  label: t("art.wizard.ports.defaultParamLabel"),
+                  type: "string",
+                }),
               ])
             }
           >
-            添加
+            {t("art.wizard.ports.add")}
           </Button>
         </div>
         {paramPorts.map((port, index) => (
-          <Panel className="port-editor-row" key={`param-${index}`} aria-label={`参数端口 ${index + 1}`}>
+          <Panel
+            className="port-editor-row"
+            key={`param-${index}`}
+            aria-label={tf("art.wizard.ports.paramRowAria", { index: index + 1 })}
+          >
             <Input
-              aria-label={`参数端口 ${index + 1} ID`}
+              aria-label={tf("art.wizard.ports.paramIdAria", { index: index + 1 })}
               compact
               value={port.name}
               onChange={(event) => updateParamPort(index, { name: event.target.value })}
-              placeholder="参数 ID"
+              placeholder={t("art.wizard.ports.placeholder.paramId")}
             />
             <Input
-              aria-label={`参数端口 ${index + 1} 标签`}
+              aria-label={tf("art.wizard.ports.paramLabelAria", { index: index + 1 })}
               compact
               value={port.label}
               onChange={(event) => updateParamPort(index, { label: event.target.value })}
-              placeholder="显示名称"
+              placeholder={t("art.wizard.ports.placeholder.displayName")}
             />
             <Select
-              aria-label={`参数端口 ${index + 1} 类型`}
+              aria-label={tf("art.wizard.ports.paramTypeAria", { index: index + 1 })}
               compact
               value={port.type}
               onChange={(event) => {
@@ -307,19 +326,19 @@ export function ArtPortEditor({
             </Select>
             {!workflowMode ? (
               <Input
-                aria-label={`参数端口 ${index + 1} 执行类型`}
+                aria-label={tf("art.wizard.ports.paramExecTypeAria", { index: index + 1 })}
                 compact
                 value={port.executionType}
                 onChange={(event) => updateParamPort(index, { executionType: event.target.value })}
-                placeholder="execution type"
+                placeholder={t("art.wizard.ports.placeholder.execType")}
               />
             ) : null}
             <Input
-              aria-label={`参数端口 ${index + 1} 默认值`}
+              aria-label={tf("art.wizard.ports.paramDefaultAria", { index: index + 1 })}
               compact
               value={port.defaultValue}
               onChange={(event) => updateParamPort(index, { defaultValue: event.target.value })}
-              placeholder="默认值"
+              placeholder={t("art.wizard.ports.placeholder.defaultValue")}
             />
             {workflowMode ? (
               <Select
@@ -328,10 +347,16 @@ export function ArtPortEditor({
                 value={selectedBindingKey(port)}
                 onChange={(event) => updateParamBinding(index, event.target.value)}
                 disabled={paramBindingsLoading || !paramBindingCandidates.length}
-                aria-label={`绑定 ${port.label || port.name || `参数 ${index + 1}`}`}
-                title="绑定到流程节点参数"
+                aria-label={tf("art.wizard.ports.bindParamAria", {
+                  name: port.label || port.name || tf("art.wizard.ports.paramFallbackName", { index: index + 1 }),
+                })}
+                title={t("art.wizard.ports.bindNodeParamTitle")}
               >
-                <option value="">{paramBindingsLoading ? "读取流程参数..." : "绑定到节点参数"}</option>
+                <option value="">
+                  {paramBindingsLoading
+                    ? t("art.wizard.ports.loadingWorkflowParams")
+                    : t("art.wizard.ports.bindToNodeParam")}
+                </option>
                 {bindingCandidatesByNode.map(([nodeId, group]) => (
                   <optgroup key={nodeId} label={group.label}>
                     {group.candidates.map((candidate) => (
@@ -344,47 +369,51 @@ export function ArtPortEditor({
               </Select>
             ) : null}
             <Button
-              aria-label={`删除参数端口 ${index + 1}`}
+              aria-label={tf("art.wizard.ports.paramDeleteAria", { index: index + 1 })}
               variant="quiet"
               compact
               type="button"
               onClick={() => setParamPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
             >
-              删除
+              {t("art.action.delete")}
             </Button>
           </Panel>
         ))}
       </div>
       <div className="port-editor-section">
         <div className="section-heading-row section-heading-row--compact">
-          <h4>输出</h4>
+          <h4>{t("art.wizard.ports.outputs")}</h4>
           <Button
             variant="quiet"
             compact
             type="button"
             onClick={() => setOutputPorts((ports) => [...ports, createPortDraft("output")])}
           >
-            添加
+            {t("art.wizard.ports.add")}
           </Button>
         </div>
         {outputPorts.map((port, index) => (
-          <Panel className="port-editor-row" key={`output-${index}`} aria-label={`输出端口 ${index + 1}`}>
+          <Panel
+            className="port-editor-row"
+            key={`output-${index}`}
+            aria-label={tf("art.wizard.ports.outputRowAria", { index: index + 1 })}
+          >
             <Input
-              aria-label={`输出端口 ${index + 1} 名称`}
+              aria-label={tf("art.wizard.ports.outputNameAria", { index: index + 1 })}
               compact
               value={port.name}
               onChange={(event) => updateOutputPort(index, { name: event.target.value })}
-              placeholder="name"
+              placeholder={t("art.wizard.ports.placeholder.name")}
             />
             <Input
-              aria-label={`输出端口 ${index + 1} 标签`}
+              aria-label={tf("art.wizard.ports.outputLabelAria", { index: index + 1 })}
               compact
               value={port.label}
               onChange={(event) => updateOutputPort(index, { label: event.target.value })}
-              placeholder="label"
+              placeholder={t("art.wizard.ports.placeholder.label")}
             />
             <Select
-              aria-label={`输出端口 ${index + 1} 类型`}
+              aria-label={tf("art.wizard.ports.outputTypeAria", { index: index + 1 })}
               compact
               value={port.type}
               onChange={(event) => {
@@ -398,17 +427,17 @@ export function ArtPortEditor({
               {portTypeOptions}
             </Select>
             <Input
-              aria-label={`输出端口 ${index + 1} 执行类型`}
+              aria-label={tf("art.wizard.ports.outputExecTypeAria", { index: index + 1 })}
               compact
               value={port.executionType}
               onChange={(event) => updateOutputPort(index, { executionType: event.target.value })}
-              placeholder="execution type"
+              placeholder={t("art.wizard.ports.placeholder.execType")}
             />
             <Select
               compact
               value={port.captureMode}
               onChange={(event) => updateOutputPort(index, { captureMode: event.target.value as ArtPortCaptureMode })}
-              aria-label="捕获模式"
+              aria-label={t("art.wizard.ports.captureModeAria")}
             >
               {outputCaptureModes.map((captureMode) => (
                 <option key={captureMode} value={captureMode}>
@@ -417,27 +446,27 @@ export function ArtPortEditor({
               ))}
             </Select>
             <Input
-              aria-label={`输出端口 ${index + 1} JSONPath`}
+              aria-label={tf("art.wizard.ports.outputJsonPathAria", { index: index + 1 })}
               compact
               value={port.jsonPath}
               onChange={(event) => updateOutputPort(index, { jsonPath: event.target.value })}
-              placeholder="JSONPath"
+              placeholder={t("art.wizard.ports.placeholder.jsonPath")}
             />
             <Input
-              aria-label={`输出端口 ${index + 1} 文件名`}
+              aria-label={tf("art.wizard.ports.outputFilenameAria", { index: index + 1 })}
               compact
               value={port.filename}
               onChange={(event) => updateOutputPort(index, { filename: event.target.value })}
-              placeholder="filename/template"
+              placeholder={t("art.wizard.ports.placeholder.filename")}
             />
             <Button
-              aria-label={`删除输出端口 ${index + 1}`}
+              aria-label={tf("art.wizard.ports.outputDeleteAria", { index: index + 1 })}
               variant="quiet"
               compact
               type="button"
               onClick={() => setOutputPorts((ports) => ports.filter((_, portIndex) => portIndex !== index))}
             >
-              删除
+              {t("art.action.delete")}
             </Button>
           </Panel>
         ))}

@@ -120,7 +120,7 @@ fn the_persisted_trust_policy_blocks_framework_readiness_and_installs() {
         framework_ready_in("publisher.alpha/policy-framework", Some(&packages_root));
     assert!(!ready, "readiness must honour the persisted policy");
     assert!(
-        reason.contains("信任策略"),
+        reason.contains("trust policy"),
         "expected a trust policy refusal, got {reason}"
     );
     let error = registry
@@ -154,7 +154,7 @@ fn a_corrupt_state_file_is_reported_and_never_silently_rewritten() {
     let damaged = "{ \"publisher.alpha/corrupt-state-framework\": ";
     std::fs::write(&state_path, damaged).expect("damage the state file");
 
-    // Not "未安装": the packages are intact on disk and the operator has to be told which file
+    // Not "Not installed": the packages are intact on disk and the operator has to be told which file
     // to repair.
     let (ready, reason) = registry.readiness(&qualified);
     assert!(

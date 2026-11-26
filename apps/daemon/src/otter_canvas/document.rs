@@ -35,11 +35,11 @@ impl OtterCanvasDocument {
         }
         for raw_node in canvas_nodes(&root, canvas_source) {
             let Some(id) = non_empty_string(raw_node.get("id")) else {
-                warnings.push("已跳过缺少有效 ID 的 Otter 节点。".to_owned());
+                warnings.push("Skipped Otter node with missing or invalid ID.".to_owned());
                 continue;
             };
             if !node_ids.insert(id.clone()) {
-                warnings.push(format!("已跳过重复的 Otter 节点 `{id}`。"));
+                warnings.push(format!("Skipped duplicate Otter node `{id}`."));
                 continue;
             }
 
@@ -52,7 +52,7 @@ impl OtterCanvasDocument {
             let (height, height_degraded) =
                 normalized_size(node_size(raw_node, "h", "height", canvas_source));
             if x_degraded || y_degraded || width_degraded || height_degraded {
-                warnings.push(format!("Otter 节点 `{id}` 的几何信息已归一化。"));
+                warnings.push(format!("Normalized geometry for Otter node `{id}`."));
             }
 
             let raw_art_id = node_string(raw_node, "artId");
@@ -62,9 +62,9 @@ impl OtterCanvasDocument {
                 .then_some(raw_art_id)
                 .flatten();
             let label = match kind {
-                OtterCanvasNodeKind::Screenshot => "截图节点",
-                OtterCanvasNodeKind::Art => "Art 节点",
-                OtterCanvasNodeKind::Unknown => "未知节点",
+                OtterCanvasNodeKind::Screenshot => "Screenshot Node",
+                OtterCanvasNodeKind::Art => "Art Node",
+                OtterCanvasNodeKind::Unknown => "Unknown Node",
             }
             .to_owned();
             let status =
@@ -135,7 +135,7 @@ impl OtterCanvasDocument {
             let target_node_id = edge_endpoint(raw_edge, canvas_source, EdgeEnd::Target);
             let (Some(source_node_id), Some(target_node_id)) = (source_node_id, target_node_id)
             else {
-                warnings.push("已跳过缺少端点的 Otter 连线。".to_owned());
+                warnings.push("Skipped Otter edge with missing endpoint.".to_owned());
                 continue;
             };
             let (Some(source_node), Some(target_node)) = (
@@ -143,7 +143,7 @@ impl OtterCanvasDocument {
                 node_lookup.get(target_node_id.as_str()),
             ) else {
                 warnings.push(format!(
-                    "已跳过端点不存在的 Otter 连线 `{source_node_id}` -> `{target_node_id}`。"
+                    "Skipped Otter edge `{source_node_id}` -> `{target_node_id}` with missing endpoint node."
                 ));
                 continue;
             };
@@ -182,7 +182,7 @@ impl OtterCanvasDocument {
                 0,
             );
             if resolved.source.is_none() && resolved.had_candidates {
-                warnings.push(format!("Otter 节点 `{}` 的预览不可用。", node.id));
+                warnings.push(format!("Preview unavailable for Otter node `{}`.", node.id));
             }
             let preview_version = resolved.source.as_ref().map(preview_source_version);
             if let Some(source) = resolved.source {

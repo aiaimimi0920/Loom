@@ -1,4 +1,4 @@
-// 三类真实来源共享同一Tile；不改生产状态/媒体队列/授权或期限。
+// Three real source types sharing a single Tile without altering production state, media queues, grants, or deadlines.
 mod mixed {
     use super::*;
     #[test]
@@ -137,11 +137,11 @@ mod mixed {
                 .len(),
             2
         );
-        // 动态与呈现生命周期各用独立完整Source会话，保原15秒测试寿命，不延时或删检查。
+        // Dynamic updates and presentation lifecycle each use their own full Source session, preserving the standard 15-second lifetime without extra delays or skipped checks.
         let expected = if lifecycle {
             first["pbgra"].clone()
         } else {
-            // 三路各经原权威入口换内容；只改Source专属合成纹理，不写服务媒体store。
+            // Update all three sources through their authoritative entrypoints; mutate only Source-owned synthetic textures without writing directly to the server media store.
             fs::write(f.root.join("source-pixels-change"), b"change").unwrap();
             update(&f, &instance, &attachment, &art_image2);
             layout["revision"] = json!(3);

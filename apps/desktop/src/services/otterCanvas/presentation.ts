@@ -1,5 +1,6 @@
 // Resolves preview addresses and derives stable UI presentation from snapshot/runtime state.
 
+import { uiText } from "../../i18n/index.ts";
 import type {
   OtterCanvasNode,
   OtterCanvasNodePresentation,
@@ -34,7 +35,7 @@ export function getOtterCanvasNodePresentation(
   if (node.kind === "art" && node.status === "error") {
     return {
       showPreviewImage: false,
-      placeholderText: "执行失败",
+      placeholderText: uiText("otter.node.executionFailed"),
       detailText: node.errorMessage?.trim() || null,
       placeholderTone: "error",
     };
@@ -42,7 +43,7 @@ export function getOtterCanvasNodePresentation(
   if (!runtime.hasResolvedPreview || runtime.previewFailed) {
     return {
       showPreviewImage: false,
-      placeholderText: "预览不可用",
+      placeholderText: uiText("otter.node.previewUnavailable"),
       detailText: null,
       placeholderTone: "neutral",
     };

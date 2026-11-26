@@ -1,4 +1,4 @@
-// 缓存仅消除源码传输，仍通过原真实设备/审批/包验证和签发；由原HTTP测试include。
+// Caching omits only source transmission while still passing through real device, approval, package verification, and signing; included by the HTTP test module.
 mod cache_tests {
     use super::*;
     fn input(f: &Fixture, digest: &str) -> Value {

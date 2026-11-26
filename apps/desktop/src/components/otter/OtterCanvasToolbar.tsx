@@ -2,6 +2,7 @@
 
 import { Button, Field, Notice, Range, Select } from "@neuro/ui";
 import { useLayoutEffect, useRef } from "react";
+import { useUiText } from "../../i18n/index.ts";
 import { scaleToSliderValue, sliderValueToScale, type CanvasWorkflowSummary } from "../../services/otterCanvas.ts";
 import { LIVE_WORKFLOW_ID, type StatusMessage } from "./otterCanvasThumbnailModel.ts";
 import { MAX_SCALE, MIN_SCALE } from "./useOtterCanvasViewport.ts";
@@ -14,6 +15,7 @@ interface OtterCanvasToolbarProps {
   workflowBusy: boolean;
   saving: boolean;
   canSave: boolean;
+  saveLabel?: string;
   scale: number;
   showMinimap: boolean;
   saveMessage: StatusMessage | null;
@@ -33,6 +35,7 @@ export function OtterCanvasToolbar({
   workflowBusy,
   saving,
   canSave,
+  saveLabel,
   scale,
   showMinimap,
   saveMessage,
@@ -43,6 +46,8 @@ export function OtterCanvasToolbar({
   onScaleChange,
   onToggleMinimap,
 }: OtterCanvasToolbarProps) {
+  const { t, tf } = useUiText();
+  const resolvedSaveLabel = saveLabel ?? t("otter.canvas.saveWorkflow");
   const workflowSelect = useRef<HTMLSelectElement>(null);
   const focusAfterDelete = useRef(false);
   useLayoutEffect(() => {
@@ -53,7 +58,7 @@ export function OtterCanvasToolbar({
   return (
     <div className="otter-canvas-toolbar">
       <div className="otter-canvas-workflow-select">
-        <Field label="工作流">
+        <Field label={t("otter.toolbar.workflowLabel")}>
           <Select
             ref={workflowSelect}
             value={selectedWorkflow}
@@ -62,10 +67,10 @@ export function OtterCanvasToolbar({
               onWorkflowChange(event.target.value);
             }}
           >
-            <option value={LIVE_WORKFLOW_ID}>桌面同步</option>
+            <option value={LIVE_WORKFLOW_ID}>{t("otter.toolbar.liveSync")}</option>
             {workflows.map((workflow) => (
               <option key={workflow.id} value={workflow.id}>
-                {workflow.name}（{workflow.nodeCount} 节点）
+                {tf("otter.toolbar.workflowOption", { name: workflow.name, count: workflow.nodeCount })}
               </option>
             ))}
           </Select>
@@ -74,7 +79,7 @@ export function OtterCanvasToolbar({
       {!isLive ? (
         <div className="otter-canvas-workflow-actions">
           <Button variant="quiet" onClick={onRename} disabled={workflowBusy}>
-            重命名
+            {t("common.rename")}
           </Button>
           <Button
             variant="danger"
@@ -84,7 +89,7 @@ export function OtterCanvasToolbar({
             }}
             disabled={workflowBusy}
           >
-            删除
+            {t("common.delete")}
           </Button>
         </div>
       ) : null}
@@ -98,11 +103,11 @@ export function OtterCanvasToolbar({
               onClick={onSave}
               disabled={saving || !canSave}
             >
-              保存为工作流
+              {resolvedSaveLabel}
             </Button>
           ) : null}
           <div className="otter-canvas-zoom">
-            <Field label="缩放">
+            <Field label={t("otter.toolbar.zoomLabel")}>
               <Range
                 className="otter-canvas-zoom__slider"
                 min={0}
@@ -112,14 +117,14 @@ export function OtterCanvasToolbar({
                 onChange={(event) =>
                   onScaleChange(sliderValueToScale(Number(event.target.value), MIN_SCALE, MAX_SCALE))
                 }
-                aria-label="画布缩放"
+                aria-label={t("otter.toolbar.zoomAria")}
                 aria-valuetext={`${Math.round(scale * 100)}%`}
               />
             </Field>
             <span className="otter-canvas-zoom__value">{Math.round(scale * 100)}%</span>
           </div>
           <Button onClick={onToggleMinimap} aria-pressed={showMinimap}>
-            缩略图
+            {t("otter.toolbar.minimap")}
           </Button>
         </div>
       ) : null}

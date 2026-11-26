@@ -1,4 +1,4 @@
-//! 同一公开 Schema 与 Rust wire 的正负例；时间与权限的关系约束由运行时补充。
+//! Positive and negative cases across the public JSON Schema and Rust wire types; relational time and permission checks are enforced at runtime.
 use super::*;
 use serde_json::{json, Value};
 
@@ -44,7 +44,7 @@ fn unsigned_and_self_trusting_envelopes_are_not_the_wire_contract() {
     let schema: Value = serde_json::from_str(crate::schemas::LOCAL_ART_GRANT_V1).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let mut envelope = json!({"algorithm":"ed25519","keyId":"issuer:1","payload":"e30=","signature":"A".repeat(88)});
-    assert!(validator.is_valid(&envelope)); // 格式不是签名有效性证明。
+    assert!(validator.is_valid(&envelope)); // Wire shape validity is not proof of cryptographic signature validity.
     envelope["publicKey"] = json!("peer selected key");
     assert!(!validator.is_valid(&envelope));
     assert!(serde_json::from_value::<Envelope>(envelope).is_err());

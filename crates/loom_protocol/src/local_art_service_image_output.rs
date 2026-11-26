@@ -1,4 +1,4 @@
-//! 显式单PNG结果；旧service.v1的JSON门和控制owner不扩义。
+//! Explicit single-PNG service output; keeps legacy `service.v1` JSON gates and control ownership unchanged.
 use super::{images, Error, Owner, Reply, Status, Submit};
 use serde::{Deserialize, Serialize};
 

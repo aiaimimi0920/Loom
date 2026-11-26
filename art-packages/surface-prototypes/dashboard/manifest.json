@@ -1,7 +1,7 @@
 {
   "id": "surface-device-dashboard",
-  "name": "设备仪表板",
-  "description": "分布式 Surface 原型：列表、进度、资源更新和同一实例多端挂载。",
+  "name": "Device Dashboard",
+  "description": "Distributed Surface prototype: lists, progress, resource updates, and multi-device shared attachments.",
   "enabled": true,
   "execution": {
     "type": "framework_art",
@@ -11,7 +11,7 @@
   "outputs": [
     {
       "name": "dashboard",
-      "label": "仪表板状态",
+      "label": "Dashboard State",
       "type": "object"
     }
   ],
@@ -31,7 +31,7 @@
       "globalId": "NA20260811002"
     },
     "localization": {
-      "defaultLocale": "zh-CN",
+      "defaultLocale": "en-US",
       "names": {
         "zh-CN": "设备仪表板",
         "en-US": "Device Dashboard"

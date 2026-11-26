@@ -104,7 +104,7 @@ mod local_art;
 mod mcp_share_tokens;
 mod otter_sync;
 mod terminal_relay;
-/// 仅在整个 daemon 进程正常退出时关闭进程级原生下载引擎。
+/// Shuts down the process-wide native download engine only during normal daemon process exit.
 pub fn shutdown_download_engine() {
     asset_library::shutdown_download_engine();
 }

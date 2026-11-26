@@ -3,10 +3,10 @@ import test from "node:test";
 import { fetchCloudArtCatalog, parseCloudPublicationPage } from "./cloudCatalog.ts";
 import { installCloudPackage } from "./cloudPackageInstall.ts";
 
-const art = { id: "publication-art", title: "颜色迁移", label: "0.1.5", kind: "art",
+const art = { id: "publication-art", title: "Color Transfer", label: "0.1.5", kind: "art",
   size: 18670, sha256: "a".repeat(64), policy: "loom-art-zip-format-v1" };
 
-test("Art 商店读取 AssetLibrary 并保留精确发布绑定，不调用旧商店", async (context) => {
+test("Art store reads AssetLibrary and preserves exact publication bindings without calling legacy store", async (context) => {
   const previous = globalThis.fetch;
   context.after(() => { globalThis.fetch = previous; });
   const calls: string[] = [];
@@ -29,7 +29,7 @@ test("Art 商店读取 AssetLibrary 并保留精确发布绑定，不调用旧�
   assert.deepEqual(calls.map((url) => new URL(url).pathname), ["/v1/asset-library/catalog", "/v1/asset-library/install"]);
 });
 
-test("只有大型应用策略可超过旧预算，错误分页和摘要被拒绝", () => {
+test("only large application policy exceeds default budget while malformed pagination and digests fail", () => {
   const large = { ...art, kind: "application", policy: "application-large-zip-format-v1", size: 80_166_238 };
   assert.equal(parseCloudPublicationPage({ items: [large], nextAfter: null }).items.length, 1);
   for (const bad of [{ ...large, kind: "art" }, { ...large, policy: "application-zip-format-v1" },
@@ -38,7 +38,7 @@ test("只有大型应用策略可超过旧预算，错误分页和摘要被拒�
   assert.throws(() => parseCloudPublicationPage({ items: [], nextAfter: 1 }), /response_invalid/);
 });
 
-test("无 Art 的页仍保留下一页，网络失败不冒充空目录", async (context) => {
+test("pages without Art entries retain next cursor and network failures never masquerade as an empty catalog", async (context) => {
   const previous = globalThis.fetch;
   context.after(() => { globalThis.fetch = previous; });
   globalThis.fetch = async () => Response.json({ items: [{ ...art, kind: "mcp" }], nextAfter: "next" });

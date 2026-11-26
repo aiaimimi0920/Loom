@@ -1,12 +1,13 @@
 // Owns catalog paging, trust confirmation and installation of published Art packages.
 import { Badge, Button, EmptyState, Notice, Panel } from "@neuro/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { uiText, useUiText } from "../../i18n/index.ts";
 import { filterArtStoreEntries, officialFrameworkDisplayName } from "../../services/artHubUi";
-import type { LoomFramework } from "../../services/loomApi";
 import { fetchCloudArtCatalog, type CloudArtEntry } from "../../services/cloudCatalog";
 import { canInstallCloudPackage, installCloudPackage } from "../../services/cloudPackageInstall";
+import type { LoomFramework } from "../../services/loomApi";
 import { artFrameworkIconKind, ArtIcon } from "../app/appShell";
 import { requestAppConfirmation } from "../feedback/AppFeedback";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function ArtStoreCard({
   baseUrl,
@@ -27,6 +28,7 @@ export function ArtStoreCard({
   refreshToken: number;
   onInstalled: () => void | Promise<void>;
 }) {
+  const { t, tf } = useUiText();
   const [catalog, setCatalog] = useState<CloudArtEntry[]>([]);
   const [nextAfter, setNextAfter] = useState<string | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -50,7 +52,7 @@ export function ArtStoreCard({
         setNextAfter(nextAfter);
       } catch (err) {
         if (version === catalogLoadVersion.current) {
-          setMessage({ ok: false, text: err instanceof Error ? err.message : "无法访问商店。" });
+          setMessage({ ok: false, text: err instanceof Error ? err.message : uiText("art.store.loadFailed") });
         }
       } finally {
         if (version === catalogLoadVersion.current) setCatalogLoading(false);
@@ -71,9 +73,9 @@ export function ArtStoreCard({
     if (
       art.official !== true &&
       !(await requestAppConfirmation({
-        title: "安装未认证 Art",
-        message: `“${art.name ?? art.id}”未经官方认证，可能包含恶意代码。仅在信任发布者和包来源时继续。`,
-        confirmLabel: "继续安装",
+        title: t("art.store.unverifiedConfirm.title"),
+        message: tf("art.store.unverifiedConfirm.message", { name: art.name ?? art.id }),
+        confirmLabel: t("art.store.unverifiedConfirm.confirm"),
         tone: "warning",
       }))
     )
@@ -82,10 +84,10 @@ export function ArtStoreCard({
     setMessage(null);
     try {
       await installCloudPackage(baseUrl, art.publication);
-      setMessage({ ok: true, text: `已安装 ${art.name ?? art.id}。` });
+      setMessage({ ok: true, text: tf("art.store.installedMessage", { name: art.name ?? art.id }) });
       await onInstalled();
     } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : "安装失败。" });
+      setMessage({ ok: false, text: err instanceof Error ? err.message : t("art.store.installFailed") });
     } finally {
       setInstallingId(null);
     }
@@ -102,13 +104,15 @@ export function ArtStoreCard({
           <span>{message.text}</span>
           {!message.ok ? (
             <Button onClick={() => void loadCatalog()} disabled={catalogLoading} loading={catalogLoading}>
-              重试
+              {t("art.action.retry")}
             </Button>
           ) : null}
         </Notice>
       ) : null}
-      {catalogLoading && catalog.length === 0 ? <Notice role="status">加载中</Notice> : null}
-      {!catalogLoading && !message && visibleCatalog.length === 0 ? <EmptyState title="没有匹配的 Art" /> : null}
+      {catalogLoading && catalog.length === 0 ? <Notice role="status">{t("art.common.loading")}</Notice> : null}
+      {!catalogLoading && !message && visibleCatalog.length === 0 ? (
+        <EmptyState title={t("art.store.empty")} />
+      ) : null}
       <div className="card-grid art-store-grid">
         {visibleCatalog.map((entry) => {
           const art = catalog.find((item) => item.id === entry.id)!;
@@ -123,12 +127,12 @@ export function ArtStoreCard({
                 <h3 title={art.name ?? art.id}>{art.name ?? art.id}</h3>
                 <div className="art-store-card__badges">
                   <Badge tone={art.official === true ? "success" : "warning"}>
-                    {art.official === true ? "官方" : "未认证"}
+                    {art.official === true ? t("art.store.badge.official") : t("art.store.badge.unverified")}
                   </Badge>
                   <span
                     className="art-registry-card__framework-icon"
                     role="img"
-                    aria-label={`${frameworkLabel} Art`}
+                    aria-label={tf("art.card.frameworkIconAria", { framework: frameworkLabel })}
                     title={frameworkLabel}
                   >
                     <ArtIcon kind={artFrameworkIconKind(frameworkReference)} />
@@ -153,7 +157,7 @@ export function ArtStoreCard({
                   onClick={() => void install(art)}
                   disabled={installingId !== null || !canInstallCloudPackage(art.publication)}
                 >
-                  {canInstallCloudPackage(art.publication) ? "安装" : "非原生 Art 包"}
+                  {canInstallCloudPackage(art.publication) ? t("art.action.install") : t("art.store.nonNativePackage")}
                 </Button>
               </div>
             </Panel>
@@ -167,7 +171,7 @@ export function ArtStoreCard({
           disabled={catalogLoading || installingId !== null}
           onClick={() => void loadCatalog(nextAfter)}
         >
-          下一页
+          {t("art.store.nextPage")}
         </Button>
       )}
     </section>

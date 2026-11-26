@@ -1,4 +1,4 @@
-// 普通Otter EXE真实物理输出：服务ACK与外部DWM桌面像素分开核，绝不把源RGBA当呈现证据。
+// Standard Otter EXE physical output: server ACK and external DWM desktop pixels are verified separately, never treating source RGBA as presentation evidence.
 #[cfg(windows)]
 mod visible_product {
     use super::*;
@@ -141,7 +141,7 @@ mod visible_product {
             endpoint["pixelSize"],
             json!({"width":window["output"]["width"],"height":window["output"]["height"]})
         );
-        // 四象限各2×2同色；quarter采样落在同色内部，不靠放宽容差掩盖crop线性滤波。
+        // Each quadrant is a solid 2x2 block so quarter-point sampling lands inside uniform color without inflating tolerances to mask crop linear filtering.
         let rgba = [
             255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 0,
             0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255,

@@ -1,4 +1,4 @@
-// Source实际UIA→Viewer生产配置接缝→LAN→原Surface executor→真实framework/Art进程与最终业务提交。
+// Real Source UIA -> Viewer production configuration seam -> LAN -> original Surface executor -> real framework/Art process and final business commit.
 include!("live_trigger_native_fixture.rs");
 #[test]
 #[ignore = "explicit native Source UIA, Viewer trigger and real packaged Surface action executables"]

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { useUiText } from "../../i18n/index.ts";
 import {
   getOtterCanvasNodePresentation,
   otterCanvasPreviewPath,
@@ -26,6 +27,7 @@ export function OtterCanvasNode({
   interactive,
   onSelect,
 }: OtterCanvasNodeProps) {
+  const { t } = useUiText();
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const previewPath = otterCanvasPreviewPath(node);
@@ -85,7 +87,7 @@ export function OtterCanvasNode({
       );
     }
     if (!previewSrc) {
-      return <span className="otter-canvas-node__placeholder">预览不可用</span>;
+      return <span className="otter-canvas-node__placeholder">{t("otter.node.previewUnavailable")}</span>;
     }
     if (
       node.minified

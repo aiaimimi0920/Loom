@@ -1,5 +1,5 @@
 /// <reference path="../native-art.d.ts" />
-// 宿主显式配置条件后自动运行；没有点击、网络、路径或自行登记授权。
+// Runs automatically after the host explicitly configures trigger conditions; grants no click, network, path, or self-registration rights.
 /** @type {import("../native-art").ArtElement | undefined} */
 let label;
 let count = 0;

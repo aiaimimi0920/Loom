@@ -1,4 +1,4 @@
-//! 对接当前 Workers API；不复用历史 Art-store 协议或自动执行远端载荷。
+//! Integrates with the current Workers API; never reuses the legacy Art-store protocol or auto-executes remote payloads.
 mod aria2;
 mod aria2_native;
 #[cfg(any(not(windows), test))]
@@ -181,7 +181,7 @@ mod tests {
                 &Input {
                     operation_id: uuid::Uuid::new_v4().to_string(),
                     kind: kind.into(),
-                    title: "测试资源".into(),
+                    title: "Test Resource".into(),
                     ..Default::default()
                 }
             )

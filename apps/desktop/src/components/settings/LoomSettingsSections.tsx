@@ -1,4 +1,5 @@
 // Keeps Loom-owned settings sections cohesive and separate from Otter settings UI.
+import { parsePersistedDisplayLanguage, setLanguage, useUiText } from "../../i18n/index.ts";
 import { AboutPanel } from "./AboutPanel";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { ConnectionModeSettingsPanel } from "./ConnectionModeSettingsPanel";
@@ -22,6 +23,7 @@ export function LoomSettingsSections({
   baseUrl: string;
   controller: ReturnType<typeof useSettingsPanelController>;
 }) {
+  const { t } = useUiText();
   const {
     appDiagnostics,
     appPaths,
@@ -48,7 +50,7 @@ export function LoomSettingsSections({
 
   return (
     <div className="settings-accordion">
-      <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
+      <SettingsAccordionSection id="general" label={t("settings.sections.general")} open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
         <ConnectionModeSettingsPanel baseUrl={baseUrl} />
         <NAccountSettingsPanel baseUrl={baseUrl} />
         <AccountSettingsPanel baseUrl={baseUrl} />
@@ -64,11 +66,15 @@ export function LoomSettingsSections({
               toggleMinimizeToTray(patch.closeToTray);
               return;
             }
+            const nextLanguage = patch.language === undefined ? undefined : parsePersistedDisplayLanguage(patch.language);
+            if (nextLanguage !== undefined) {
+              setLanguage(nextLanguage);
+            }
             setDraft((current) => ({
               ...current,
               general: {
                 ...current.general,
-                ...(patch.language === undefined ? {} : { language: patch.language }),
+                ...(nextLanguage === undefined ? {} : { language: nextLanguage }),
                 ...(patch.theme === undefined ? {} : { theme: patch.theme }),
               },
             }));
@@ -76,12 +82,12 @@ export function LoomSettingsSections({
         />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="mcp" label="MCP" open={openSettingsSection === "mcp"} onToggle={() => toggleSettingsSection("mcp")}>
+      <SettingsAccordionSection id="mcp" label={t("settings.sections.mcp")} open={openSettingsSection === "mcp"} onToggle={() => toggleSettingsSection("mcp")}>
         <McpSettingsPanel value={draft.mcp} onChange={updateMcpDraft} />
         <McpShareSettingsPanel baseUrl={baseUrl} />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="art-store" label="Art" open={openSettingsSection === "art-store"} onToggle={() => toggleSettingsSection("art-store")}>
+      <SettingsAccordionSection id="art-store" label={t("settings.sections.artStore")} open={openSettingsSection === "art-store"} onToggle={() => toggleSettingsSection("art-store")}>
         <ArtStoreSettingsPanel
           value={draft.art_store}
           trustPolicy={artStoreTrustPolicy}
@@ -91,11 +97,11 @@ export function LoomSettingsSections({
         />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="capabilities" label="能力扩展" open={openSettingsSection === "capabilities"} onToggle={() => toggleSettingsSection("capabilities")}>
+      <SettingsAccordionSection id="capabilities" label={t("settings.sections.capabilities")} open={openSettingsSection === "capabilities"} onToggle={() => toggleSettingsSection("capabilities")}>
         <CapabilityExtensionsPanel baseUrl={baseUrl} />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="cache" label="缓存" open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
+      <SettingsAccordionSection id="cache" label={t("settings.sections.cache")} open={openSettingsSection === "cache"} onToggle={() => toggleSettingsSection("cache")}>
         <LoomCacheSettingsPanel
           settings={draft.loom_cache}
           snapshot={loomCacheSnapshot}
@@ -106,7 +112,7 @@ export function LoomSettingsSections({
         />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="network" label="网络" open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
+      <SettingsAccordionSection id="network" label={t("settings.sections.network")} open={openSettingsSection === "network"} onToggle={() => toggleSettingsSection("network")}>
         <NetworkSettingsPanel
           appName="Loom"
           value={draft.network.loom}
@@ -114,7 +120,7 @@ export function LoomSettingsSections({
         />
       </SettingsAccordionSection>
 
-      <SettingsAccordionSection id="about" label="关于" open={openSettingsSection === "about"} onToggle={() => toggleSettingsSection("about")}>
+      <SettingsAccordionSection id="about" label={t("settings.sections.about")} open={openSettingsSection === "about"} onToggle={() => toggleSettingsSection("about")}>
         <AboutPanel
           app="loom"
           diagnostics={{

@@ -329,7 +329,7 @@ fn install_art(
             409,
             json!({
                 "code": "framework_not_ready",
-                "message": format!("art `{art_id}` 需要框架 `{framework}`（未{reason}），请先安装该框架"),
+                "message": format!("art `{art_id}` requires framework `{framework}` ({reason}); install the framework first"),
                 "framework": framework,
             }),
         ),

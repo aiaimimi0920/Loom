@@ -157,7 +157,7 @@ fn handle_wall_live_upgrade<S: LiveMediaSocket>(
     request: ParsedHttpRequest,
     runtime: &DaemonRuntime,
 ) {
-    // 有界TLS/写缓冲覆盖拒绝及101响应；原grant/nonce/permit/loop仍是唯一业务owner。
+    // Bounded TLS/write buffering covers rejection and 101 responses; the original grant/nonce/permit/loop remains the sole business owner.
     if stream.prepare_media().is_err() {
         return;
     }

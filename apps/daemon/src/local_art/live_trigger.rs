@@ -1,4 +1,4 @@
-//! 自动触发只接原生宿主明确意图；Preview 仅证明宿主身份，不能隐式创建注册。
+//! Auto-trigger accepts only explicit native host intent; Preview proves host identity only and never implicitly registers a trigger.
 use super::*;
 use loom_protocol::local_art::live_trigger::{Operation, Request};
 pub(super) fn handle(
@@ -29,12 +29,12 @@ pub(super) fn handle(
     };
     if execution {
         live_host::authorize(request, actor, s, guard, &grant, configuring, || {
-            // authorize 正持有同一 policy 锁；revision 变化让旧自动授权永久失效，不能撤销后复活。
+            // `authorize` holds the same policy lock; any revision bump permanently invalidates prior auto-trigger grants so revocation cannot be undone.
             let revision = policy::revision_unlocked(s.root)?;
             apply(Some(revision))
         })
     } else {
-        // Inspect 不交付 payload；Stop 只减权。原签名/精确宿主/当前 Device 仍是必要条件。
+        // Inspect delivers no payload and Stop only drops privileges; original signature, exact host, and active Device remain required.
         live_host::current_device(request, actor, s, &guard, None)?;
         apply(None)
     }

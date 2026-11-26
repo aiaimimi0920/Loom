@@ -1,4 +1,6 @@
 // Bound actual native reads, including reads whose UI subscriber has gone away.
+import { uiText } from "../i18n/index.ts";
+
 export function createOtterCanvasPreviewLoader<T>(
   read: (baseUrl: string, path: string) => Promise<T>,
   options: { concurrency?: number; maxPending?: number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void> } = {},
@@ -6,7 +8,7 @@ export function createOtterCanvasPreviewLoader<T>(
   const concurrency = options.concurrency ?? 4;
   const maxPending = options.maxPending ?? 4096;
   if (!Number.isInteger(concurrency) || concurrency < 1 || !Number.isInteger(maxPending) || maxPending < 1) {
-    throw new Error("Invalid preview queue limits");
+    throw new Error(uiText("otter.preview.invalidQueueLimits"));
   }
   const sleep = options.sleep ?? abortableDelay;
   interface Job {
@@ -55,7 +57,7 @@ export function createOtterCanvasPreviewLoader<T>(
   return {
     load(baseUrl: string, path: string, signal?: AbortSignal): Promise<T> {
       if (signal?.aborted) return Promise.reject(aborted());
-      if (queued.length >= maxPending) return Promise.reject(new Error("Otter preview queue is full"));
+      if (queued.length >= maxPending) return Promise.reject(new Error(uiText("otter.preview.queueFull")));
       return new Promise<T>((resolve, reject) => {
         const job: Job = { baseUrl, path, signal, resolve, reject, detach: () => signal?.removeEventListener("abort", cancel) };
         function cancel() {
@@ -76,7 +78,7 @@ function aborted() { return new DOMException("Aborted", "AbortError"); }
 
 function isTransientPreviewError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:429|502|503|504)\b|timed? out|timeout|connection (?:reset|refused)|无法连接/i.test(message);
+  return /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:429|502|503|504)\b|timed? out|timeout|connection (?:reset|refused)|unable to connect|\u65e0\u6cd5\u8fde\u63a5/i.test(message);
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {

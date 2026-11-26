@@ -1,4 +1,4 @@
-//! 仅下载已获分发资格的包；不解压、安装或执行载荷。
+//! Downloads only distribution-eligible archives; never unpacks, installs, or executes payloads.
 use super::{client, error, json_response, Result, ORIGIN};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -118,7 +118,7 @@ pub(super) fn save(
             .map_err(|_| error(500, "asset_library_save_failed"))?;
     }
     drop(file);
-    // hard_link 不覆盖既有文件；只有完成摘要校验的包才获得最终文件名。
+    // `hard_link` never overwrites an existing file; only digest-verified archives receive the final filename.
     fs::hard_link(&partial.0, &destination).map_err(|_| error(500, "asset_library_save_failed"))?;
     Ok(destination)
 }

@@ -1,4 +1,4 @@
-//! Otter 单侧执行的独立授权合同；不是设备登录、包签名或旧 Surface resource lease。
+//! Standalone authorization contract for Otter-side local execution; distinct from device login, package signatures, or legacy Surface resource leases.
 use serde::{Deserialize, Serialize};
 #[path = "local_art_live_control.rs"]
 pub mod live_control;
@@ -62,11 +62,11 @@ pub struct Grant {
     pub execution_owner: String,
     pub result_owner: String,
     pub permissions: Vec<Permission>,
-    /// 仅允许显式列出的服务 ID；远程调用仍消费其自身授权与敏感确认。
+    /// Permits only explicitly listed service IDs; remote calls still consume their own authorization and sensitive-action confirmation.
     pub services: Vec<String>,
     pub issued_at_ms: u64,
     pub expires_at_ms: u64,
-    /// 0 表示不允许离线；非零值不能超过授权期限。缓存不自动延长期限。
+    /// `0` disallows offline execution; non-zero values cannot exceed `expires_at_ms`. Caching never extends the grant lifetime.
     pub offline_until_ms: u64,
     pub source: Source,
 }
@@ -76,7 +76,7 @@ pub struct Grant {
 pub struct Envelope {
     pub algorithm: String,
     pub key_id: String,
-    /// 签名覆盖 domain || base64 解码后的原始 JSON 字节，不对解析后 JSON 重序列化。
+    /// Signature covers `domain || raw base64-decoded JSON bytes`, without re-serializing parsed JSON.
     pub payload: String,
     pub signature: String,
 }
@@ -104,7 +104,7 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl Grant {
-    /// 只验证合同，不赋予信任。签发调用者须已核精确安装包、设备、启用及明确授权。
+    /// Validates contract shape only and confers no trust. Issuing callers must first verify the exact installed package, device, enablement, and explicit authorization.
     pub fn validate(&self) -> Result<(), Error> {
         let b = &self.binding;
         if self.protocol_version != PROTOCOL

@@ -1,18 +1,10 @@
 $ErrorActionPreference = "Stop"
 
-function New-UnicodeText {
-    param([int[]]$CodePoints)
-    return -join ($CodePoints | ForEach-Object { [char]$_ })
-}
-
-$script:TypingLabel = New-UnicodeText @(0x6B63, 0x5728, 0x8F93, 0x5165)
-$script:SelectedLabel = New-UnicodeText @(0x5DF2, 0x9009, 0x62E9)
-$script:PreviewLabel = New-UnicodeText @(0x9884, 0x89C8, 0xFF1A)
-$script:EveryLabel = New-UnicodeText @(0x6BCF)
-$script:SecondsLabel = New-UnicodeText @(0x79D2)
-$script:RefreshLabel = New-UnicodeText @(0x5237, 0x65B0)
+$script:TypingLabel = "Typing"
+$script:SelectedLabel = "Selected"
+$script:PreviewLabel = "Preview: "
 $script:CurrencySymbol = [char]0xA5
-$script:QuoteUpdatedLabel = New-UnicodeText @(0x884C, 0x60C5, 0x5DF2, 0x66F4, 0x65B0)
+$script:QuoteUpdatedLabel = "Quote updated"
 
 function Find-SurfaceAction {
     param([object]$Value)
@@ -137,7 +129,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "interval" -Path "/props/value" -Value $interval),
-                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("{0}{1} {2}" -f $script:PreviewLabel, $interval, $script:SecondsLabel))
+                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("{0}{1}s" -f $script:PreviewLabel, $interval))
                     )
                     statePatch = [ordered]@{ draftInterval = $interval }
                 })
@@ -150,7 +142,7 @@ try {
                 patches = [object[]]@([ordered]@{
                     operations = [object[]]@(
                         (New-SetOperation -NodeId "interval" -Path "/props/value" -Value $interval),
-                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("{0} {1} {2}{3}" -f $script:EveryLabel, $interval, $script:SecondsLabel, $script:RefreshLabel))
+                        (New-SetOperation -NodeId "interval_label" -Path "/props/text" -Value ("Refresh every {0}s" -f $interval))
                     )
                     statePatch = [ordered]@{ interval = $interval; draftInterval = $interval }
                 })
