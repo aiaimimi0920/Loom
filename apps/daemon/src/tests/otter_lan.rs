@@ -9,7 +9,7 @@ fn otter_lan_rejected_settings_return_actionable_errors() {
             "/v1/otter/connections/lan",
             Some(json!({"enabled":true,"host":host,"port":8766})),
         );
-        assert_eq!(status, 400, "{body}");
+        assert_eq!(status, 400, "expected 400 for invalid LAN host");
         assert!(body["error"]["message"].as_str().unwrap().contains("IPv4"));
     }
     let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -20,7 +20,7 @@ fn otter_lan_rejected_settings_return_actionable_errors() {
         "/v1/otter/connections/lan",
         Some(json!({"enabled":true,"host":"127.0.0.1","port":port})),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 400, "expected 400 for occupied LAN port");
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
@@ -50,7 +50,7 @@ fn otter_lan_tls_pairing_approval_activation_and_shutdown() {
         "/v1/otter/connections/lan",
         Some(settings.clone()),
     );
-    assert_eq!(status, 200, "{view}");
+    assert_eq!(status, 200, "expected 200 when enabling LAN listener");
     assert_eq!(view["listening"], true);
     let origin = view["endpoint"].as_str().unwrap();
     let pair = {
@@ -105,7 +105,7 @@ fn otter_lan_tls_pairing_approval_activation_and_shutdown() {
             .unwrap();
         let status = response.status();
         let value: Value = response.json().unwrap();
-        assert!(status.is_success(), "{status}: {value}");
+        assert!(status.is_success(), "unexpected LAN status: {status}");
         value
     };
     let pending = post(

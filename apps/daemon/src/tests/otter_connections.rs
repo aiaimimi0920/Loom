@@ -8,7 +8,7 @@ fn otter_connection_manual_approval_requires_private_receipt() {
         "/v1/otter/connections/request",
         Some(json!({"name":"Otter test", "publicKey":payload["publicKey"]})),
     );
-    assert_eq!(status, 201, "{response}");
+    assert_eq!(status, 201, "expected 201 for manual connection request");
     assert_eq!(response["connection"]["phase"], "pending");
     let id = response["connection"]["id"].clone();
     let receipt = json!({"requestId":id, "receipt":response["receipt"]});
@@ -92,7 +92,7 @@ fn otter_connection_password_policy_does_not_approve_wrong_password_or_disabled_
         "/v1/otter/connections/request",
         Some(input.clone()),
     );
-    assert_eq!(status, 201, "{response}");
+    assert_eq!(status, 201, "expected 201 for manual connection request");
     assert_eq!(response["connection"]["phase"], "pending");
     let device_id = response["connection"]["deviceId"].as_str().unwrap();
     f.devices

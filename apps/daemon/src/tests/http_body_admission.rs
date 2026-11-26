@@ -10,7 +10,10 @@ fn large_unauthenticated_body_is_rejected_before_upload() {
     stream
         .read_to_string(&mut response)
         .expect("reject from headers without waiting for upload");
-    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "expected 401 before upload (raw output withheld)"
+    );
 }
 
 fn header_only_status(fixture: &Fixture, host: &str, extras: &str) -> String {
@@ -54,7 +57,10 @@ fn large_body_host_origin_and_device_scope_are_checked_before_upload() {
 fn body_admission_preserves_admin_upload_and_consumes_device_nonce_only_at_dispatch() {
     let fixture = Fixture::new();
     let response = http_request(fixture.port, "POST", "/v1/mcp/servers/install", Some("{}"));
-    assert!(!response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(
+        !response.starts_with("HTTP/1.1 401"),
+        "expected authenticated admin upload admission (raw output withheld)"
+    );
     let (device, token) = wall_http::pair(fixture.port, "Projection upload");
     let nonce = Uuid::new_v4().to_string();
     let hash = sha256_bytes(token.as_bytes());
@@ -79,7 +85,7 @@ fn body_admission_preserves_admin_upload_and_consumes_device_nonce_only_at_dispa
     );
     assert!(
         !response.starts_with("HTTP/1.1 401") && !response.starts_with("HTTP/1.1 409"),
-        "{response}"
+        "expected device nonce admission at dispatch (raw output withheld)"
     );
     assert!(fixture.devices.lock().unwrap().sessions[&hash]
         .used_nonces
@@ -158,10 +164,13 @@ fn exhausted_device_nonce_budget_rejects_header_only_upload() {
     stream
         .read_to_string(&mut response)
         .expect("exhausted session must reject from headers");
-    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "expected 401 for exhausted nonce budget (raw output withheld)"
+    );
     assert!(
         response.contains("device_session_nonce_capacity"),
-        "{response}"
+        "expected nonce capacity error code (raw output withheld)"
     );
     assert_eq!(
         fixture.devices.lock().unwrap().sessions[&hash]
@@ -190,8 +199,14 @@ fn eager_unauthenticated_upload_receives_complete_admission_error() {
     stream
         .read_to_string(&mut response)
         .expect("complete admission response, not TCP reset");
-    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
-    assert!(response.contains("unauthorized"), "{response}");
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "expected 401 for eager unauthenticated upload (raw output withheld)"
+    );
+    assert!(
+        response.contains("unauthorized"),
+        "expected unauthorized error body (raw output withheld)"
+    );
     let (_, body) = response
         .split_once("\r\n\r\n")
         .expect("complete response headers");
@@ -221,7 +236,7 @@ fn admin_only_device_routes_reject_before_upload() {
             .expect("admin alone cannot admit device-only upload");
         assert!(
             response.starts_with("HTTP/1.1 403") && response.contains(code),
-            "{response}"
+            "expected 403 device-only rejection before upload (raw output withheld)"
         );
     }
 }
@@ -242,10 +257,13 @@ fn device_body_admission_never_waits_for_registry_lock() {
         // Release even on regression failure so fixture teardown cannot deadlock.
         drop(registry);
         read.expect("registry contention must not block the read worker");
-        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(
+            response.starts_with("HTTP/1.1 503"),
+            "expected 503 under registry contention (raw output withheld)"
+        );
         assert!(
             response.contains("device_registry_unavailable"),
-            "{response}"
+            "expected device_registry_unavailable code (raw output withheld)"
         );
     }
 }

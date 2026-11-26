@@ -50,7 +50,7 @@ impl Password {
     }
 
     fn verify(&self, value: &str) -> bool {
-        value.len() <= 256
+        (8..=256).contains(&value.len())
             && pbkdf2::verify(
                 pbkdf2::PBKDF2_HMAC_SHA256,
                 NonZeroU32::new(ITERATIONS).unwrap(),

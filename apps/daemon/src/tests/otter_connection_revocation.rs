@@ -59,7 +59,7 @@ fn otter_connection_revocation_during_verification_cannot_reapprove_device() {
         let key = verified.input.public_key.clone();
         let (status, response) =
             finish_otter_connection_request(verified, &f.devices, &f.bridge).unwrap();
-        assert_eq!(status, 403, "{revoke}: {response}");
+        assert_eq!(status, 403, "expected 403 for {revoke}");
         assert!(response.contains("connection_authentication_revoked"));
         let store = f.devices.lock().unwrap();
         assert!(store.connection_requests.is_empty());

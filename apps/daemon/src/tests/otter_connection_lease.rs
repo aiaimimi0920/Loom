@@ -10,7 +10,7 @@ fn approved_otter_receipt(f: &Fixture, id: &str, token: &str) -> serde_json::Val
         "/v1/otter/connections/request",
         Some(json!({"name":"Lease Otter","publicKey":key})),
     );
-    assert_eq!(status, 201, "{created}");
+    assert_eq!(status, 201, "expected 201 when issuing approved Otter receipt");
     let id = created["connection"]["id"].clone();
     assert_eq!(created["connection"]["phase"], "approved");
     json!({"requestId":id,"receipt":created["receipt"]})
@@ -39,7 +39,7 @@ fn otter_connection_lease_requires_approval_receipt_and_bound_signed_device() {
         let before = unix_time_millis();
         let (status, active) =
             wall_http::device(f.port, &token, "POST", path, Some(receipt.clone()));
-        assert_eq!(status, 200, "{active}");
+        assert_eq!(status, 200, "expected 200 when activating Otter lease");
         assert_eq!(active["connection"]["phase"], "connected");
         assert_eq!(active["connection"]["deviceId"], id);
         let expiry = active["connection"]["expiresAtMs"].as_u64().unwrap();
@@ -144,7 +144,7 @@ fn otter_connection_disconnect_keeps_pairing_epoch_and_reconnects_same_device() 
         );
     }
     let (status, session) = wall_http::issue_session(f.port, &id, &key);
-    assert_eq!(status, 201, "{session}");
+    assert_eq!(status, 201, "expected 201 when re-issuing device session");
     let next = session["token"].as_str().unwrap();
     let (_, response) = wall_http::device(
         f.port,

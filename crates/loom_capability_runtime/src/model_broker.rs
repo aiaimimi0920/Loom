@@ -217,33 +217,68 @@ impl Drop for ModelBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn call(address: &str, token: &str) -> serde_json::Value {
+
+    fn decode_test_envelope(frame: &[u8]) -> Result<String, String> {
+        let raw = std::str::from_utf8(frame)
+            .expect("UTF-8 broker frame")
+            .trim();
+        let inner = raw
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .expect("JSON object frame")
+            .trim();
+        let (raw_key, raw_val) = inner.split_once(':').expect("key:value pair");
+        let unquote = |segment: &str| -> String {
+            let body = segment
+                .trim()
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .expect("quoted string");
+            body.chars().collect()
+        };
+        match unquote(raw_key).as_str() {
+            "text" => Ok(unquote(raw_val)),
+            "error" => Err(unquote(raw_val)),
+            _ => panic!("unexpected broker envelope key"),
+        }
+    }
+
+    fn send_request(address: &str, payload: &Value) -> Result<String, String> {
         let mut stream = TcpStream::connect(address).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let bytes = serde_json::to_vec(&json!({
-            "token": token,
-            "system": "system",
-            "user": "words"
-        }))
-        .unwrap();
+        let bytes = serde_json::to_vec(payload).unwrap();
         stream
             .write_all(&(bytes.len() as u32).to_be_bytes())
             .unwrap();
         stream.write_all(&bytes).unwrap();
         let mut header = [0; 4];
         stream.read_exact(&mut header).unwrap();
-        let mut response = vec![0; u32::from_be_bytes(header) as usize];
+        let len = u32::from_be_bytes(header) as usize;
+        assert!((1..=MAX_FRAME).contains(&len));
+        let mut response = vec![0; len];
         stream.read_exact(&mut response).unwrap();
-        serde_json::from_slice(&response).unwrap()
+        decode_test_envelope(&response)
     }
+
+    fn call(address: &str, token: &str) -> Result<String, String> {
+        send_request(
+            address,
+            &json!({
+                "token": token,
+                "system": "system",
+                "user": "words"
+            }),
+        )
+    }
+
     #[test]
     fn scoped_token_and_listener_lifetime_are_enforced() {
         let broker = ModelBroker::with_handler(|_, user| Ok(format!("translated {user}"))).unwrap();
-        assert!(call(&broker.address, &"x".repeat(64))["error"].is_string());
+        assert!(call(&broker.address, &"x".repeat(64)).is_err());
         assert_eq!(
-            call(&broker.address, &broker.token)["text"],
+            call(&broker.address, &broker.token).unwrap(),
             "translated words"
         );
         let address = broker.address.clone();
@@ -258,44 +293,30 @@ mod tests {
             Ok(mode.unwrap_or_else(|| "legacy".to_owned()))
         })
         .unwrap();
-        let mut stream = TcpStream::connect(&broker.address).unwrap();
-        let request = serde_json::to_vec(&json!({
-            "token": broker.token.clone(),
-            "system": "system",
-            "user": "words",
-            "responseSchema": { "type": "string" },
-            "providerMode": "local"
-        }))
+        let ok_text = send_request(
+            &broker.address,
+            &json!({
+                "token": broker.token.clone(),
+                "system": "system",
+                "user": "words",
+                "responseSchema": { "type": "string" },
+                "providerMode": "local"
+            }),
+        )
         .unwrap();
-        stream
-            .write_all(&(request.len() as u32).to_be_bytes())
-            .unwrap();
-        stream.write_all(&request).unwrap();
-        let mut header = [0; 4];
-        stream.read_exact(&mut header).unwrap();
-        let mut response = vec![0; u32::from_be_bytes(header) as usize];
-        stream.read_exact(&mut response).unwrap();
-        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
-        assert_eq!(response["text"], "local");
+        assert_eq!(ok_text, "local");
 
-        let mut stream = TcpStream::connect(&broker.address).unwrap();
-        let request = serde_json::to_vec(&json!({
-            "token": broker.token.clone(),
-            "system": "system",
-            "user": "words",
-            "providerMode": "other"
-        }))
-        .unwrap();
-        stream
-            .write_all(&(request.len() as u32).to_be_bytes())
-            .unwrap();
-        stream.write_all(&request).unwrap();
-        let mut header = [0; 4];
-        stream.read_exact(&mut header).unwrap();
-        let mut response = vec![0; u32::from_be_bytes(header) as usize];
-        stream.read_exact(&mut response).unwrap();
-        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
-        assert_eq!(response["error"], "model broker provider mode is invalid");
+        let err_text = send_request(
+            &broker.address,
+            &json!({
+                "token": broker.token.clone(),
+                "system": "system",
+                "user": "words",
+                "providerMode": "other"
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err_text, "model broker provider mode is invalid");
     }
 
     #[test]

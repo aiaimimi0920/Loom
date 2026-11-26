@@ -7,6 +7,25 @@ fn path() -> PathBuf {
     root.join("policy.json")
 }
 
+fn generated_secret(len: usize) -> String {
+    let mut raw = vec![0u8; len];
+    if len > 0 {
+        SystemRandom::new().fill(&mut raw).unwrap();
+    }
+    raw.into_iter()
+        .map(|byte| char::from(b'a' + (byte % 26)))
+        .collect()
+}
+
+fn distinct_secret(existing: &str) -> String {
+    loop {
+        let candidate = generated_secret(existing.len().max(16));
+        if candidate != existing {
+            return candidate;
+        }
+    }
+}
+
 fn update(approval: Approval, password: Option<&str>) -> Update {
     Update {
         name: "测试 Loom".into(),
@@ -22,18 +41,18 @@ fn connection_policy_identity_is_persistent_and_secrets_are_not_public() {
     let path = path();
     let mut store = Store::open(&path).unwrap();
     let id = store.public_info().loom_id;
-    store
-        .update(update(Approval::Lan, Some("test-password-0123")))
-        .unwrap();
-    assert!(store.check_password("test-password-0123"));
-    assert!(!store.check_password("wrong-password"));
+    let secret = generated_secret(18);
+    let wrong = distinct_secret(&secret);
+    store.update(update(Approval::Lan, Some(&secret))).unwrap();
+    assert!(store.check_password(&secret));
+    assert!(!store.check_password(&wrong));
     let stored = std::fs::read_to_string(&path).unwrap();
-    assert!(!stored.contains("test-password-0123"));
+    assert!(!stored.contains(&secret));
     let public = serde_json::to_string(&store.public_info()).unwrap();
     assert!(!public.contains("digest") && !public.contains("salt"));
     let loaded = Store::open(&path).unwrap();
     assert_eq!(loaded.public_info().loom_id, id);
-    assert!(loaded.check_password("test-password-0123"));
+    assert!(loaded.check_password(&secret));
 }
 
 #[test]
@@ -41,9 +60,10 @@ fn connection_policy_rejects_invalid_config_without_overwriting() {
     let path = path();
     let mut store = Store::open(&path).unwrap();
     let original = std::fs::read(&path).unwrap();
+    let too_short = generated_secret(5);
     assert!(store.update(update(Approval::Password, None)).is_err());
     assert!(store
-        .update(update(Approval::Manual, Some("short")))
+        .update(update(Approval::Manual, Some(&too_short)))
         .is_err());
     let mut input = update(Approval::Manual, None);
     input.discoverable = true;
@@ -72,14 +92,18 @@ fn connection_policy_corruption_never_resets_identity() {
 #[test]
 fn connection_policy_password_preserve_and_clear_are_explicit() {
     let mut store = Store::open(&path()).unwrap();
+    let secret = generated_secret(18);
+    let empty = generated_secret(0);
     store
-        .update(update(Approval::Manual, Some("test-password-4567")))
+        .update(update(Approval::Manual, Some(&secret)))
         .unwrap();
     store.update(update(Approval::Authenticated, None)).unwrap();
-    assert!(!store.check_password(""));
-    store.update(update(Approval::Manual, Some(""))).unwrap();
+    assert!(!store.check_password(&empty));
+    store
+        .update(update(Approval::Manual, Some(&empty)))
+        .unwrap();
     assert!(!store.public_info().password_required);
-    assert!(store.check_password(""));
+    assert!(store.check_password(&empty));
 }
 
 #[test]
@@ -102,8 +126,10 @@ fn connection_policy_reuses_the_existing_loom_signing_identity() {
 fn connection_policy_legacy_password_approval_migrates_without_removing_password() {
     let path = path();
     let mut store = Store::open(&path).unwrap();
+    let secret = generated_secret(18);
+    let empty = generated_secret(0);
     store
-        .update(update(Approval::Manual, Some("test-password-0123")))
+        .update(update(Approval::Manual, Some(&secret)))
         .unwrap();
     let mut document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -112,6 +138,6 @@ fn connection_policy_legacy_password_approval_migrates_without_removing_password
     let loaded = Store::open(&path).unwrap();
     assert_eq!(loaded.public_info().approval, Approval::Manual);
     assert!(loaded.public_info().password_required);
-    assert!(loaded.check_password("test-password-0123"));
-    assert!(!loaded.check_password(""));
+    assert!(loaded.check_password(&secret));
+    assert!(!loaded.check_password(&empty));
 }

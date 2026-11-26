@@ -52,7 +52,10 @@ fn management_ui_serves_login_gate_cookie_exchange_and_embedded_spa() {
 
     let unauth = raw_http_get(port, "/ui/", &format!("Host: 127.0.0.1:{port}\r\n"));
     if cfg!(feature = "management-ui") {
-        assert!(unauth.starts_with("HTTP/1.1 200 OK"), "unexpected: {unauth}");
+        assert!(
+            unauth.starts_with("HTTP/1.1 200 OK"),
+            "unexpected unauthenticated /ui/ response (raw output withheld)"
+        );
         assert!(unauth.contains("Loom Web 管理控制台"));
 
         let exchange = raw_http_get(
@@ -75,7 +78,7 @@ fn management_ui_serves_login_gate_cookie_exchange_and_embedded_spa() {
         );
         assert!(
             authed_ui.starts_with("HTTP/1.1 200 OK"),
-            "unexpected: {authed_ui}"
+            "unexpected authenticated /ui/devices response (raw output withheld)"
         );
         assert!(authed_ui.contains("Content-Type: text/html"));
     } else {

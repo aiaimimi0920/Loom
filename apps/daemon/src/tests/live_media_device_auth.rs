@@ -155,7 +155,7 @@ mod live_media_device_auth {
                 Ok(tungstenite::Message::Ping(bytes)) => {
                     let _ = socket.send(tungstenite::Message::Pong(bytes));
                 }
-                other => panic!("revoked media must close without new binary frames: {other:?}"),
+                _ => panic!("revoked media must close without new binary frames"),
             }
         }
     }

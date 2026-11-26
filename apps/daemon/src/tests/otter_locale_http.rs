@@ -29,7 +29,7 @@ fn otter_locale_http_requires_device_report_and_admin_exact_target() {
         400
     );
     let (status, report) = wall_http::device(f.port, &token, "POST", report_path, Some(body));
-    assert_eq!(status, 200, "{report}");
+    assert_eq!(status, 200, "expected 200 for locale report");
     assert_eq!(report["deviceId"], id);
     assert!(report["loomId"].as_str().unwrap().starts_with("loom-"));
     let generation = report["locale"]["receiverGeneration"].clone();
@@ -41,7 +41,7 @@ fn otter_locale_http_requires_device_report_and_admin_exact_target() {
         403
     );
     let (status, accepted) = wall_http::admin(f.port, "POST", &path, Some(input.clone()));
-    assert_eq!(status, 202, "{accepted}");
+    assert_eq!(status, 202, "expected 202 when queuing locale request");
     assert_eq!(accepted["locale"]["request"]["status"], "pending");
     assert_eq!(wall_http::admin(f.port, "POST", &path, Some(input)).0, 200);
     let (_, other) = wall_http::device(
@@ -93,11 +93,11 @@ fn otter_locale_http_applied_receipt_reads_back_actual_state_and_is_idempotent()
     for _ in 0..2 {
         let (status, acknowledged) =
             wall_http::device(f.port, &token, "POST", report_path, Some(report.clone()));
-        assert_eq!(status, 200, "{acknowledged}");
+        assert_eq!(status, 200, "expected 200 when acknowledging locale report");
         assert!(acknowledged["locale"]["request"].is_null());
     }
     let (status, retried) = wall_http::admin(f.port, "POST", &path, Some(input));
-    assert_eq!(status, 200, "{retried}");
+    assert_eq!(status, 200, "expected 200 for idempotent locale retry");
     assert_eq!(retried["locale"]["request"]["status"], "applied");
     let (_, devices) = wall_http::admin(f.port, "GET", "/v1/devices", None);
     let device = devices["devices"]
@@ -140,7 +140,7 @@ fn otter_locale_http_revocation_clears_receiver_and_does_not_queue_offline_work(
         401
     );
     let (status, error) = wall_http::admin(f.port, "POST", &path, Some(input));
-    assert_eq!(status, 409, "{error}");
+    assert_eq!(status, 409, "expected 409 when locale receiver is revoked");
     assert_eq!(error["error"]["code"], "locale_receiver_unavailable");
     let (_, devices) = wall_http::admin(f.port, "GET", "/v1/devices", None);
     let device = devices["devices"]
