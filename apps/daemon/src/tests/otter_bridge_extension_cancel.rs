@@ -197,5 +197,5 @@ fn otter_bridge_extension_disconnect_releases_real_upload_and_runtime() {
     }
     stop_test_otter_bridge(&daemon);
     drop(daemon);
-    fs::remove_dir_all(root).unwrap();
+    remove_test_dir(&root);
 }

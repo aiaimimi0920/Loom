@@ -117,6 +117,7 @@ fn request_concurrency_classification_is_conservative() {
         ("POST", "/v1/ai/chat/completions", None),
         ("POST", "/v1/asset-library/download", None),
         ("POST", "/v1/asset-library/download-control", None),
+        ("POST", "/v1/tools/tool-1/execute", None),
         ("POST", "/v1/invoke", Some("ai.chat.v1")),
         ("POST", "/v1/invoke", Some("loom.runtime.probe.v1")),
         ("POST", "/v1/invoke", Some("ocr.recognize.v1")),
@@ -132,7 +133,7 @@ fn request_concurrency_classification_is_conservative() {
     let serialized = [
         ("GET", "/v1/workflows", None),
         ("PUT", "/v1/workflows/workflow-1", None),
-        ("POST", "/v1/tools/tool-1/execute", None),
+        ("POST", "/v1/workflows/workflow-1/execute", None),
     ];
     for (method, path, capability) in serialized {
         assert_eq!(
@@ -263,34 +264,46 @@ fn live_session_event_long_polls_do_not_starve_request_workers() {
     )
     .expect("bind daemon");
     let port = daemon.local_addr().expect("address").port();
+    let live_sessions = Arc::clone(&daemon.runtime.live_sessions);
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let server = thread::spawn(move || daemon.serve_until(shutdown_rx));
 
-    let created = http_json_post(
-        port,
-        "/v1/live/sessions",
-        r#"{"sourceDeviceId":"source-dev","viewerDeviceId":"viewer-dev"}"#,
-    );
-    let session_id = created["session"]["sessionId"]
-        .as_str()
-        .expect("session id")
-        .to_owned();
+    let (device_id, device_token) = wall_http::pair(port, "Live poll source");
+    let session_id = "live:long-poll".to_owned();
+    let mut start = live_start_envelope(&session_id);
+    if let LiveControlMessage::SessionStart(message) = &mut start.message {
+        message.session.source_device_id = device_id.clone();
+        message.requested_by_device_id = device_id.clone();
+    }
+    live_sessions
+        .create(&device_id, start)
+        .expect("create live session");
 
     let s1 = session_id.clone();
-    let s2 = session_id.clone();
+    let t1 = device_token.clone();
     let poll_one = thread::spawn(move || {
-        http_get(
+        wall_http::device(
             port,
-            &format!("/v1/live/sessions/{s1}/events?after=1&timeoutMs=2500"),
+            &t1,
+            "GET",
+            &format!("/v1/live/sessions/{s1}/events?after=1&timeoutMs=1000"),
+            None,
         )
+        .0
     });
+    let s2 = session_id;
+    let t2 = device_token;
     let poll_two = thread::spawn(move || {
-        http_get(
+        wall_http::device(
             port,
-            &format!("/v1/live/sessions/{s2}/events?after=1&timeoutMs=2500"),
+            &t2,
+            "GET",
+            &format!("/v1/live/sessions/{s2}/events?after=1&timeoutMs=1000"),
+            None,
         )
+        .0
     });
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(150));
 
     let started = Instant::now();
     let workflows = http_get(port, "/v1/workflows");
@@ -303,10 +316,10 @@ fn live_session_event_long_polls_do_not_starve_request_workers() {
     let _ = fs::remove_dir_all(root);
 
     assert!(workflows.starts_with("HTTP/1.1 200 OK"));
-    assert!(r1.starts_with("HTTP/1.1 200 OK"));
-    assert!(r2.starts_with("HTTP/1.1 200 OK"));
+    assert_eq!(r1, 200);
+    assert_eq!(r2, 200);
     assert!(
-        waited < Duration::from_millis(1_200),
+        waited < Duration::from_millis(600),
         "ordinary request waited {waited:?} behind parked Live event long-polls"
     );
 }

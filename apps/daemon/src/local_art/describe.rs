@@ -74,10 +74,7 @@ pub(super) fn handle(
     grant
         .validate()
         .map_err(|_| fail(409, "local_art_invalid_descriptor"))?;
-    PREPARING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| fail(429, "local_art_prepare_busy"))?;
-    let _preparation = Preparation;
+    let _preparation = s.tasks.enter_preparation()?;
     // Reuse exact resolver/trust/dependency/manifest/source admission. No silent scope intersection.
     let _ = source::load(s, &grant)?;
     let _lock = policy::LOCK

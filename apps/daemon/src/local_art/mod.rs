@@ -21,14 +21,6 @@ mod source_resources;
 pub(crate) use service_tasks::Tasks;
 const PREFIX: &str = "/v1/art/local/";
 const MAX_REQUEST: usize = 16 * 1024;
-// Immutable resolver work is synchronous; reject contention rather than fill the daemon worker pool.
-static PREPARING: AtomicBool = AtomicBool::new(false);
-struct Preparation;
-impl Drop for Preparation {
-    fn drop(&mut self) {
-        PREPARING.store(false, Ordering::Release);
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -178,10 +170,7 @@ fn handle(
     }
     // Do not hold the policy lock while package verification performs bounded disk work.
     let approval = policy::approved(s.root, &grant, time)?;
-    PREPARING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| fail(429, "local_art_prepare_busy"))?;
-    let _preparation = Preparation;
+    let _preparation = s.tasks.enter_preparation()?;
     let loaded = source::resolve(s, &grant)?;
     for entry in &loaded.resources {
         source_resources::read(s, &loaded.directory, entry)?;

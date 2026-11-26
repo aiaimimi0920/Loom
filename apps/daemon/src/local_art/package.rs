@@ -74,10 +74,7 @@ pub(super) fn fetch(
         return Err(fail(403, "local_art_resource_scope"));
     }
     let approval = policy::approved(s.root, &grant, unix_time_millis())?;
-    PREPARING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| fail(429, "local_art_prepare_busy"))?;
-    let _preparation = Preparation;
+    let _preparation = s.tasks.enter_preparation()?;
     let loaded = source::resolve(s, &grant)?;
     if loaded.bytes.len() as u64 != grant.source.size
         || sha256_bytes(&loaded.bytes) != grant.source.digest

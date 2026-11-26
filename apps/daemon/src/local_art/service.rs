@@ -60,10 +60,7 @@ pub(super) fn handle(
         let command = command_id(&input.owner.service)?;
         let approval = policy::approved(s.root, &grant, unix_time_millis())?;
         // Repeat immutable source/trust admission before dispatch, not on every poll.
-        PREPARING
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| fail(429, "local_art_prepare_busy"))?;
-        let _preparation = Preparation;
+        let _preparation = s.tasks.enter_preparation()?;
         let bytes = source::load(s, &grant)?;
         if bytes.len() as u64 != grant.source.size || sha256_bytes(&bytes) != grant.source.digest {
             return Err(fail(403, "local_art_source_changed"));

@@ -14,6 +14,21 @@ const MAX_DEVICE_RUNNING: usize = 4;
 pub(crate) struct Tasks {
     state: Mutex<Table>,
     image_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    preparing: AtomicBool,
+}
+pub(super) struct Preparation<'a>(&'a AtomicBool);
+impl Drop for Preparation<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+impl Tasks {
+    pub(super) fn enter_preparation(&self) -> LocalResult<Preparation<'_>> {
+        self.preparing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Preparation(&self.preparing))
+            .map_err(|_| fail(429, "local_art_prepare_busy"))
+    }
 }
 #[derive(Default)]
 struct Table {

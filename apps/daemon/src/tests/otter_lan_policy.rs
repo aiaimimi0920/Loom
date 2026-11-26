@@ -52,11 +52,16 @@ fn otter_lan_policy_password_history_and_shutdown() {
         post("/v1/otter/connections/request", wrong.clone(), false).0,
         403
     );
+    let unpaired = json!({
+        "name":"Unpaired LAN Otter",
+        "publicKey":pairing_payload()["publicKey"],
+        "password":"test-password-0123"
+    });
     let (_, local) = wall_http::public(
         f.port,
         "POST",
         "/v1/otter/connections/request",
-        Some(input.clone()),
+        Some(unpaired.clone()),
     );
     assert_eq!(local["connection"]["phase"], "pending");
     let forged = reqwest::blocking::Client::builder()
@@ -96,11 +101,13 @@ fn otter_lan_policy_password_history_and_shutdown() {
     assert_eq!(post("/v1/otter/connections/request", wrong, true).0, 403);
     let (_, known) = post("/v1/otter/connections/request", input.clone(), true);
     assert_eq!(known["connection"]["phase"], "approved");
-    let (_, unsigned) = post("/v1/otter/connections/request", input.clone(), false);
+    let (_, unsigned) = post("/v1/otter/connections/request", unpaired.clone(), false);
     assert_eq!(unsigned["connection"]["phase"], "pending");
     set_policy("manual");
-    let (_, manual) = post("/v1/otter/connections/request", input, true);
-    assert_eq!(manual["connection"]["phase"], "pending");
+    let (_, manual_unpaired) = post("/v1/otter/connections/request", unpaired, false);
+    assert_eq!(manual_unpaired["connection"]["phase"], "pending");
+    let (_, manual_paired) = post("/v1/otter/connections/request", input, true);
+    assert_eq!(manual_paired["connection"]["phase"], "approved");
     assert_eq!(
         wall_http::admin(
             f.port,
