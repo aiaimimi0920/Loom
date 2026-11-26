@@ -54,7 +54,7 @@ Assert-Workflow -Name "ci.yml" -RequiredText @(
     'actions/checkout@v5',
     'fetch-depth: 0',
     'actions/setup-node@v6',
-    'actions/setup-python@v6',
+    'actions/setup-python@v7',
     'actions/upload-artifact@v6',
     'node-version: "22.22.2"',
     'node --test .\scripts\tests\effective-code-lines.test.mjs',
