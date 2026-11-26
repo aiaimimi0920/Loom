@@ -123,9 +123,20 @@ fn device_session_route_allowed(method: &str, path: &str) -> bool {
     if wall_device_route_allowed(method, path) {
         return true;
     }
+    if method == "POST" && path == "/v1/otter-sync/history/archive"
+        || (method == "POST" && path == "/v1/cloud-relay/projection/send")
+        || (method == "POST"
+            && path_id_with_suffix(path, "/v1/otter-sync/devices/", "/state").is_some())
+    {
+        return true;
+    }
     if method == "GET" {
         return path == "/v1/otter/connection-info"
             || path == "/v1/otter/relay/pending"
+            || path == "/v1/otter-sync/devices"
+            || path == "/v1/otter-sync/history"
+            || path == "/v1/cloud-relay/status"
+            || path == "/v1/cloud-relay/projection/inbox"
             || path == "/v1/capabilities"
             || path == "/v1/ai/status"
             || path == "/v1/ai/models"

@@ -97,8 +97,12 @@ use uuid::Uuid;
 
 mod account_login;
 mod asset_library;
+mod cloud_relay;
+mod companion_config;
 mod connected_users;
 mod local_art;
+mod mcp_share_tokens;
+mod otter_sync;
 mod terminal_relay;
 /// 仅在整个 daemon 进程正常退出时关闭进程级原生下载引擎。
 pub fn shutdown_download_engine() {
@@ -225,6 +229,9 @@ include!("runtime/route_dispatch.rs");
 include!("runtime/management_ui_routes.rs");
 include!("runtime/ai_gateway_routes.rs");
 include!("runtime/unified_store_routes.rs");
+include!("runtime/mcp_share_server.rs");
+include!("runtime/mcp_share_handlers.rs");
+include!("runtime/device_hierarchy_routes.rs");
 include!("runtime/asset_library_install.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
 include!("runtime/route_dispatch/mcp_art.rs");
@@ -347,4 +354,5 @@ mod tests {
     include!("tests/suite/part_41.rs");
     include!("tests/management_ui_edition.rs");
     include!("tests/hybrid_workflow_relay.rs");
+    include!("tests/m4_hub_mcp_sync.rs");
 }

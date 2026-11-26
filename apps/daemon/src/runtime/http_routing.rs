@@ -177,8 +177,10 @@ fn enforce_request_security_with_policy(
             "exactly one loopback Host header is required",
         ));
     }
+    let allow_remote = allow_remote_host
+        || (is_outbound_mcp_request(request) && has_scoped_mcp_bearer_header(request));
     let host = request.header("host").unwrap_or_default();
-    let valid_host = if allow_remote_host {
+    let valid_host = if allow_remote {
         valid_remote_management_authority(host)
     } else {
         loopback_host_from_authority(host).is_some()
@@ -198,7 +200,7 @@ fn enforce_request_security_with_policy(
         ));
     }
     if let Some(origin) = request.header("origin") {
-        if !origin_matches_authority(origin, host, allow_remote_host) {
+        if !origin_matches_authority(origin, host, allow_remote) {
             return Err(request_security_error(
                 403,
                 "origin_denied",

@@ -14,6 +14,10 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
+        ("POST", "/mcp" | "/v1/cloud-relay/mcp") => RequestConcurrencyClass::Concurrent,
+        ("GET", "/v1/devices/hierarchy" | "/v1/otter-sync/devices" | "/v1/otter-sync/history" | "/v1/cloud-relay/status") => {
+            RequestConcurrencyClass::Concurrent
+        }
         ("GET" | "HEAD", "/ui") => RequestConcurrencyClass::Concurrent,
         ("GET" | "HEAD", path) if path.starts_with("/ui/") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/ai/status" | "/v1/ai/models") => RequestConcurrencyClass::Concurrent,

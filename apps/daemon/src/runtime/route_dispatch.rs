@@ -13,6 +13,12 @@ fn route_with_runtime(
         };
     }
     runtime_log_debug(format!("{} {}", request.method, request.path));
+    if let Some(response) = route_outbound_mcp_http(runtime, request) {
+        return response;
+    }
+    if let Some(response) = route_cloud_relay_mcp_dispatch(runtime, request) {
+        return response;
+    }
     let path = request.path.split('?').next().unwrap_or_default();
     if offline_peers::OfflinePeers::handles(path) {
         // Peer proofs have their own pinned-key authentication; config remains admin-only.
@@ -185,7 +191,45 @@ fn route(
     ) {
         return response;
     }
+    if let Some(response) = cloud_relay::route(
+        request,
+        route_path,
+        authenticated_device_id.as_deref(),
+        admin_authenticated,
+        control_plane_root,
+    ) {
+        return response;
+    }
+    if let Some(response) = otter_sync::route(
+        request,
+        route_path,
+        authenticated_device_id.as_deref(),
+        admin_authenticated,
+        control_plane_root,
+        workflow_store,
+        hook_bridge,
+    ) {
+        return response;
+    }
     if admin_authenticated {
+        if request.method == "GET" && route_path == "/v1/devices/hierarchy" {
+            return build_devices_hierarchy_response(
+                device_registry,
+                hook_bridge,
+                control_plane_root,
+            );
+        }
+        if let Some(response) = mcp_share_tokens::route_admin(
+            request,
+            route_path,
+            control_plane_root,
+            settings_base_url,
+        ) {
+            return response;
+        }
+        if let Some(response) = companion_config::route(request, route_path, config_store.root()) {
+            return response;
+        }
         if let Some(response) = route_unified_store(
             request,
             route_path,

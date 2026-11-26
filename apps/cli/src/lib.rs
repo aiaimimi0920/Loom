@@ -9,9 +9,11 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+mod mcp_stdio;
+
 const DAEMON_AUTH_TOKEN_FILE: &str = "daemon-token";
 const DEFAULT_CLI_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_CLI_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CLI_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn run_cli_with_writer<I, S, W>(args: I, writer: &mut W) -> Result<()>
 where
@@ -141,6 +143,18 @@ where
             )?;
             writeln!(writer, "{response}")?;
         }
+        ["mcp-stdio"] => {
+            let effective_token = options
+                .mcp_token
+                .as_deref()
+                .or(options.daemon_token.as_deref());
+            mcp_stdio::run_mcp_stdio_bridge(
+                std::io::stdin().lock(),
+                writer,
+                &options.daemon_url,
+                effective_token,
+            )?;
+        }
         [] => bail!("missing command"),
         command => bail!("unsupported command `{}`", command.join(" ")),
     }
@@ -163,11 +177,13 @@ fn cli_help_text() -> &'static str {
         "  arts list              List registered Arts\n",
         "  workflows list         List stored Otter/Art workflows\n",
         "  mcp list               List configured MCP servers\n",
+        "  mcp-stdio              Bridge stdio MCP JSON-RPC to Loom's outbound /mcp server\n",
         "  ai status              Read global AI Gateway relay status\n",
         "\n",
         "Options:\n",
         "  --daemon-url <URL>     Daemon URL [default: LOOM_DAEMON_URL or http://127.0.0.1:8765]\n",
         "  --daemon-token <TOKEN> Bearer token [default: LOOM_DAEMON_TOKEN or control-plane token file]\n",
+        "  --mcp-token <TOKEN>    Scoped MCP share token [default: LOOM_MCP_SHARE_TOKEN]\n",
         "  --json                 Print raw JSON response for list commands\n",
         "  -h, --help             Print help\n",
         "  -V, --version          Print version\n",
@@ -179,6 +195,7 @@ struct CliOptions {
     command: Vec<String>,
     daemon_url: String,
     daemon_token: Option<String>,
+    mcp_token: Option<String>,
     raw_json: bool,
 }
 
@@ -233,6 +250,11 @@ impl CliOptions {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:8765".to_owned());
         let mut daemon_token = default_daemon_auth_token()?;
+        let mut mcp_token = std::env::var("LOOM_MCP_SHARE_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| normalize_daemon_auth_token(&v, "LOOM_MCP_SHARE_TOKEN"))
+            .transpose()?;
         let mut raw_json = false;
         let mut index = 1;
 
@@ -256,6 +278,17 @@ impl CliOptions {
                         Some(normalize_daemon_auth_token(raw, "--daemon-token")?)
                     };
                 }
+                "--mcp-token" => {
+                    index += 1;
+                    let raw = args
+                        .get(index)
+                        .ok_or_else(|| anyhow!("--mcp-token requires a value"))?;
+                    mcp_token = if raw.trim().is_empty() {
+                        None
+                    } else {
+                        Some(normalize_daemon_auth_token(raw, "--mcp-token")?)
+                    };
+                }
                 "--json" => {
                     raw_json = true;
                 }
@@ -268,6 +301,7 @@ impl CliOptions {
             command,
             daemon_url,
             daemon_token,
+            mcp_token,
             raw_json,
         })
     }
@@ -348,174 +382,4 @@ fn parse_http_url(base_url: &str) -> Result<HttpEndpoint> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
-    #[test]
-    fn help_and_version_do_not_require_a_daemon() {
-        let mut help = Vec::new();
-        run_cli_with_writer(["loom", "--help"], &mut help).expect("help command");
-        let help = String::from_utf8(help).expect("help utf8");
-        assert!(help.contains("Usage: loom"));
-        assert!(help.contains("frameworks list"));
-        assert!(help.contains("arts list"));
-        assert!(help.contains("workflows list"));
-        assert!(help.contains("ai status"));
-
-        let mut version = Vec::new();
-        run_cli_with_writer(["loom", "--version"], &mut version).expect("version command");
-        let version = String::from_utf8(version).expect("version utf8");
-        assert_eq!(version.trim(), format!("loom {}", loom_core::LOOM_VERSION));
-    }
-
-    #[test]
-    fn status_command_reads_daemon_status_endpoint() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock daemon");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept status request");
-            let request = read_http_request(&mut socket);
-            assert!(
-                request.starts_with("GET /status HTTP/1.1"),
-                "unexpected request: {request:?}"
-            );
-            let body = r#"{"status":"ready","modules":[{"name":"core","initialized":true}]}"#;
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .expect("write response");
-        });
-
-        let mut output = Vec::new();
-        run_cli_with_writer(
-            [
-                "loom",
-                "status",
-                "--daemon-url",
-                &format!("http://{address}"),
-            ],
-            &mut output,
-        )
-        .expect("status command");
-
-        server.join().expect("mock server");
-        let output = String::from_utf8(output).expect("utf8 output");
-        assert!(output.contains("ready"));
-        assert!(output.contains("core"));
-    }
-
-    #[test]
-    fn status_command_sends_bearer_token_when_configured() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock daemon");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept status request");
-            let request = read_http_request(&mut socket);
-            assert!(
-                request.contains("Authorization: Bearer test-token\r\n"),
-                "missing authorization header: {request:?}"
-            );
-            let body = r#"{"status":"ready","modules":[]}"#;
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .expect("write response");
-        });
-
-        let mut output = Vec::new();
-        run_cli_with_writer(
-            [
-                "loom",
-                "status",
-                "--daemon-url",
-                &format!("http://{address}"),
-                "--daemon-token",
-                "test-token",
-            ],
-            &mut output,
-        )
-        .expect("status command");
-
-        server.join().expect("mock server");
-        let output = String::from_utf8(output).expect("utf8 output");
-        assert!(output.contains("ready"));
-    }
-
-    #[test]
-    fn list_commands_query_daemon_control_plane_endpoints() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock daemon");
-        let address = listener.local_addr().expect("mock address");
-        let server = thread::spawn(move || {
-            for (expected_path, body) in [
-                (
-                    "GET /v1/frameworks HTTP/1.1",
-                    r#"{"frameworks":[{"id":"process","version":"1.0.0","ready":true}]}"#,
-                ),
-                (
-                    "GET /v1/workflows HTTP/1.1",
-                    r#"{"workflows":[{"id":"image-blend-workflow"}]}"#,
-                ),
-            ] {
-                let (mut socket, _) = listener.accept().expect("accept list request");
-                let request = read_http_request(&mut socket);
-                assert!(request.starts_with(expected_path), "got {request:?}");
-                write!(
-                    socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .expect("write list response");
-            }
-        });
-
-        let url = format!("http://{address}");
-        let mut frameworks_out = Vec::new();
-        run_cli_with_writer(
-            ["loom", "frameworks", "list", "--daemon-url", &url],
-            &mut frameworks_out,
-        )
-        .expect("frameworks list");
-        assert!(String::from_utf8(frameworks_out)
-            .expect("utf8")
-            .contains("process\t1.0.0\tready=true"));
-
-        let mut workflows_out = Vec::new();
-        run_cli_with_writer(
-            ["loom", "workflows", "list", "--daemon-url", &url],
-            &mut workflows_out,
-        )
-        .expect("workflows list");
-        assert_eq!(
-            String::from_utf8(workflows_out).expect("utf8").trim(),
-            "image-blend-workflow"
-        );
-
-        server.join().expect("mock server");
-    }
-
-    fn read_http_request(socket: &mut impl Read) -> String {
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 64];
-        loop {
-            let bytes = socket.read(&mut buffer).expect("read request");
-            if bytes == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..bytes]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        String::from_utf8(request).expect("utf8 request")
-    }
-}
+mod cli_tests;

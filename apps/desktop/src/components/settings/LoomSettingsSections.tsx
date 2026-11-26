@@ -2,6 +2,7 @@
 import { AboutPanel } from "./AboutPanel";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { ConnectionModeSettingsPanel } from "./ConnectionModeSettingsPanel";
+import { McpShareSettingsPanel } from "./McpShareSettingsPanel";
 import { NAccountSettingsPanel } from "./NAccountSettingsPanel";
 import { CapabilityExtensionsPanel } from "./capabilities/CapabilityExtensionsPanel";
 import { SettingsAccordionSection } from "./settingsModel";
@@ -77,6 +78,7 @@ export function LoomSettingsSections({
 
       <SettingsAccordionSection id="mcp" label="MCP" open={openSettingsSection === "mcp"} onToggle={() => toggleSettingsSection("mcp")}>
         <McpSettingsPanel value={draft.mcp} onChange={updateMcpDraft} />
+        <McpShareSettingsPanel baseUrl={baseUrl} />
       </SettingsAccordionSection>
 
       <SettingsAccordionSection id="art-store" label="Art" open={openSettingsSection === "art-store"} onToggle={() => toggleSettingsSection("art-store")}>
