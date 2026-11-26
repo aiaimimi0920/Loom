@@ -79,6 +79,7 @@ function Assert-SampleArtPackages {
                 $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
                 $expectedRuntimeEntries = @(
                     "runtime/common.ps1",
+                    "runtime/image-runtime-bitmap.ps1",
                     "runtime/lib/Constants.ps1",
                     "runtime/lib/Domain.ps1",
                     "runtime/lib/Mcp.ps1",
