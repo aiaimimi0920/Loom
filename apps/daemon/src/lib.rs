@@ -221,6 +221,7 @@ include!("runtime/wall_media_encoding.rs");
 include!("runtime/wall_png_cache.rs");
 include!("runtime/wall_live_media.rs");
 include!("runtime/route_dispatch.rs");
+include!("runtime/management_ui_routes.rs");
 include!("runtime/ai_gateway_routes.rs");
 include!("runtime/asset_library_install.rs");
 include!("runtime/route_dispatch/surfaces_devices.rs");
@@ -342,4 +343,5 @@ mod tests {
     include!("tests/suite/part_39.rs");
     include!("tests/suite/part_40.rs");
     include!("tests/suite/part_41.rs");
+    include!("tests/management_ui_edition.rs");
 }

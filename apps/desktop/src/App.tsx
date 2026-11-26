@@ -40,6 +40,7 @@ import {
   waitForLoomOnline,
 } from "./services/loomApi";
 import { applyLoomGeneralSettings } from "./services/loomGeneralSettings";
+import { isDesktopTauriShell, resolveBrowserDaemonBaseUrl } from "./services/loomRuntimeTarget";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconButton, NavigationItem as NeuroNavigationItem } from "@neuro/ui";
@@ -85,6 +86,11 @@ export default function App() {
       signal: abortSignal,
       loading: setLoading,
       read: async () => {
+        if (!isDesktopTauriShell()) {
+          const baseUrl = resolveBrowserDaemonBaseUrl();
+          const next = await readLoomSnapshot(baseUrl);
+          return { next, nextOtterBridgeUrl: DEFAULT_OTTER_BRIDGE_URL };
+        }
         let baseUrl = DEFAULT_LOOM_DAEMON_URL;
         let nextOtterBridgeUrl = DEFAULT_OTTER_BRIDGE_URL;
         try {
@@ -137,6 +143,10 @@ export default function App() {
   }, []);
 
   const startLocalService = async (abortSignal?: AbortSignal) => {
+    if (!isDesktopTauriShell()) {
+      await refreshSnapshot(abortSignal).catch(() => undefined);
+      return;
+    }
     try {
       await startLoomDaemon();
       if (abortSignal?.aborted) return;
@@ -170,9 +180,11 @@ export default function App() {
       .then(async (settings) => {
         if (cancelled) return;
         applyLoomGeneralSettings(settings.general);
-        await invoke("apply_loom_general_settings", {
-          settings: { minimizeToTray: settings.general.minimize_to_tray },
-        });
+        if (isDesktopTauriShell()) {
+          await invoke("apply_loom_general_settings", {
+            settings: { minimizeToTray: settings.general.minimize_to_tray },
+          });
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -222,7 +234,11 @@ export default function App() {
   }, [autoStartAttempted, loading, snapshot.connectionState, snapshot.checkedAt]);
 
   useEffect(() => {
-    if (snapshot.connectionState !== "online" || packagedArtsBootstrapBaseUrl.current === snapshot.baseUrl) {
+    if (
+      !isDesktopTauriShell() ||
+      snapshot.connectionState !== "online" ||
+      packagedArtsBootstrapBaseUrl.current === snapshot.baseUrl
+    ) {
       return;
     }
     packagedArtsBootstrapBaseUrl.current = snapshot.baseUrl;

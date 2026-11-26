@@ -9,7 +9,9 @@ members = [
     "apps/text-translation-host",
     "crates/loom_core",
     "crates/loom_durable",
+    "crates/loom_embedded_ui",
     "crates/loom_gateway",
+    "crates/loom_local_data",
     "crates/loom_configuration",
     "crates/loom_mcp",
     "crates/loom_workflow_store",
@@ -72,7 +74,9 @@ zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 
 loom_core = { path = "crates/loom_core" }
 loom_durable = { path = "crates/loom_durable" }
+loom_embedded_ui = { path = "crates/loom_embedded_ui" }
 loom_gateway = { path = "crates/loom_gateway" }
+loom_local_data = { path = "crates/loom_local_data" }
 loom_configuration = { path = "crates/loom_configuration" }
 loom_mcp = { path = "crates/loom_mcp" }
 loom_workflow_store = { path = "crates/loom_workflow_store" }

@@ -167,12 +167,24 @@ struct HealthResponse {
     version: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagementUiStatus {
+    compiled: bool,
+    enabled: bool,
+    prebuilt_bundle: bool,
+    mount_path: &'static str,
+}
+
 #[derive(Serialize)]
 struct StatusResponse {
     status: &'static str,
+    edition: &'static str,
     pid: u32,
     #[serde(rename = "executablePath")]
     executable_path: String,
+    #[serde(rename = "managementUi")]
+    management_ui: ManagementUiStatus,
     modules: Vec<ModuleStatus>,
     ai_gateway: AiGatewayStatus,
     run_store: RunStoreStatus,

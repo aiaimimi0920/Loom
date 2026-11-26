@@ -1,0 +1,11 @@
+[package]
+name = "loom_embedded_ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+description = "Immutable embedded Web management console bundle for Loom server web edition"
+
+[dependencies]

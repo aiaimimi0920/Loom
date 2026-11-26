@@ -2365,9 +2365,11 @@ dependencies = [
  "loom_configuration",
  "loom_core",
  "loom_durable",
+ "loom_embedded_ui",
  "loom_gateway",
  "loom_image_io",
  "loom_local_channel",
+ "loom_local_data",
  "loom_mcp",
  "loom_otter_bridge",
  "loom_perf",
@@ -2489,6 +2491,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom_embedded_ui"
+version = "0.2.2"
+
+[[package]]
 name = "loom_gateway"
 version = "0.2.2"
 dependencies = [
@@ -2526,6 +2532,14 @@ dependencies = [
  "subtle",
  "tungstenite",
  "uuid",
+]
+
+[[package]]
+name = "loom_local_data"
+version = "0.2.2"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

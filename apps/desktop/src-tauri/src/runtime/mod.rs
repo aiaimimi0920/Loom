@@ -20,6 +20,7 @@ mod app;
 mod binary_http;
 mod commands;
 mod config;
+mod connection_profile;
 mod daemon;
 mod diagnostics;
 mod file_io;
@@ -40,6 +41,7 @@ pub use types::*;
 
 use binary_http::*;
 use config::*;
+use connection_profile::*;
 #[cfg(test)]
 use diagnostics::*;
 use file_io::*;

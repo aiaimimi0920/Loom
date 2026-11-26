@@ -169,7 +169,7 @@ test("provides independent compact general settings for Loom and Otter", () => {
   );
   assert.match(
     appSource,
-    /appName="hook"[\s\S]*?language: draft\.hook_general\.language[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/,
+    /<OtterLanguageSettings[\s\S]*?appName="hook"[\s\S]*?theme: draft\.hook_general\.theme[\s\S]*?closeToTray: draft\.hook_general\.close_to_tray/,
   );
   assert.match(
     appSource,

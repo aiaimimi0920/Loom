@@ -19,16 +19,13 @@ pub(super) fn percent_encode_path_segment(value: &str) -> String {
 // not corrupted by UTF-8 decoding, and it returns the Content-Type so the caller
 // can build a correct `data:` URL.
 pub(super) fn http_get_binary(base_url: &str, path: &str) -> Result<(String, Vec<u8>), String> {
-    let (host, port) = parse_loopback_http_url(base_url)?;
+    let (host, port, addr) = parse_daemon_http_endpoint(base_url)?;
     let path = normalize_daemon_path(path.to_owned())?;
     let authorization = daemon_auth_token()?
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
-    let mut stream = TcpStream::connect_timeout(
-        &loopback_socket_addr(&host, port)?,
-        LOOM_DAEMON_CONNECT_TIMEOUT,
-    )
-    .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, LOOM_DAEMON_CONNECT_TIMEOUT)
+        .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;
@@ -121,6 +118,18 @@ pub(super) fn normalize_daemon_path(path: String) -> Result<String, String> {
     Ok(path.to_string())
 }
 
+pub(super) fn parse_daemon_http_endpoint(
+    base_url: &str,
+) -> Result<(String, u16, SocketAddr), String> {
+    let allow_remote = is_remote_connection_mode();
+    let endpoint = loom_local_data::parse_loom_endpoint_url(base_url, allow_remote)?;
+    if endpoint.scheme != "http" {
+        return Err("当前直连通道使用 HTTP（本机回环或家庭局域网私有 IP）；HTTPS 请通过内置浏览器控制台访问。".to_owned());
+    }
+    let addr = endpoint.resolve_socket_addr()?;
+    Ok((endpoint.host, endpoint.port, addr))
+}
+
 pub(super) fn parse_loopback_http_url(base_url: &str) -> Result<(String, u16), String> {
     let without_scheme = base_url
         .strip_prefix("http://")
@@ -149,6 +158,7 @@ pub(super) fn parse_loopback_http_url(base_url: &str) -> Result<(String, u16), S
     Ok((host.trim_matches(&['[', ']'][..]).to_string(), port))
 }
 
+#[allow(dead_code)]
 pub(super) fn loopback_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
     let ip = match host {
         "127.0.0.1" | "localhost" => IpAddr::V4(Ipv4Addr::LOCALHOST),

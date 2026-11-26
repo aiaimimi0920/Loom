@@ -8,11 +8,25 @@ param(
     [switch]$DryRun,
     [switch]$RequireCleanSource,
     [switch]$DevelopmentOnly,
-    [string]$LibAria2BuildRoot = ""
+    [string]$LibAria2BuildRoot = "",
+    [ValidateSet("desktop", "web", "api")]
+    [string]$Edition = "desktop"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($Edition -ne "desktop") {
+    & (Join-Path $PSScriptRoot "Build-LoomServerEdition.ps1") `
+        -Edition $Edition `
+        -VersionId $VersionId `
+        -OutputRoot $OutputRoot `
+        -NoZip:$NoZip `
+        -DryRun:$DryRun `
+        -RequireCleanSource:$RequireCleanSource `
+        -DevelopmentOnly:$DevelopmentOnly
+    exit $LASTEXITCODE
+}
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $targetName = "windows-x64"

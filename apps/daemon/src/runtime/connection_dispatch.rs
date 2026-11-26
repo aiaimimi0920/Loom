@@ -564,6 +564,8 @@ fn request_concurrency_class(request: &ParsedHttpRequest) -> RequestConcurrencyC
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), route_path) {
         ("GET", "/health" | "/status" | "/v1/capabilities") => RequestConcurrencyClass::Concurrent,
+        ("GET" | "HEAD", "/ui") => RequestConcurrencyClass::Concurrent,
+        ("GET" | "HEAD", path) if path.starts_with("/ui/") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/ai/status" | "/v1/ai/models") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/mcp/registry") => RequestConcurrencyClass::Concurrent,
         ("GET", "/v1/hook-bridge/canvas") => RequestConcurrencyClass::Concurrent,

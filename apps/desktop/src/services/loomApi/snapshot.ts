@@ -1,5 +1,5 @@
 // Online polling, partial-data retention, and aggregate daemon snapshot orchestration.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { DEFAULT_LOOM_DAEMON_URL } from "./defaults.ts";
 import type {
   LoomCapability,
@@ -188,11 +188,13 @@ export async function readLoomSnapshot(
   const settings = buildSettingsLinks(normalizedBaseUrl);
   const checkedAt = new Date().toISOString();
 
-  try {
-    return await readSnapshotViaTauri(normalizedBaseUrl);
-  } catch {
-    // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
-    // local frontend checks still show the daemon state when CORS allows it.
+  if (typeof window !== "undefined" && isTauri()) {
+    try {
+      return await readSnapshotViaTauri(normalizedBaseUrl);
+    } catch {
+      // Browser previews do not expose Tauri commands. Fall back to direct HTTP so
+      // local frontend checks still show the daemon state when CORS allows it.
+    }
   }
 
   let health: LoomHealthResponse;

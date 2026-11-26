@@ -101,6 +101,7 @@ export const readJson = async <T>(
   signal?: AbortSignal,
 ): Promise<T> => {
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
+    credentials: "same-origin",
     headers: {
       Accept: "application/json",
     },
@@ -196,6 +197,7 @@ export const postJson = async <T>(baseUrl: string, path: string, body: unknown):
   }
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "POST",
+    credentials: "same-origin",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -212,6 +214,7 @@ export const putJson = async <T>(baseUrl: string, path: string, body: unknown): 
   }
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "PUT",
+    credentials: "same-origin",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -228,6 +231,7 @@ export const deleteJson = async <T>(baseUrl: string, path: string, body?: unknow
   }
   const response = await fetch(`${trimTrailingSlash(baseUrl)}${path}`, {
     method: "DELETE",
+    credentials: "same-origin",
     headers: {
       Accept: "application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),

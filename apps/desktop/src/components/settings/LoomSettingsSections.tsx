@@ -1,6 +1,7 @@
 // Keeps Loom-owned settings sections cohesive and separate from Otter settings UI.
 import { AboutPanel } from "./AboutPanel";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
+import { ConnectionModeSettingsPanel } from "./ConnectionModeSettingsPanel";
 import { NAccountSettingsPanel } from "./NAccountSettingsPanel";
 import { CapabilityExtensionsPanel } from "./capabilities/CapabilityExtensionsPanel";
 import { SettingsAccordionSection } from "./settingsModel";
@@ -47,6 +48,7 @@ export function LoomSettingsSections({
   return (
     <div className="settings-accordion">
       <SettingsAccordionSection id="general" label="常规" open={openSettingsSection === "general"} onToggle={() => toggleSettingsSection("general")}>
+        <ConnectionModeSettingsPanel baseUrl={baseUrl} />
         <NAccountSettingsPanel baseUrl={baseUrl} />
         <AccountSettingsPanel baseUrl={baseUrl} />
         <GeneralSettingsPanel

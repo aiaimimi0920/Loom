@@ -54,6 +54,8 @@ pub fn daemon_help_text() -> &'static str {
         "  LOOM_DAEMON_QUEUE_CAPACITY  Queued requests [default: 32]\n",
         "  LOOM_DAEMON_TOKEN    Administrator bearer token; generated and persisted when omitted\n",
         "  LOOM_TLS_TERMINATED  Set to 1 only behind an authenticated TLS terminator for non-loopback binds\n",
+        "  LOOM_ALLOW_LAN_MANAGEMENT  Set to 1 to allow private home-LAN HTTP management/UI binds\n",
+        "  LOOM_ENABLE_MANAGEMENT_UI  Set to 0 or 1 to toggle embedded /ui/ web management console\n",
         "  LOOM_BUNDLED_ART_SHA256_ALLOWLIST  Comma-separated packaged Art digests supplied by Loom desktop\n",
         "  LOOM_CAPABILITY_MANIFEST_DIR  Directory for loom.json discovery manifest\n",
         "  LOOM_RUN_STORE_PATH  SQLite run evidence path [default: <control-plane>\\runs\\loom-runs.sqlite3]\n",
@@ -172,6 +174,8 @@ pub struct DaemonConfig {
     port: u16,
     auth_token: Option<String>,
     tls_terminated: bool,
+    allow_lan_management: bool,
+    enable_management_ui: bool,
     manifest_dir: Option<PathBuf>,
     mcp_registry_endpoint: String,
     ai_gateway: AiGatewayConfig,
@@ -200,6 +204,8 @@ impl DaemonConfig {
                 }
             },
             tls_terminated: false,
+            allow_lan_management: false,
+            enable_management_ui: cfg!(feature = "management-ui"),
             manifest_dir: None,
             mcp_registry_endpoint: std::env::var("LOOM_MCP_REGISTRY_ENDPOINT")
                 .ok()
@@ -242,6 +248,39 @@ impl DaemonConfig {
             .ok()
             .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"));
         self.with_tls_termination(enabled)
+    }
+
+    #[must_use]
+    pub fn with_lan_management(mut self, enabled: bool) -> Self {
+        self.allow_lan_management = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_lan_management_from_env(self) -> Self {
+        let enabled = std::env::var("LOOM_ALLOW_LAN_MANAGEMENT")
+            .ok()
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        self.with_lan_management(enabled)
+    }
+
+    #[must_use]
+    pub fn with_management_ui(mut self, enabled: bool) -> Self {
+        self.enable_management_ui = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_management_ui_from_env(self) -> Self {
+        let Some(raw) = std::env::var("LOOM_ENABLE_MANAGEMENT_UI").ok() else {
+            return self;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return self;
+        }
+        let enabled = !matches!(trimmed, "0" | "false" | "FALSE" | "no" | "NO");
+        self.with_management_ui(enabled)
     }
 
     #[must_use]
@@ -377,6 +416,8 @@ struct DaemonRuntime {
     shared_images: SharedImageStoreHandle,
     settings_base_url: String,
     mcp_registry_endpoint: String,
+    allow_remote_management_host: bool,
+    enable_management_ui: bool,
     ai_gateway: SharedAiGateway,
     capability_runtime: SharedCapabilityRuntime,
     capability_dispatch: SharedCapabilityDispatchRegistry,

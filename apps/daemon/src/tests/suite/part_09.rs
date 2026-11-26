@@ -167,6 +167,8 @@ fn test_daemon_runtime_from_config(
         shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
         settings_base_url,
         mcp_registry_endpoint: config.mcp_registry_endpoint,
+        enable_management_ui: config.enable_management_ui,
+        allow_remote_management_host: config.allow_lan_management || config.tls_terminated,
         ai_gateway,
         capability_runtime,
         capability_dispatch,

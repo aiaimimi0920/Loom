@@ -1,6 +1,7 @@
 // Settings cache controls keep native commands and confirmations in Loom.
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { isDesktopTauriShell } from "../../services/loomRuntimeTarget";
 import { pushAppToast, requestAppConfirmation } from "../feedback/AppFeedback";
 import { formatCacheBytes } from "./SettingsPanels";
 import type {
@@ -32,6 +33,7 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
   const [otterCacheBusyKind, setOtterCacheBusyKind] = useState<string | null>(null);
 
   const refreshLoomCache = useCallback(async () => {
+    if (!isDesktopTauriShell()) return;
     setLoomCacheLoading(true);
     try {
       const next = await invoke<LoomCacheSnapshotInfo>("get_loom_cache_snapshot");
@@ -47,6 +49,7 @@ export function useSettingsCacheControls(settingsMountedRef: RefObject<boolean>)
   }, []);
 
   const refreshOtterCache = useCallback(async () => {
+    if (!isDesktopTauriShell()) return;
     setOtterCacheLoading(true);
     try {
       const next = await invoke<OtterCacheSnapshotInfo>("get_otter_cache_snapshot");

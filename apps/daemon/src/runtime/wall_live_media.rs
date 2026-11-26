@@ -79,13 +79,15 @@ fn prepare_wall_live_upgrade(
     request: &ParsedHttpRequest,
     runtime: &DaemonRuntime,
 ) -> std::result::Result<(WallLiveGrant, String), LiveRuntimeError> {
-    enforce_request_security(request).map_err(|(status, _)| {
-        LiveRuntimeError::new(
-            status,
-            "wall_live_denied",
-            "request security validation failed",
-        )
-    })?;
+    enforce_request_security_with_policy(request, runtime.allow_remote_management_host).map_err(
+        |(status, _)| {
+            LiveRuntimeError::new(
+                status,
+                "wall_live_denied",
+                "request security validation failed",
+            )
+        },
+    )?;
     validate_live_websocket_headers(request, WALL_MEDIA_PROTOCOL_VERSION)?;
     let device_id = authenticate_http_device_session(request, &runtime.device_registry)
         .map_err(|error| LiveRuntimeError::new(error.status, error.code, error.message))?

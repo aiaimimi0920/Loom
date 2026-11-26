@@ -22,6 +22,7 @@ fn route_surfaces_devices(
     shared_images: &SharedImageStoreHandle,
     settings_base_url: &str,
     mcp_registry_endpoint: &str,
+    enable_management_ui: bool,
     request_executor: RequestExecutorStatus,
     canvas_workflow_root: &Path,
     framework_registry: &FrameworkRegistry,
@@ -56,10 +57,12 @@ fn route_surfaces_devices(
             200,
             serde_json::to_string(&StatusResponse {
                 status: "ready",
+                edition: daemon_edition_name(),
                 pid: std::process::id(),
                 executable_path: std::env::current_exe()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default(),
+                management_ui: build_management_ui_status(enable_management_ui),
                 modules: module_statuses(),
                 ai_gateway: ai_gateway.status(),
                 run_store: run_store_status,

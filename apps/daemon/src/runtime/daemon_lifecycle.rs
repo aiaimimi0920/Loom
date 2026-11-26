@@ -34,9 +34,21 @@ impl LoomDaemon {
                 "Surface resource GC minimum age must be at least {MIN_RESOURCE_GC_AGE_MILLIS} ms"
             );
         }
-        if !config.tls_terminated && !is_loopback_bind_host(&config.host) {
+        let allow_private_lan_bind = config.allow_lan_management && {
+            let trimmed = config.host.trim().trim_matches(['[', ']']);
+            trimmed == "0.0.0.0"
+                || trimmed == "::"
+                || trimmed.parse::<IpAddr>().is_ok_and(|ip| match ip.to_canonical() {
+                    IpAddr::V4(v4) => v4.is_private(),
+                    IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+                })
+        };
+        if !config.tls_terminated
+            && !allow_private_lan_bind
+            && !is_loopback_bind_host(&config.host)
+        {
             anyhow::bail!(
-                "loom daemon refuses plaintext non-loopback bind {}; place it behind an authenticated TLS terminator and set LOOM_TLS_TERMINATED=1",
+                "loom daemon refuses plaintext non-loopback bind {}; place it behind an authenticated TLS terminator (LOOM_TLS_TERMINATED=1) or set LOOM_ALLOW_LAN_MANAGEMENT=1 for private home-LAN binds",
                 config.host
             );
         }
@@ -63,6 +75,12 @@ impl LoomDaemon {
             {
                 std::env::var_os("LOOM_CONTROL_PLANE_ROOT")
                     .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::current_exe()
+                            .ok()
+                            .and_then(|exe| loom_local_data::resolve_portable_root(&exe).ok().flatten())
+                            .map(|portable| portable.join("control-plane"))
+                    })
                     .unwrap_or_else(default_control_plane_root)
             }
         });
@@ -213,6 +231,8 @@ impl LoomDaemon {
             shared_images: Arc::new(Mutex::new(SharedImageStore::new())),
             settings_base_url,
             mcp_registry_endpoint: config.mcp_registry_endpoint,
+            allow_remote_management_host: config.tls_terminated || config.allow_lan_management,
+            enable_management_ui: config.enable_management_ui,
             ai_gateway,
             capability_runtime,
             capability_dispatch,

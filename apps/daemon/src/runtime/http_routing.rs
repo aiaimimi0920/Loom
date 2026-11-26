@@ -70,7 +70,51 @@ fn loopback_host_from_authority(authority: &str) -> Option<&str> {
     .then_some(host)
 }
 
-fn origin_matches_host(origin: &str, host: &str) -> bool {
+fn valid_remote_management_authority(authority: &str) -> bool {
+    let authority = authority.trim();
+    if authority.is_empty()
+        || authority.len() > 255
+        || authority.contains('/')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.contains('@')
+        || authority
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return false;
+    }
+    if loopback_host_from_authority(authority).is_some() {
+        return true;
+    }
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some(end) = bracketed.find(']') else {
+            return false;
+        };
+        let remainder = &bracketed[end + 1..];
+        if !remainder.is_empty()
+            && (!remainder.starts_with(':')
+                || remainder[1..].is_empty()
+                || !remainder[1..].bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return false;
+        }
+        &bracketed[..end]
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        host
+    } else {
+        authority
+    };
+    host.parse::<IpAddr>().is_ok()
+        || host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
+}
+
+fn origin_matches_authority(origin: &str, host: &str, allow_remote_host: bool) -> bool {
     let Some(authority) = origin
         .trim()
         .strip_prefix("http://")
@@ -81,7 +125,12 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
     if authority.contains('/') || authority.contains('?') || authority.contains('#') {
         return false;
     }
-    loopback_host_from_authority(authority).is_some() && authority.eq_ignore_ascii_case(host.trim())
+    let host_allowed = if allow_remote_host {
+        valid_remote_management_authority(authority)
+    } else {
+        loopback_host_from_authority(authority).is_some()
+    };
+    host_allowed && authority.eq_ignore_ascii_case(host.trim())
 }
 
 fn request_requires_json_content_type(method: &str) -> bool {
@@ -117,7 +166,10 @@ fn is_naccount_callback_navigation(request: &ParsedHttpRequest) -> bool {
         && request.header("sec-fetch-dest") == Some("document")
 }
 
-fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<(), (u16, String)> {
+fn enforce_request_security_with_policy(
+    request: &ParsedHttpRequest,
+    allow_remote_host: bool,
+) -> std::result::Result<(), (u16, String)> {
     if request.header_count("host") != 1 {
         return Err(request_security_error(
             400,
@@ -126,7 +178,12 @@ fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<
         ));
     }
     let host = request.header("host").unwrap_or_default();
-    if loopback_host_from_authority(host).is_none() {
+    let valid_host = if allow_remote_host {
+        valid_remote_management_authority(host)
+    } else {
+        loopback_host_from_authority(host).is_some()
+    };
+    if !valid_host {
         return Err(request_security_error(
             400,
             "invalid_host",
@@ -141,7 +198,7 @@ fn enforce_request_security(request: &ParsedHttpRequest) -> std::result::Result<
         ));
     }
     if let Some(origin) = request.header("origin") {
-        if !origin_matches_host(origin, host) {
+        if !origin_matches_authority(origin, host, allow_remote_host) {
             return Err(request_security_error(
                 403,
                 "origin_denied",
@@ -220,8 +277,13 @@ fn settings_token_exchange(request: &ParsedHttpRequest, auth_token: &str) -> Opt
 
 fn route_request(runtime: &DaemonRuntime, request: &ParsedHttpRequest) -> RouteResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Err((status, body)) = enforce_request_security(request) {
+        if let Err((status, body)) =
+            enforce_request_security_with_policy(request, runtime.allow_remote_management_host)
+        {
             return Ok(RouteResponse::Text { status, body });
+        }
+        if let Some(response) = route_management_ui(runtime, request) {
+            return Ok(response);
         }
         if let Some(response) = settings_token_exchange(request, &runtime.auth_token) {
             return Ok(response);

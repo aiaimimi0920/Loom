@@ -74,6 +74,8 @@ fn main() -> Result<()> {
     let host = std::env::var("LOOM_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
     let mut config = DaemonConfig::bind_host(host, port)
         .with_tls_termination_from_env()
+        .with_lan_management_from_env()
+        .with_management_ui_from_env()
         .with_ai_gateway_from_env()?
         .with_request_executor_from_env()?
         .with_sqlite_run_store(default_run_store_path());

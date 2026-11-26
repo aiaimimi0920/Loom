@@ -2010,6 +2010,7 @@ dependencies = [
  "chrono",
  "libc",
  "loom_local_channel",
+ "loom_local_data",
  "serde",
  "serde_json",
  "sha2",
@@ -2034,6 +2035,14 @@ dependencies = [
  "subtle",
  "tungstenite",
  "uuid",
+]
+
+[[package]]
+name = "loom_local_data"
+version = "0.2.2"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

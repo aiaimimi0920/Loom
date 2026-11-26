@@ -183,7 +183,7 @@ pub(super) fn http_request_json_with_timeout(
     body: Option<&Value>,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let (host, port) = parse_loopback_http_url(base_url)?;
+    let (host, port, addr) = parse_daemon_http_endpoint(base_url)?;
     let method = match method {
         "GET" | "POST" | "PUT" | "DELETE" => method,
         _ => return Err("Loom 本地服务 HTTP 方法无效。".to_owned()),
@@ -192,11 +192,8 @@ pub(super) fn http_request_json_with_timeout(
     let authorization = daemon_auth_token()?
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
-    let mut stream = TcpStream::connect_timeout(
-        &loopback_socket_addr(&host, port)?,
-        LOOM_DAEMON_CONNECT_TIMEOUT,
-    )
-    .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, LOOM_DAEMON_CONNECT_TIMEOUT)
+        .map_err(|error| format!("无法连接 Loom 本地服务 {base_url}：{error}"))?;
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|error| format!("无法设置 Loom 本地服务读取超时：{error}"))?;

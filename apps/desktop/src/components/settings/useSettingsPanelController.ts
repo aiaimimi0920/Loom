@@ -37,6 +37,7 @@ import {
 } from "./SettingsPanels";
 import { useSettingsCacheControls } from "./useSettingsCacheControls";
 import { useSettingsShortcutEditors } from "./useSettingsShortcutEditors";
+import { isDesktopTauriShell } from "../../services/loomRuntimeTarget";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -93,7 +94,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
         if (settingsBaseUrlRef.current === baseUrl) {
           lastSavedSettingsRef.current = saved;
         }
-        if (loomGeneralChanged) {
+        if (isDesktopTauriShell() && loomGeneralChanged) {
           try {
             await invoke("apply_loom_general_settings", {
               settings: { minimizeToTray: saved.general.minimize_to_tray },
@@ -105,7 +106,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
             });
           }
         }
-        if (loomCacheChanged) {
+        if (isDesktopTauriShell() && loomCacheChanged) {
           try {
             setLoomCacheSnapshot(
               await invoke<LoomCacheSnapshotInfo>("apply_loom_cache_settings", {
@@ -119,7 +120,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
             });
           }
         }
-        if (otterCacheChanged) {
+        if (isDesktopTauriShell() && otterCacheChanged) {
           try {
             await invoke("wait_for_otter_cache_settings", {
               settings: otterCachePreferencesForRuntime(saved.hook_cache),
@@ -240,6 +241,7 @@ export function useSettingsPanelController({ snapshot }: { snapshot: LoomSnapsho
   }, [snapshot.baseUrl]);
 
   useEffect(() => {
+    if (!isDesktopTauriShell()) return;
     let cancelled = false;
     const loadDiagnostics = async () => {
       const results = await Promise.allSettled(

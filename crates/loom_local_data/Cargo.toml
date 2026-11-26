@@ -1,0 +1,12 @@
+[package]
+name = "loom_local_data"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared desktop/client connection profile and portable data directory ownership for Loom"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

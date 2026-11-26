@@ -211,6 +211,12 @@ pub(super) fn desktop_control_plane_root() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| loom_local_data::resolve_portable_root(&exe).ok().flatten())
+                .map(|portable| portable.join("control-plane"))
+        })
+        .or_else(|| {
             std::env::var_os("APPDATA")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
@@ -231,6 +237,11 @@ pub(super) fn normalize_daemon_auth_token(value: &str, source: &str) -> Result<S
 }
 
 pub(super) fn daemon_auth_token() -> Result<Option<String>, String> {
+    if is_remote_connection_mode() {
+        if let Some(remote_token) = connection_store().load_remote_token()? {
+            return Ok(Some(remote_token));
+        }
+    }
     if let Some(value) = std::env::var_os("LOOM_DAEMON_TOKEN").filter(|value| !value.is_empty()) {
         return normalize_daemon_auth_token(&value.to_string_lossy(), "LOOM_DAEMON_TOKEN")
             .map(Some);
@@ -285,6 +296,15 @@ pub(super) fn bootstrap_packaged_arts_from_exe(
     current_exe: &Path,
     control_plane_root: &Path,
 ) -> Result<PackagedArtBootstrapResult, String> {
+    if is_remote_connection_mode() {
+        return Ok(PackagedArtBootstrapResult {
+            available: false,
+            applied: false,
+            catalog_hash: None,
+            framework_ids: Vec::new(),
+            art_ids: Vec::new(),
+        });
+    }
     let _bootstrap_guard = PACKAGED_ART_BOOTSTRAP_LOCK
         .lock()
         .map_err(|_| "打包 Art 初始化锁已损坏。".to_string())?;

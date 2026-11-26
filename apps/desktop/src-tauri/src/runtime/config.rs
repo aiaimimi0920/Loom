@@ -15,6 +15,13 @@ pub(super) fn configured_loom_daemon_url() -> String {
     if let Some(active_url) = active_loom_daemon_url() {
         return active_url;
     }
+    if let Ok(profile) = connection_store().load_profile() {
+        if profile.mode == loom_local_data::ConnectionMode::Remote {
+            if let Some(remote_url) = profile.remote_url {
+                return remote_url;
+            }
+        }
+    }
     std::env::var("LOOM_DAEMON_URL").unwrap_or_else(|_| DEFAULT_LOOM_DAEMON_URL.to_string())
 }
 
@@ -25,6 +32,13 @@ pub(super) fn configured_otter_bridge_url() -> String {
     {
         if let Some(active_url) = active_url.as_ref() {
             return active_url.clone();
+        }
+    }
+    if let Ok(profile) = connection_store().load_profile() {
+        if profile.mode == loom_local_data::ConnectionMode::Remote {
+            if let Some(bridge_url) = profile.otter_bridge_url {
+                return bridge_url;
+            }
         }
     }
     if let Ok(url) = loom_local_channel::brand_env::var("LOOM_HOOK_BRIDGE_URL") {
@@ -129,6 +143,9 @@ pub(super) fn paths_match(left: &Path, right: &Path) -> bool {
 }
 
 pub(super) fn daemon_path_mismatch_warning(current_exe: &Path, status: &Value) -> Option<String> {
+    if is_remote_connection_mode() {
+        return None;
+    }
     let actual = daemon_executable_path_from_status(status)?;
     let expected = preferred_daemon_candidate(current_exe);
     if paths_match(&expected, &actual) {

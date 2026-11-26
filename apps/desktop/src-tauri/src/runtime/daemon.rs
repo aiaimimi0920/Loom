@@ -174,6 +174,15 @@ pub(super) fn start_loom_daemon_blocking() -> Result<LoomDaemonStartResult, Stri
     if LOOM_EXITING.load(Ordering::Acquire) {
         return Err("Loom 正在退出，已取消启动本地服务。".to_owned());
     }
+    if is_remote_connection_mode() {
+        let remote_url = normalize_base_url(configured_loom_daemon_url());
+        return Ok(LoomDaemonStartResult {
+            started: false,
+            base_url: remote_url,
+            path: String::new(),
+            message: "当前处于远程 Loom 服务端连接模式，无需启动本机进程。".to_owned(),
+        });
+    }
     let mut base_url = normalize_base_url(configured_loom_daemon_url());
     let mut isolated_otter_bridge_url = None;
     let current_exe =

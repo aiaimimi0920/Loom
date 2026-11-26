@@ -74,7 +74,7 @@ pub(super) fn admit(
     if !large_body_route {
         return Ok(());
     }
-    enforce_request_security(request)?;
+    enforce_request_security_with_policy(request, runtime.allow_remote_management_host)?;
     let path = request.path.split('?').next().unwrap_or(&request.path);
     // These two peer endpoints authenticate a pinned-key proof inside the body,
     // not an administrator/session header. Keep their existing 6 MiB byte cap;

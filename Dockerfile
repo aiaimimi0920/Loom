@@ -1,5 +1,7 @@
 FROM rust:1.98.1-slim-bookworm AS builder
 
+ARG LOOM_EDITION=web
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev pkg-config \
   && rm -rf /var/lib/apt/lists/*
@@ -13,7 +15,13 @@ COPY protocol ./protocol
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
   --mount=type=cache,target=/usr/local/cargo/git \
-  cargo build --locked --release -p loom-daemon -p loom-cli
+  if [ "$LOOM_EDITION" = "api" ]; then \
+    cargo build --locked --release --no-default-features --features runtime-defaults -p loom-daemon && \
+    cargo build --locked --release -p loom-cli; \
+  else \
+    cargo build --locked --release --no-default-features --features "runtime-defaults,management-ui" -p loom-daemon && \
+    cargo build --locked --release -p loom-cli; \
+  fi
 
 FROM debian:bookworm-slim
 
@@ -28,6 +36,7 @@ COPY --from=builder /app/target/release/loom /usr/local/bin/loom
 
 ENV LOOM_DAEMON_HOST=0.0.0.0
 ENV LOOM_DAEMON_PORT=8765
+ENV LOOM_ALLOW_LAN_MANAGEMENT=1
 
 EXPOSE 8765
 

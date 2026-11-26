@@ -61,11 +61,13 @@ pub fn run() {
             std::thread::spawn(move || {
                 let _ = apply_loom_cache_preferences(&settings);
             });
-            std::thread::spawn(|| {
-                if let Err(error) = start_loom_daemon_blocking() {
-                    eprintln!("[ERROR] Loom 本地服务启动失败：{error}");
-                }
-            });
+            if !is_remote_connection_mode() {
+                std::thread::spawn(|| {
+                    if let Err(error) = start_loom_daemon_blocking() {
+                        eprintln!("[ERROR] Loom 本地服务启动失败：{error}");
+                    }
+                });
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))?;
                 window.set_icon(icon)?;
@@ -111,6 +113,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             otter_bridge_subscription::read_otter_bridge_subscription_state,
             daemon::resolve_loom_daemon_url,
+            connection_profile::get_loom_connection_profile,
+            connection_profile::save_loom_connection_profile,
             diagnostics::resolve_application_diagnostics,
             diagnostics::open_application_log_location,
             diagnostics::open_external_url,

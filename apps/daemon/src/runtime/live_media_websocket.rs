@@ -122,18 +122,20 @@ fn prepare_live_media_upgrade(
     ),
     LiveRuntimeError,
 > {
-    enforce_request_security(request).map_err(|(status, body)| {
-        let message = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "live media request security validation failed".to_owned());
-        LiveRuntimeError::new(status, "live_media_request_denied", message)
-    })?;
+    enforce_request_security_with_policy(request, runtime.allow_remote_management_host).map_err(
+        |(status, body)| {
+            let message = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "live media request security validation failed".to_owned());
+            LiveRuntimeError::new(status, "live_media_request_denied", message)
+        },
+    )?;
     validate_live_websocket_headers(request, LiveMediaProfile::offered(request).protocol())?;
     let session_id = request
         .query_parameter("sessionId")
