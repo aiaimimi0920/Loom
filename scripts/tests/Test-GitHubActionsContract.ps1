@@ -310,7 +310,7 @@ Assert-Workflow -Name "docker.yml" -RequiredText @(
 )
 
 $dockerfile = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "Dockerfile")
-Assert-True -Condition $dockerfile.Contains('FROM rust:1.98.1-slim-bookworm AS builder') -Message "Dockerfile must use the pinned Rust 1.98.1 builder."
+Assert-True -Condition $dockerfile.Contains('FROM rust:1.99.1-slim-bookworm AS builder') -Message "Dockerfile must use the pinned Rust 1.99.1 builder."
 Assert-True -Condition (-not $dockerfile.Contains('rust:1.91.1')) -Message "Dockerfile must not use the obsolete Rust 1.91.1 builder."
 
 $dockerIgnore = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot ".dockerignore")
